@@ -1,0 +1,13 @@
+{
+ "general": "127.0.0.1:2101",
+ "fast": "127.0.0.1:2103",
+ "cli": "127.0.0.1:2090",
+ "groups": {
+  "general": ["g0", "g1"],
+  "fast": ["f0", "g0", "g1"]
+ },
+ "members": {
+  "vless://YOUR-UUID@example.com:443?security=reality&sni=www.example.com&fp=chrome&pbk=YOUR-PUBLIC-KEY&sid=00&type=grpc&serviceName=grpc#example": "g0",
+  "ss://YOUR-BASE64-METHOD-PASSWORD@example.net:8388#example": "f0"
+ }
+}
