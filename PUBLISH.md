@@ -50,24 +50,26 @@ git push -u origin main
    ```text
    首个公开版本。
 
-   手机端：手机代理-公版.apk（Android 7.0+，不内置节点，安装后导入自己的分享链接/订阅）
+   手机端：PhoneProxy-public.apk（Android 7.0+，不内置节点，安装后导入自己的分享链接/订阅）
    电脑端：见仓库 pc/ 目录，Windows 10/11 x64
 
-   SHA256（手机代理-公版.apk）：
+   SHA256（PhoneProxy-public.apk）：
    fb92da28181edd5c07ff3cf6961fee846195bed8f60e27a051cf0e4cbd29c06b
    ```
 
 5. 把 `dist/手机代理-公版.apk` 拖进 **Attach binaries** 区域（约 54 MB，上传需要一会儿）
 6. 点 **Publish release**
 
+> GitHub 会把 Release 资产名里的中文剥掉（实测 `手机代理-公版.apk` 会变成 `-.apk`），所以资产名统一用 ASCII 的 `PhoneProxy-public.apk`；本地构建产物仍叫 `手机代理-公版.apk`，两者字节相同。
+
 ## 4. 发布后验证
 
 - 仓库首页的 README 能正常显示，图片 `docs/phone-connected.png` 能打开。
-- Releases 页面能看到 `手机代理-公版.apk`，下载后校验：
+- Releases 页面能看到 `PhoneProxy-public.apk`，下载后校验：
 
   ```bash
   # Windows PowerShell
-  Get-FileHash .\手机代理-公版.apk -Algorithm SHA256
+  Get-FileHash .\PhoneProxy-public.apk -Algorithm SHA256
   ```
 
   结果应为 `FB92DA28181EDD5C07FF3CF6961FEE846195BED8F60E27A051CF0E4CBD29C06B`。

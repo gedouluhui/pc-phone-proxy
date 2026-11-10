@@ -28,7 +28,7 @@
 
 ## 手机端快速开始
 
-1. 到 [Releases](../../releases) 下载 `手机代理-公版.apk`（或按 `phone/README.md` 自行构建）。
+1. 到 [Releases](../../releases) 下载 `PhoneProxy-public.apk`（本地构建产物名为 `手机代理-公版.apk`；也可按 `phone/README.md` 自行构建）。
 2. Android 7.0 及以上；首次安装需允许“安装未知来源应用”。iPhone 和 HarmonyOS NEXT 无法安装 APK。
 3. 打开 App → 允许通知 → 点 **导入节点 / 订阅**，粘贴分享链接（每行一条）或订阅 URL。
 4. 点 **启动代理** → 允许建立 VPN 连接 → 等待自动测速。
