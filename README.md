@@ -106,7 +106,7 @@ python start_proxy.py
 - 电脑端所有监听端口只绑定 `127.0.0.1`，局域网内其他机器连不上。
 - 电脑端唯一修改的系统设置是当前用户的 WinINET `AutoConfigURL`（指向本地 PAC）；`stop_proxy.py` 会撤掉。
 - 免费节点由第三方运营，运营者理论上能看到你访问的目标域名。**不要用这些节点登录银行等敏感账户。**
-- 本仓库不包含任何节点 URI、UUID、密码、二维码或签名私钥。`pinned.json`、`nodes.json`、`node_deep.json`、`*.keystore` 已列入 `.gitignore`——如果你要公开自己的 fork，请先确认这些文件没有被提交。
+- 本仓库不包含任何可用的节点 URI、UUID、密码、二维码或签名私钥（示例文件里只有 `YOUR-UUID` 之类的占位符）。`pinned.json`、`nodes.json`、`node_deep.json`、`*.keystore` 已列入 `.gitignore`——如果你要公开自己的 fork，请先确认这些文件没有被提交。
 
 ## 已知限制
 
