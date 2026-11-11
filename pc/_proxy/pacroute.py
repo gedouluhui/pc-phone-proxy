@@ -62,6 +62,13 @@ DOMESTIC = [
     # 原神登录会卡死在 000 超时）。覆盖原神/星铁/绝区零/米游社/HoYoLAB。
     "mihoyo.com", "yuanshen.com", "hoyoverse.com", "hoyolab.com",
     "miyoushe.com", "bh3.com", "starrail.com", "zzz.mihoyo.com", "hkrpg.com",
+    # 2026-11-11 WorkBuddy hotfix2: 字节系 CDN 必须直连（只有 douyin.com 主域直连不够，
+    # 视频/图片/静态资源走海外节点全 000 超时 → 抖音网页版主站开但页面卡死）。
+    "douyinvod.com", "douyinpic.com", "douyinstatic.com", "douyincdn.com",
+    "douyixiaoshipin.com", "isnssdk.com", "snssdk.com", "pstatp.com",
+    "bytecdntp.com", "byteimg.com", "bytednsdoc.com", "bytegoofy.com",
+    "volccdn.com", "amemv.com", "zjcdn.com", "ixigua.com", "feishu.cn",
+    "volcengine.com", "toutiao.com", "melon.com", "fanqienovel.com",
     "58.com", "anjuke.com", "zhaopin.com", "51job.com", "cnblogs.com",
     "oschina.net", "jianguoyun.com", "nuomi.com", "kuaidi100.com",
 ]
