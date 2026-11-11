@@ -43,8 +43,8 @@ git push -u origin main
 ## 3. 发布公版 APK（Release）
 
 1. 打开仓库页 → 右侧 **Releases** → **Draft a new release**
-2. **Choose a tag**：输入 `v1.0.0` → 点 "Create new tag: v1.0.0 on publish"
-3. Release title：`v1.0.0 — 手机 + 电脑 双端代理`
+2. **Choose a tag**：输入 `v2.1` → 点 "Create new tag: v1.0.0 on publish"
+3. Release title：`v2.1 — 手机 + 电脑 双端代理`
 4. 描述可以直接复制：
 
    ```text

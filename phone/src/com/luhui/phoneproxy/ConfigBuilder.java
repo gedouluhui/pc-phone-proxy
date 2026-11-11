@@ -266,6 +266,13 @@ public final class ConfigBuilder {
                 .put("port", 53).put("outboundTag", "dns-out"));
         rules.put(rule().put("ip", new JSONArray().put("geoip:private"))
                 .put("outboundTag", "direct"));
+        // 2026-11-11 privacy: 敏感域（银行/支付/政务/社保/税务/教育）强制直连，
+        // 绝不进免费节点——节点运营者能看到 TLS 目标域名，账号类站点不该出现在隧道里。
+        JSONArray sensitive = new JSONArray();
+        for (String d : SENSITIVE_DOMAINS) sensitive.put("domain:" + d);
+        rules.put(rule().put("domain", sensitive).put("outboundTag", "direct"));
+        // 2026-11-11 privacy: 明文 HTTP(80) 直连，避免节点看到明文 URL 与内容。
+        rules.put(rule().put("port", 80).put("outboundTag", "direct"));
         rules.put(rule().put("domain", new JSONArray().put("geosite:cn"))
                 .put("outboundTag", "direct"));
         rules.put(rule().put("ip", new JSONArray().put("geoip:cn"))
@@ -332,6 +339,16 @@ public final class ConfigBuilder {
     private static JSONObject rule() {
         return new JSONObject();
     }
+
+    /** 2026-11-11 privacy: 敏感域名单（与 PC 端 pacroute.SENSITIVE 保持一致）。 */
+    private static final String[] SENSITIVE_DOMAINS = {
+            "icbc.com.cn", "ccb.com", "abchina.com", "boc.cn", "bankofchina.com",
+            "cmbchina.com", "bocom.cn", "psbc.com", "cmbc.com.cn", "spdb.com.cn",
+            "ecitic.com", "cib.com.cn", "hxb.com.cn", "cgbchina.com.cn", "cebbank.com",
+            "unionpay.com", "95516.com", "paypal.com", "alipay.com", "tenpay.com",
+            "gov.cn", "chinatax.gov.cn", "12333.gov.cn", "12366.gov.cn", "pbc.gov.cn",
+            "csrc.gov.cn", "nfra.gov.cn", "edu.cn", "si.12333.gov.cn",
+    };
 
     // ---------------------------------------------------------- 分享链接解析
 
