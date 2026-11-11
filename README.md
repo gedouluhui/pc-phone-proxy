@@ -35,6 +35,7 @@
 - **三通道**：`general 2101`（ChatGPT/Claude）、`fast 2103`（Google/GitHub/HF/网页）、`cli 2090`（git/pip/curl/npm），另有 Reddit 2086、Steam 2096 可选出口
 - **浏览器走 PAC 自动分流**，国内站点直连；命令行代理变量自动配置
 - **看门狗自愈**：端口掉线、站点打不开、PAC 被改都会自动修复；检测失败时降级而不是拆掉唯一存活的栈
+- **定期重扫**：默认每 6 小时自动重抓公开源 → 深测速度/ChatGPT → 重建出口，把更快的节点换上来（`PROXY_REFRESH_HOURS` 可调）
 - 所有监听端口只绑定 `127.0.0.1`；`stop_proxy.py` 一键撤掉 PAC 与环境变量
 
 ---

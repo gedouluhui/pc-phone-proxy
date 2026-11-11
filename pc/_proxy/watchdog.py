@@ -33,6 +33,8 @@ import proxyctl as P      # noqa: E402
 import sysstate           # noqa: E402
 
 GEN, FAST, CLI, HK, STEAM = 2101, 2103, 2090, 2086, 2096
+# 2026-11-12: 定期重扫——每 N 小时重新抓源+深测+重建出口；0=关闭。
+REFRESH_HOURS = float(os.environ.get("PROXY_REFRESH_HOURS") or 6)
 STOP = os.path.join(HERE, "STOP_WATCHDOG")
 PID = os.path.join(HERE, "watchdog.pid")
 STATUS = os.path.join(HERE, "watchdog_status.json")
@@ -251,6 +253,10 @@ def write_status(st):
                          if st["last_rebuild"] else None),
         "gate": st["gate"],
         "last_error": st["last_error"],
+        "refresh_hours": REFRESH_HOURS,
+        "last_refresh": (time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                       time.gmtime(st["last_refresh"]))
+                         if st.get("last_refresh") else None),
     }
     try:
         tmp = STATUS + ".tmp"
@@ -293,6 +299,7 @@ def main():
     st = {
         "now": {}, "gate": {}, "rebuilds": 0, "rebuild_fail": 0,
         "last_rebuild": 0.0, "last_rescan": 0.0, "last_error": "",
+        "last_refresh": time.time(), "last_refresh_try": 0.0,
         "rebuild_cooldown": 600, "rescan_cooldown": 12 * 3600,
     }
     last = {}
@@ -423,6 +430,20 @@ def main():
                             log("auto-switch %s: %s -> %s (delay %sms)"
                                 % (role, prev, name, delay))
                         st["now"][role] = name
+
+            # ---- periodic pool refresh (re-harvest + deep test + rebuild) ----
+            if REFRESH_HOURS > 0:
+                due = st.get("last_refresh", now) + REFRESH_HOURS * 3600
+                if now >= due and now - st.get("last_refresh_try", 0) >= 600:
+                    st["last_refresh_try"] = now
+                    if (now - st.get("last_rebuild", 0) > 1800
+                            and st.get("rebuild_fail", 0) < 3):
+                        st["last_refresh"] = now
+                        st["last_rescan"] = now
+                        if spawn_script("rescan.py", "rescan.log"):
+                            log("periodic refresh: re-harvest + deep test + rebuild"
+                                " (every %gh)" % REFRESH_HOURS)
+                            write_status(st)
 
             # ---- heartbeat ---------------------------------------------
             if now - last.get("status", 0) >= 60:
