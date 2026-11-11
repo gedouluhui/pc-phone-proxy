@@ -162,6 +162,8 @@ def build_config(gen, fast):
         outbounds.append(geph)
         gtags = gtags + ["geph"]
         ftags = ftags + ["geph"]
+    # 合并组成员去重（同一节点可能同时进 general/fast 两组，重复 tag 会让 sing-box 校验失败）
+    anytags = list(dict.fromkeys(gtags + ftags))
     cfg = {
         "log": {"level": "error"},
         "experimental": {
@@ -179,6 +181,10 @@ def build_config(gen, fast):
         "outbounds": ([{"type": "urltest", "tag": "grp-general", "outbounds": gtags,
                         "url": HEALTH_URL, "interval": "60s", "tolerance": 150},
                        {"type": "urltest", "tag": "grp-fast", "outbounds": ftags,
+                        "url": HEALTH_URL, "interval": "60s", "tolerance": 150},
+                       # 2026-11-11 WorkBuddy privacy: 合并组兜底——当某一组挑到坏节点时，
+                       # 命令行/快速门仍能挑到两组里当前可用的最快成员（避免整路超时）。
+                       {"type": "urltest", "tag": "grp-any", "outbounds": anytags,
                         "url": HEALTH_URL, "interval": "60s", "tolerance": 150}]
                       + outbounds + [{"type": "direct", "tag": "direct"}]),
         "route": {"rules": [
@@ -186,8 +192,15 @@ def build_config(gen, fast):
             # PAC 只管浏览器；游戏/CLI 走 env 或缓存 PAC 时会把登录请求送进 2103/2090，
             # 海外节点到不了国服登录接口（实测 000）。此规则在任何 inbound 判定前生效。
             {"domain_suffix": pacroute.DOMESTIC, "outbound": "direct"},
+            # 2026-11-11 WorkBuddy privacy: 敏感域（银行/支付/政务/教育）永不经免费节点。
+            {"domain_suffix": pacroute.SENSITIVE, "outbound": "direct"},
+            # 明文 HTTP(80) 与 DNS(53) 不经节点：HTTP 内容对节点明文可见，DNS 可被节点篡改。
+            {"port": 80, "outbound": "direct"},
+            {"port": 53, "outbound": "direct"},
+            # UDP(QUIC/WebRTC) 经代理会被节点看到且绕过 TLS 保护 ⇒ 拒绝；浏览器自动回落 TCP。
+            {"network": "udp", "action": "reject"},
             {"inbound": ["in-h-g", "in-s-g"], "outbound": "grp-general"},
-            {"inbound": ["in-h-f", "in-s-f"], "outbound": "grp-fast"},
+            {"inbound": ["in-h-f", "in-s-f"], "outbound": "grp-any"},
             {"inbound": ["in-cli"], "domain_suffix": [
                 "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com",
                 "anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com"],
@@ -198,7 +211,7 @@ def build_config(gen, fast):
             {"inbound": ["in-cli"], "domain_suffix": pacroute.DOMESTIC,
              "outbound": "direct"},
             {"inbound": ["in-cli"], "ip_is_private": True, "outbound": "direct"},
-            {"inbound": ["in-cli"], "outbound": "grp-fast"},
+            {"inbound": ["in-cli"], "outbound": "grp-any"},
         ]},
     }
     return cfg, gtags, ftags, used

@@ -113,6 +113,17 @@ GENERAL = [
 GENERAL = [d for d in GENERAL if d != "gemini.google.com"]
 FAST.append("gemini.google.com")
 # Kaggle 直连（未被墙，且两个代理都拒）
+# 2026-11-11 WorkBuddy privacy: 敏感域（银行/支付/政务/社保/税务/内网 OA）永不经过免费节点。
+# 这些站点直连即可访问，走第三方免费节点等于把账号密码的 TLS 目标暴露给节点运营者。
+SENSITIVE = [
+    "icbc.com.cn", "ccb.com", "abchina.com", "boc.cn", "bankofchina.com",
+    "cmbchina.com", "bocom.cn", "psbc.com", "cmbc.com.cn", "spdb.com.cn",
+    "ecitic.com", "cib.com.cn", "hxb.com.cn", "cgbchina.com.cn", "cebbank.com",
+    "unionpay.com", "95516.com", "paypal.com", "alipay.com", "tenpay.com",
+    "gov.cn", "chinatax.gov.cn", "12333.gov.cn", "12366.gov.cn", "pbc.gov.cn",
+    "csrc.gov.cn", "nfra.gov.cn", "edu.cn", "si.12333.gov.cn",
+]
+
 DIRECT = ["kaggle.com", "kaggleusercontent.com", "ipinfo.io"]
 # ---- Steam: 商店/社区/登录走美国出口（用户要外区商店），下载 CDN 走直连 ----
 STEAM = [
@@ -160,6 +171,7 @@ def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, 
 // general(OpenAI/Claude) -> %(general)s   fast(Google/GitHub/HF) -> %(fast)s
 // hk(reddit 专用) -> %(hk)s
 %(dom)s
+%(sens_d)s
 %(fast_d)s
 %(gen_d)s
 %(hk_d)s
@@ -177,10 +189,13 @@ function FindProxyForURL(url, host) {
   host = host.toLowerCase();
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" ||
       isPlainHostName(host) || shExpMatch(host, "127.*") ||
-      shExpMatch(host, "192.168.*") || shExpMatch(host, "10.*")) {
+      shExpMatch(host, "192.168.*") || shExpMatch(host, "10.*") ||
+      shExpMatch(host, "172.1[6-9].*") || shExpMatch(host, "172.2[0-9].*") ||
+      shExpMatch(host, "172.3[0-1].*")) {
     return "DIRECT";
   }
   if (inList(host, DOMESTIC)) return "DIRECT";
+  if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
 %(steam_rule)s%(hk_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
   if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s; DIRECT";
@@ -194,6 +209,7 @@ function FindProxyForURL(url, host) {
         "hk": hk or "",
         "hk_rule": hk_rule,
         "dom": _js_list("DOMESTIC", DOMESTIC),
+        "sens_d": _js_list("SENSITIVE", SENSITIVE),
         "fast_d": _js_list("FAST", FAST),
         "gen_d": _js_list("GENERAL", GENERAL),
         "hk_d": hk_vars,
