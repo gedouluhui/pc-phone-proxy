@@ -67,7 +67,8 @@ pc/
 │  ├─ stop_proxy.py         ← 撤掉代理，恢复直连
 │  ├─ watchdog.py           ← 后台自愈
 │  ├─ pacroute.py           ← 本地 PAC 服务 + 分流名单
-│  └─ privacy_check.py      ← 隐私自检（只读）
+│  ├─ privacy_check.py      ← 隐私自检（只读）
+│  └─ proxy_diag.py         ← 分流诊断（某域名该直连还是代理、哪条路可达）
 ├─ start-proxy.bat
 └─ stop-proxy.bat
 ```
@@ -106,6 +107,7 @@ python start_proxy.py
 | **UDP/QUIC 拒绝** | 经代理的 UDP 一律 reject，浏览器自动回落 TCP | 减少绕过 TLS 的暴露面 |
 | **内网段直连** | `127.*` / `10.*` / `172.16-31.*` / `192.168.*` | 内网地址不会误进隧道 |
 | **一键自检** | `python pc/_proxy/privacy_check.py` | 检查出口 IP、明文泄露、敏感域覆盖、系统根证书（MITM） |
+| **分流诊断** | `python pc/_proxy/proxy_diag.py modelscope.cn` | 看某域名被判直连还是代理，以及直连/2103/2101/2090 哪条路真的通 |
 
 ### 防不住的部分（任何代理客户端都做不到）
 

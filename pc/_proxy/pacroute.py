@@ -71,6 +71,12 @@ DOMESTIC = [
     "volcengine.com", "toutiao.com", "melon.com", "fanqienovel.com",
     "58.com", "anjuke.com", "zhaopin.com", "51job.com", "cnblogs.com",
     "oschina.net", "jianguoyun.com", "nuomi.com", "kuaidi100.com",
+    # 2026-11-12 WorkBuddy hotfix3: 魔搭/ModelScope 必须直连（走海外节点会被阿里风控判 RGV587）。
+    "modelscope.cn", "modelscope.com", "aliyun.com", "alicdn.com",
+    # 2026-11-12 WorkBuddy hotfix4: 常用国内 CDN / 开放平台（无 .cn，极易被漏）。
+    "alipayobjects.com", "qpic.cn", "gtimg.cn", "weixin.com", "wechat.com",
+    "wechatpay.com", "tenpay.com", "qqmail.com", "foxmail.com", "dingtalk.com",
+    "feishu.net", "larksuite.com", "bytedns.net", "volcimage.com", "pstatp.com",
 ]
 # 走 HK 快速节点（免费节点 + 迷雾通兜底）
 FAST = [
