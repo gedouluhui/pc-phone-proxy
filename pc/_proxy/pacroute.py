@@ -58,6 +58,10 @@ DOMESTIC = [
     "sohu.com", "ifeng.com", "aliyuncs.com", "myqcloud.com", "qcloud.com",
     "tencentcloudapi.com", "huaweicloud.com", "volces.com", "doubao.com",
     "deepseek.com", "moonshot.cn", "kimi.com", "moonshot.ai", "smzdm.com",
+    # 2026-11-11 WorkBuddy hotfix: 米哈游全家桶必须直连（海外节点到不了国服登录/网关，
+    # 原神登录会卡死在 000 超时）。覆盖原神/星铁/绝区零/米游社/HoYoLAB。
+    "mihoyo.com", "yuanshen.com", "hoyoverse.com", "hoyolab.com",
+    "miyoushe.com", "bh3.com", "starrail.com", "zzz.mihoyo.com", "hkrpg.com",
     "58.com", "anjuke.com", "zhaopin.com", "51job.com", "cnblogs.com",
     "oschina.net", "jianguoyun.com", "nuomi.com", "kuaidi100.com",
 ]
