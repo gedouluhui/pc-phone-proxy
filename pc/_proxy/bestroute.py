@@ -182,6 +182,10 @@ def build_config(gen, fast):
                         "url": HEALTH_URL, "interval": "60s", "tolerance": 150}]
                       + outbounds + [{"type": "direct", "tag": "direct"}]),
         "route": {"rules": [
+            # 2026-11-11 WorkBuddy hotfix: 国内域名在所有门强制直连（含米哈游全家桶）。
+            # PAC 只管浏览器；游戏/CLI 走 env 或缓存 PAC 时会把登录请求送进 2103/2090，
+            # 海外节点到不了国服登录接口（实测 000）。此规则在任何 inbound 判定前生效。
+            {"domain_suffix": pacroute.DOMESTIC, "outbound": "direct"},
             {"inbound": ["in-h-g", "in-s-g"], "outbound": "grp-general"},
             {"inbound": ["in-h-f", "in-s-f"], "outbound": "grp-fast"},
             {"inbound": ["in-cli"], "domain_suffix": [
