@@ -23,11 +23,12 @@ cd phone
 python build_apk.py
 ```
 
-首次构建会自动生成签名用的 `phoneproxy.keystore`（口令 `android`，仅用于本地安装，不是任何账号凭据）。
-产物默认是 `phone/手机代理.apk`。
+构建使用 `phone/phoneproxy.keystore`（口令 `android`，仅用于本地安装，不是任何账号凭据）；
+文件不存在时脚本会自动生成。产物默认是 `phone/手机代理.apk`，可用 `PROXY_APK_OUT` 改输出路径。
 
-> 自己构建的 APK 用的是上面这个新生成的密钥，和 Release 里公版 APK 的签名不同。
-> 如果手机上已经装了 Release 版，覆盖安装会报“应用未安装 / 签名不一致”，请先卸载旧版再装。
+> 只要沿用同一个 keystore，本地构建的私用版与 Release 公版**签名一致**，可直接覆盖安装。
+> 若首次构建自动生成了新 keystore，签名就不同，覆盖安装会报“应用未安装”，需先卸载旧版。
+> keystore 被 `.gitignore` 忽略，换机器构建时要把同一个文件带过去。
 
 ### 内置自己的节点
 
@@ -45,6 +46,20 @@ python build_apk.py
 ```
 
 `assets/nodes.json` 已被 `.gitignore` 忽略，**不要把它提交到公开仓库**。
+
+### ⚠️ 打包前检查清单（v2.1 踩过的坑）
+
+`build_apk.py` 会无条件把 `assets/nodes.json` 打进 APK。仓库里提交的是空的
+`assets/nodes.sample.json`，而 `assets/nodes.json` 是本地生成、被忽略的文件：
+**如果它是 `[]`，打出来的就是「去凭据公版」，装到手机上必然提示「还没有节点，先导入再启动」。**
+
+| 要产出的东西 | 命令 | 检查 |
+|---|---|---|
+| 公版（上传 Release） | `PROXY_NODES_JSON=assets/nodes.sample.json python build_apk.py` | APK 内 `assets/nodes.json` = `[]` |
+| 私用版（自己装） | `python gen_pool.py` 后再 `python build_apk.py` | APK 内 `assets/nodes.json` 有 24 条 |
+
+打包后用 `unzip -p <apk> assets/nodes.json` 或 Python `zipfile` 读一次确认节点数，
+再往外发。**不要把空节点的 APK 放进"给家里人直接用"的文件夹**，也不要把含节点的 APK 传上 Release。
 
 节点列表格式（App 也接受 `uri` 字段，直接用原始分享链接）：
 

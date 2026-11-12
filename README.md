@@ -6,6 +6,8 @@
 
 > **本仓库不附带任何可用节点。** 节点是第三方免费资源，分享凭据等于分享密码。公共版 APK 不内置节点，安装后导入你自己的分享链接或订阅；电脑端脚本用于从公开源抓取、实测并建立你自己的节点池。
 
+> **两个 APK，别装错**：Releases 里的 `PhoneProxy-public.apk` 是**去凭据公版**，装完会提示「还没有节点，先导入再启动」——这是设计如此，不是故障。想要装完就能一键启动，按 [`phone/README.md`](phone/README.md) 用 `gen_pool.py` 生成自己的节点池后**本地构建私用版**（`assets/nodes.json` 被 `.gitignore` 忽略，绝不能提交）。两者同签名，可直接覆盖安装。
+
 ![手机端](docs/phone-connected.png)
 
 <p>
@@ -14,13 +16,13 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-**当前版本**：手机端 **v2.1**（2026-11-11）· 电脑端脚本随仓库 `main` 更新
+**当前版本**：手机端 **v2.2**（2026-11-12，修复公版被当私用版发布的问题）· 电脑端脚本随仓库 `main` 更新
 
 ---
 
 ## 特性
 
-### 手机端（Android 7.0+，v2.1）
+### 手机端（Android 7.0+，v2.2）
 
 - **一键启动**：对节点池全部节点并发测速自动选最快；运行中由 Xray observatory 每 30 秒巡检，掉线自动切换
 - **自动分流**：`geosite:cn` / `geoip:cn` / 私有地址直连，其余走代理
@@ -44,13 +46,24 @@
 
 ### 手机端
 
-1. 到 [Releases](../../releases) 下载 `PhoneProxy-public.apk`（本地构建产物名为 `手机代理-公版.apk`，也可按 [`phone/README.md`](phone/README.md) 自行构建）。
+**A. 用 Releases 公版（必须自己导入节点）**
+
+1. 到 [Releases](../../releases) 下载 `PhoneProxy-public.apk`（本地构建产物名为 `手机代理-公版.apk`）。
 2. Android 7.0 及以上；首次安装需允许“安装未知来源应用”。iOS 与 HarmonyOS NEXT 无法安装 APK。
 3. 打开 App → 允许通知 → 点 **导入节点 / 订阅**，粘贴分享链接（每行一条）或订阅 URL。
-4. 点 **启动代理** → 允许建立 VPN 连接 → 等待自动测速。
-5. 状态变成“已连接”，用浏览器打开 `google.com` 验证。
+4. 点 **启动代理** → 允许建立 VPN 连接 → 等待自动测速。状态变成“已连接”后用浏览器打开 `google.com` 验证。
 
-> 节点池为空时 App 不会启动 VPN，会直接提示去导入——公共版不内置任何节点，避免公开别人的凭据。
+> 公版节点池为空，App 不会启动 VPN，会直接提示「还没有节点，先导入再启动」。这是设计如此：避免把第三方节点的凭据公开到仓库里。
+
+**B. 本地构建内置节点版（装完直接启动）**
+
+```bash
+cd phone
+PROXY_DIR=/path/to/代理便携版/_proxy python gen_pool.py   # 生成 24 个实测节点
+PROXY_APK_OUT=/path/to/手机代理/手机代理.apk python build_apk.py
+```
+
+构建前确认 `assets/nodes.json` **不是 `[]`**；这个文件含凭据，只留本地，不要提交、不要上传 Release。两个 APK 同签名，可直接覆盖安装，无需卸载。
 
 ### 电脑端
 
