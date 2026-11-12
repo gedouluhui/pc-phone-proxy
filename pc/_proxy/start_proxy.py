@@ -84,9 +84,26 @@ def best_hk_uri():
     return hk[0]["uri"] if hk else None
 
 
+def hk_ours():
+    """2086 is ours only when the recorded PID still owns it and its command
+    line points at our singbox_one.json (review C3)."""
+    if not up(HK):
+        return False
+    try:
+        pid = int(io.open(os.path.join(HERE, "one_%d.pid" % HK)).read().strip())
+    except Exception:
+        return False
+    if P.pid_image(pid).lower() != "sing-box.exe":
+        return False
+    return "singbox_one.json" in P.pid_cmdline(pid).lower()
+
+
 def ensure_hk():
-    if up(HK):
+    if hk_ours():
         return True
+    if up(HK):
+        log("  [警告] 2086 被其他程序占用（不是本工具启动的），Reddit 走快速出口")
+        return False
     uri = best_hk_uri()
     if not uri:
         log("  [警告] 深测结果里没有香港节点，Reddit 将走快速出口（可能 403）")
@@ -239,7 +256,7 @@ def ensure_watchdog():
         pass
     if pid and P.pid_alive(pid):
         img = P.pid_image(pid).lower()
-        if img.startswith("python"):
+        if img.startswith("python") and "watchdog.py" in P.pid_cmdline(pid).lower():
             return pid, False
     try:
         os.remove(WATCH_STOP)
@@ -329,7 +346,9 @@ def main():
         try:
             sysstate.backup_once()
         except Exception as e:
-            log("  [警告] 备份系统代理状态失败: %r" % (e,))
+            # Without a backup, 关闭代理 cannot restore the user's own proxy.
+            log("  [错误] 备份系统代理状态失败: %r（中止启动，避免关闭时无法还原）" % (e,))
+            return 3
 
         ensure_hk()
         ensure_steam()

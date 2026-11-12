@@ -78,18 +78,9 @@ def lok(port):
 
 
 def stop_pinned():
-    try:
-        pids = json.load(open(PIN_PIDS))
-    except Exception:
-        pids = []
-    for pid in pids:
-        if P.pid_alive(int(pid)):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=0x08000000)
-    try:
-        os.remove(PIN_PIDS)
-    except OSError:
-        pass
+    # Ownership-checked (image + command line points at singbox_pinned.json)
+    # in proxyctl; a same-named sing-box started by the user is left alone.
+    P.stop_pinned()
 
 
 def score(r):
@@ -140,6 +131,7 @@ def pick(rows, need_cg, min_dl, min_ul, k, max_per_prefix=2):
 
 def build_config(gen, fast):
     outbounds, used = [], {}
+    parse_fail = []
 
     def node_tag(r, prefix):
         uri = r["uri"]
@@ -147,6 +139,8 @@ def build_config(gen, fast):
             return used[uri]
         ob, meta = N.parse_uri(uri)
         if not ob:
+            # A truncated/unknown URI used to disappear silently (review C7).
+            parse_fail.append((prefix, uri[:100]))
             return None
         tag = f"{prefix}{len([t for t in used.values() if t.startswith(prefix)])}"
         ob["tag"] = tag
@@ -214,6 +208,11 @@ def build_config(gen, fast):
             {"inbound": ["in-cli"], "outbound": "grp-any"},
         ]},
     }
+    if parse_fail:
+        print("[bestroute] WARNING: %d node URI(s) could not be parsed and were dropped:"
+              % len(parse_fail))
+        for pfx, u in parse_fail[:10]:
+            print("  %s %s" % (pfx, u))
     return cfg, gtags, ftags, used
 
 
@@ -231,6 +230,19 @@ def start(cfg):
                              stderr=subprocess.STDOUT, creationflags=0x08000000)
     for _ in range(40):
         if lok(GENERAL_HTTP) and lok(FAST_HTTP) and lok(CLI_MIXED):
+            owners = set()
+            for port in (GENERAL_HTTP, FAST_HTTP, CLI_MIXED):
+                owners.update(P.port_pids(port))
+            if owners and p.pid not in owners:
+                # A foreign listener already owns the ports: do not pretend our
+                # new process is serving them (review C9).
+                log("ports are held by pid(s) %s, not the process we just started (%d)"
+                    % (sorted(owners), p.pid))
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+                return None
             return p
         if p.poll() is not None:
             log(f"sing-box exited rc={p.returncode}; see logs/singbox_pinned.log")
@@ -277,7 +289,7 @@ def main():
     # by PID (image-checked) before binding, otherwise the new process dies and
     # the gates silently test the old one.
     P.wait_port_free([GENERAL_HTTP, GENERAL_SOCKS, FAST_HTTP, FAST_SOCKS, CLI_MIXED],
-                     timeout=6.0, log=log)
+                     timeout=6.0, expect_cmd="singbox_pinned.json", log=log)
     proc = start(cfg)
     if not proc:
         return 1
@@ -317,7 +329,9 @@ def main():
         fast_degraded = True
 
     with open(PIN_PIDS, "w", encoding="utf-8", newline="\n") as fp:
-        json.dump([proc.pid], fp)
+        # Record what the PID must look like; a recycled PID must not be killed.
+        json.dump([{"pid": proc.pid, "exe": "sing-box.exe",
+                    "cmd": "singbox_pinned.json"}], fp)
     general_ep = f"127.0.0.1:{GENERAL_HTTP}"
     fast_ep = f"127.0.0.1:{GENERAL_HTTP}" if fast_degraded else f"127.0.0.1:{FAST_HTTP}"
     pac_info = pacroute.apply_pac(general_ep, fast_ep)

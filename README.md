@@ -16,13 +16,14 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-**当前版本**：手机端 **v2.2**（2026-11-12，修复公版被当私用版发布的问题）· 电脑端脚本随仓库 `main` 更新
+**当前版本**：手机端 **v2.3**（2026-11-12，审查修复：https 节点拒绝降级、allowBackup、
+订阅 10 MB 上限、明文订阅权限）· 电脑端脚本随仓库 `main` 更新
 
 ---
 
 ## 特性
 
-### 手机端（Android 7.0+，v2.2）
+### 手机端（Android 7.0+，v2.3）
 
 - **一键启动**：对节点池全部节点并发测速自动选最快；运行中由 Xray observatory 每 30 秒巡检，掉线自动切换
 - **自动分流**：`geosite:cn` / `geoip:cn` / 私有地址直连，其余走代理
@@ -88,7 +89,7 @@ pc/
 
 准备：
 
-1. 安装 Python 3.10+，`pip install requests websocket-client`。
+1. 安装 Python 3.10+，`pip install -r pc/_proxy/requirements.txt`（`requests` / `websocket-client` / `aiohttp`）。
 2. 从 [SagerNet/sing-box releases](https://github.com/SagerNet/sing-box/releases) 下载 Windows amd64 的 `sing-box.exe`，放到 `pc/_proxy/bin/`。
 3. 如果所在网络访问 GitHub raw 需要前置代理，设置 `BOOT_PROXY=http://127.0.0.1:端口`；能直连就不用设。
 

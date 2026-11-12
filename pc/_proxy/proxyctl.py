@@ -101,6 +101,20 @@ def pid_alive(pid):
     return bool(pid_image(pid))
 
 
+def pid_cmdline(pid):
+    """Command line for a PID ('' when unavailable).  Used to prove that a
+    process is the instance this folder started, not just any same-named exe."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine" % int(pid)],
+            capture_output=True, text=True, errors="replace", timeout=15,
+            creationflags=NOWIN).stdout
+        return (out or "").strip()
+    except Exception:
+        return ""
+
+
 def port_pids(port):
     """PIDs listening on <port> (netstat; no psutil in the portable runtime)."""
     try:
@@ -121,31 +135,44 @@ def port_pids(port):
     return pids
 
 
-def kill_port(port, expect=("sing-box.exe",), log=print):
-    """Free a port we own: enumerate its listener, verify the image, kill by PID."""
+def kill_port(port, expect=("sing-box.exe",), expect_cmd=None, log=print):
+    """Free a port we own: enumerate its listener, verify the image (and, when
+    given, that its command line matches ours), then kill by PID.
+
+    A same-named sing-box started by the user is left alone (review C3).
+    """
     expect = tuple(e.lower() for e in expect)
     killed = []
     for pid in port_pids(port):
         img = pid_image(pid).lower()
-        if img in expect:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=NOWIN)
-            killed.append(pid)
-            try:
-                log("  killed %s pid=%d (port %d)" % (img, pid, port))
-            except Exception:
-                pass
+        if img not in expect:
+            continue
+        if expect_cmd:
+            cmd = pid_cmdline(pid).lower()
+            if expect_cmd.lower() not in cmd:
+                try:
+                    log("  skip pid=%d %s on %d (command line is not ours)" % (pid, img, port))
+                except Exception:
+                    pass
+                continue
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True, creationflags=NOWIN)
+        killed.append(pid)
+        try:
+            log("  killed %s pid=%d (port %d)" % (img, pid, port))
+        except Exception:
+            pass
     return killed
 
 
-def wait_port_free(ports, timeout=5.0, expect=("sing-box.exe",), log=print):
+def wait_port_free(ports, timeout=5.0, expect=("sing-box.exe",), expect_cmd=None, log=print):
     t0 = time.time()
     while time.time() - t0 < timeout:
         busy = [p for p in ports if listen_ok(p)]
         if not busy:
             return True
         for p in busy:
-            kill_port(p, expect=expect, log=log)
+            kill_port(p, expect=expect, expect_cmd=expect_cmd, log=log)
         time.sleep(0.3)
     return not any(listen_ok(p) for p in ports)
 
@@ -173,12 +200,37 @@ def pinned_eps():
     return [p[k] for k in ("general", "fast") if k in p]
 
 
-def stop_pinned():
+def _pin_records():
+    """pinned_pids.json is [pid, ...] in old builds and [{"pid": ..}, ..] now."""
     try:
-        pids = json.load(open(PIN_PIDS))
+        raw = json.load(open(PIN_PIDS, encoding="utf-8"))
     except Exception:
-        return
-    for pid in pids:
+        return []
+    if isinstance(raw, (int, str)):
+        raw = [raw]
+    out = []
+    for x in raw:
+        try:
+            pid = int(x.get("pid")) if isinstance(x, dict) else int(x)
+        except Exception:
+            continue
+        if pid > 0:
+            out.append(pid)
+    return out
+
+
+def stop_pinned():
+    """Kill only the sing-box instances recorded by bestroute.py.
+
+    Image name alone is not proof: require the command line to point at our
+    singbox_pinned.json before killing (review C3/C9).
+    """
+    for pid in _pin_records():
+        img = pid_image(pid).lower()
+        if img != "sing-box.exe":
+            continue
+        if "singbox_pinned.json" not in pid_cmdline(pid).lower():
+            continue
         subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                        capture_output=True, creationflags=NOWIN)
     try:
@@ -256,10 +308,15 @@ GATEWAY_PORT = 2087
 
 
 def stop_gateway():
-    """Kill the previous gateway by its recorded PID (never by image name)."""
+    """Kill the previous gateway by its recorded PID, after proving ownership."""
     try:
         pid = int(open(GATEWAY_PID).read().strip())
     except Exception:
+        return
+    img = pid_image(pid).lower()
+    if img not in ("sing-box.exe", "python.exe", "pythonw.exe"):
+        return
+    if "gateway" not in pid_cmdline(pid).lower():
         return
     subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                    capture_output=True, creationflags=NOWIN)

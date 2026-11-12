@@ -127,10 +127,12 @@ def _other_ports():
 def free_ports():
     killed = []
     for port in PORTS_SING:
-        killed += P.kill_port(port, expect=("sing-box.exe",), log=log)
+        # Only processes whose command line points into this folder are ours
+        # (review C3): a user-owned sing-box on the same port is left alone.
+        killed += P.kill_port(port, expect=("sing-box.exe",), expect_cmd=HERE, log=log)
     others = _other_ports()
     for port, imgs in others:
-        killed += P.kill_port(port, expect=imgs, log=log)
+        killed += P.kill_port(port, expect=imgs, expect_cmd=HERE, log=log)
     # re-check: a rebuild tree killed a moment ago may still be releasing
     for _ in range(6):
         busy = [p for p in PORTS_SING + tuple(p for p, _ in others)
@@ -139,7 +141,7 @@ def free_ports():
             break
         for port in busy:
             expect = ("sing-box.exe",) if port in PORTS_SING else ("python.exe", "pythonw.exe")
-            killed += P.kill_port(port, expect=expect, log=log)
+            killed += P.kill_port(port, expect=expect, expect_cmd=HERE, log=log)
         time.sleep(0.5)
     return killed
 

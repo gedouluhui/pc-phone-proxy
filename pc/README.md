@@ -31,8 +31,11 @@ pc/
 Python 3.10+，依赖：
 
 ```bat
-pip install requests websocket-client
+pip install -r _proxy\requirements.txt
 ```
+
+（`requests`、`websocket-client`、`aiohttp`；`deep_test.py` 在函数内 import aiohttp，
+旧文档漏写会导致 `ModuleNotFoundError`。）
 
 `sing-box.exe`：<https://github.com/SagerNet/sing-box/releases> 下载 `sing-box-*-windows-amd64.zip`，把 `sing-box.exe` 放到 `pc/_proxy/bin/`。
 

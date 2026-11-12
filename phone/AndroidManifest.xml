@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.luhui.phoneproxy"
-    android:versionCode="4"
-    android:versionName="2.2">
+    android:versionCode="5"
+    android:versionName="2.3">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
 
@@ -11,10 +11,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- allowBackup=false: node credentials must not leave the phone through
+         adb backup or cloud backup (review C11).
+         usesCleartextTraffic=true: users may paste http:// subscriptions; the
+         UI and README still tell them to prefer https (review C5). -->
     <application
         android:label="手机代理"
         android:icon="@mipmap/ic_launcher"
         android:extractNativeLibs="true"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity

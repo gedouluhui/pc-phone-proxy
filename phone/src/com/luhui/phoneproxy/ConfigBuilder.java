@@ -190,7 +190,17 @@ public final class ConfigBuilder {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[16384];
         int n;
-        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        int total = 0;
+        while ((n = in.read(buf)) > 0) {
+            total += n;
+            // A hostile or broken subscription must not exhaust the phone's RAM
+            // (review C11). 10 MB is far beyond any real share-link list.
+            if (total > 10 * 1024 * 1024) {
+                in.close();
+                throw new IllegalStateException("subscription larger than 10 MB");
+            }
+            bos.write(buf, 0, n);
+        }
         in.close();
         String body = bos.toString("UTF-8").trim();
         if (!body.contains("://")) {
@@ -364,7 +374,11 @@ public final class ConfigBuilder {
             if (lower.startsWith("socks://")) return parseSocksHttp(uri.substring(8), "socks");
             if (lower.startsWith("socks5://")) return parseSocksHttp(uri.substring(9), "socks");
             if (lower.startsWith("http://")) return parseSocksHttp(uri.substring(7), "http");
-            if (lower.startsWith("https://")) return parseSocksHttp(uri.substring(8), "http");
+            // https:// share links mean "TLS to the proxy itself". Xray's HTTP
+            // outbound has no client-side TLS, so treating it as plain http
+            // would put the proxy credentials on the wire in clear (review C4).
+            // Reject it and let the import log say "unsupported".
+            if (lower.startsWith("https://")) return null;
         } catch (Throwable ignored) {}
         return null;
     }

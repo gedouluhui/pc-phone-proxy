@@ -61,6 +61,15 @@ python build_apk.py
 打包后用 `unzip -p <apk> assets/nodes.json` 或 Python `zipfile` 读一次确认节点数，
 再往外发。**不要把空节点的 APK 放进"给家里人直接用"的文件夹**，也不要把含节点的 APK 传上 Release。
 
+自动化检查（审查 C10）：
+
+```bash
+python check_release.py                        # git 里有没有凭据/keystore/APK
+python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个节点
+```
+
+`git ls-files` 里有 `nodes.json` / `*.keystore` / `*.apk` 时脚本返回非零，先 `git rm --cached` 再发布。
+
 节点列表格式（App 也接受 `uri` 字段，直接用原始分享链接）：
 
 ```json

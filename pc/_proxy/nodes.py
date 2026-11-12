@@ -166,7 +166,10 @@ def load_nodes():
             seen.add(k)
             tag = "n%05d" % len(out)
             ob["tag"] = tag
-            out.append({"outbound": ob, "meta": meta, "uri": x["uri"][:300]})
+            # Keep the full URI: truncating at 300 chars silently broke long
+            # vless/trojan ws paths and dropped long vmess links (review C7).
+            out.append({"outbound": ob, "meta": meta, "uri": x["uri"],
+                        "uri_short": x["uri"][:300]})
     return out
 
 

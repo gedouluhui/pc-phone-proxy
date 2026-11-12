@@ -307,7 +307,8 @@ async def worker(idx, subset, results, timeout):
                      "chatgpt_ok": False, "chatgpt_verdict": "timeout"}
             r.update({"tag": tag, "proto": n["meta"]["proto"],
                       "server": n["outbound"]["server"], "port": n["outbound"]["server_port"],
-                      "delay_ms": n.get("delay_ms"), "uri": n["uri"][:300]})
+                      "delay_ms": n.get("delay_ms"), "uri": n["uri"],
+                      "uri_short": n["uri"][:300]})
             results.append(r)
             log(f"  [w{idx} {i}/{len(subset)}] {r['proto']:6s} {r['server']}:{r['port']:<6d} "
                 f"loc={r.get('loc','??'):2s} cg={r.get('chatgpt_verdict','-'):7s} "
@@ -387,7 +388,7 @@ def main():
                                   "port": n["outbound"]["server_port"],
                                   "net": n["meta"]["net"], "tls": n["meta"]["tls"],
                                   "tcp_ms": n.get("tcp_ms"),
-                                  "uri": n["uri"][:300]})
+                                  "uri": n["uri"], "uri_short": n["uri"][:300]})
             alive.sort(key=lambda r: r["delay_ms"])
             with open(ALIVE, "w", encoding="utf-8", newline="\n") as f:
                 json.dump({"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

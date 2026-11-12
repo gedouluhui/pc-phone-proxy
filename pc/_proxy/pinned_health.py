@@ -78,7 +78,8 @@ async def run(nodes, timeout):
                      "chatgpt_ok": False, "chatgpt_verdict": "timeout"}
             r.update({"tag": n["outbound"]["tag"], "proto": n["meta"]["proto"],
                       "server": n["outbound"]["server"],
-                      "port": n["outbound"]["server_port"], "uri": n["uri"][:300]})
+                      "port": n["outbound"]["server_port"], "uri": n["uri"],
+                      "uri_short": n["uri"][:300]})
             rows.append(r)
             print("  [%d/%d] %-6s %-22s loc=%-2s cg=%-7s dl=%7.1f ul=%7.1f kB/s ttfb=%sms"
                   % (i, len(subset), r["proto"], f"{r['server']}:{r['port']}",

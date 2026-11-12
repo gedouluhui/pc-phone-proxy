@@ -143,6 +143,22 @@ def clear_env():
         broadcast_env()
 
 
+def clear_env_ours(cli_port=2090):
+    """Delete only the variables whose current value is exactly what we write.
+
+    The no-backup restore path must not wipe a proxy the user configured
+    elsewhere (review C8).
+    """
+    changed = False
+    for name, value in desired_env(cli_port).items():
+        if env_get(name) == value:
+            env_set(name, None)
+            changed = True
+    if changed:
+        broadcast_env()
+    return changed
+
+
 # ------------------------------------------------------------------ backup / restore
 def backup_once():
     """Capture the pre-existing state; never overwrite an existing backup."""
@@ -209,20 +225,20 @@ def restore_all():
         except OSError:
             pass
         return {"backup": True, "restored": snap}
-    # no backup: at least remove our own footprints
+    # No backup: only undo what can be proven to be ours (review C8).
+    # ProxyEnable is deliberately left alone: without a backup we cannot know
+    # whether the user turned it on for some other proxy.
+    touched = []
     try:
         if (inet_get("AutoConfigURL") or "") == pac_url():
             inet_set("AutoConfigURL", None)
+            touched.append("AutoConfigURL")
             notify_wininet()
     except Exception:
         pass
-    try:
-        inet_set("ProxyEnable", 0, winreg.REG_DWORD)
-        notify_wininet()
-    except Exception:
-        pass
-    clear_env()
-    return {"backup": False, "restored": None}
+    if clear_env_ours():
+        touched.append("env")
+    return {"backup": False, "restored": None, "touched": touched}
 
 
 def current():
