@@ -208,3 +208,11 @@ python start_proxy.py
 
 提 [Issue](../../issues) 时请附：系统与版本（Windows 版本 / Android 版本 / APK 或脚本版本）、
 哪一步出的问题、`proxy_diag.py` 或 `privacy_check.py` 的输出。**不要贴节点分享链接、订阅地址或截图里的凭据**。
+
+---
+
+## 同作者的其他项目
+
+- [LuHui播放器](https://github.com/gedouluhui/luhui-player) —— mpv 内核 + 手绘 Fluent 外壳的 Windows 本地视频播放器
+- [LuHui音乐播放器](https://github.com/gedouluhui/luhui-music-player) —— WinUI 3 + WASAPI 独占的本地音乐播放器
+- [番茄闹钟](https://github.com/gedouluhui/fanqie-alarm) —— 整个应用就是一个 HTML 的番茄钟

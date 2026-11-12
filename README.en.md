@@ -138,3 +138,11 @@ For personal study and accessing publicly available resources; follow the laws o
 Open an [issue](../../issues) with your OS and version, the step that failed, and the output of
 `proxy_diag.py` or `privacy_check.py`. **Never paste node links, subscription URLs or screenshots
 containing credentials.**
+
+---
+
+## More from the same author
+
+- [LuHui Player](https://github.com/gedouluhui/luhui-player) — a Windows video player built on mpv with a hand-drawn Fluent UI
+- [LuHui Music Player](https://github.com/gedouluhui/luhui-music-player) — WinUI 3 shell + WASAPI exclusive-mode music player
+- [Fanqie Alarm](https://github.com/gedouluhui/fanqie-alarm) — a Pomodoro timer that is one HTML file
