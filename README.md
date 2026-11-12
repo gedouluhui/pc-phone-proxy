@@ -1,5 +1,7 @@
 # 手机 + 电脑 双端自动选线代理
 
+**中文** · [English](README.en.md)
+
 **Windows 便携版 + Android APP**：自动抓取并实测公开免费节点，挑出当前最快、能过地区封锁的出口；节点掉线自动切换，国内外流量自动分流（国内直连）。两端共用一套节点池，**免费、开源、无账号、无遥测**。
 
 *An auto-selecting proxy for Windows and Android: it harvests public nodes, benchmarks them itself, and keeps domestic traffic direct — no account, no telemetry.*
