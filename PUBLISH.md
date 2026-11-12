@@ -12,7 +12,7 @@ git log --oneline -1
 git ls-files | grep -E "pinned\.json|nodes\.json|node_deep|\.keystore|dist/.*\.apk"
 ```
 
-第二条**应该没有任何输出**。若列出了文件，先不要 push，告诉我文件清单。
+第二条**应该没有任何输出**。若列出了文件，先不要 push：先把清单里的凭据移出仓库或加进 `.gitignore`。
 
 ## 1. 建一个空仓库
 
