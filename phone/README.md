@@ -32,8 +32,13 @@ python build_apk.py
 
 ### 内置自己的节点
 
-App 支持两种节点来源：安装包内置（`assets/nodes.json`）和用户导入。
-公共版不内置任何节点；要做一个只给自己用的版本：
+App 支持三种节点来源：
+
+1. **公开源一键导入**（v2.4 起，公版也能用）：APK 里只存 7 个公开聚合列表的 URL
+   （`ConfigBuilder.PUBLIC_SOURCES`，每个都有 GitHub raw + jsDelivr 镜像），运行时抓取、去重、限 120 条，再自动测速。
+   **不含任何节点凭据**，所以公开版装完点一下就能用。
+2. **用户导入**：粘贴分享链接或订阅地址。
+3. **安装包内置**（`assets/nodes.json`）：只用于自用版。公共版不内置任何节点；要做一个只给自己用的版本：
 
 ```bash
 # 方式 A：从电脑端 pinned.json（分享链接 -> outbound）
@@ -57,6 +62,8 @@ python build_apk.py
 |---|---|---|
 | 公版（上传 Release） | `PROXY_NODES_JSON=assets/nodes.sample.json python build_apk.py` | APK 内 `assets/nodes.json` = `[]` |
 | 私用版（自己装） | `python gen_pool.py` 后再 `python build_apk.py` | APK 内 `assets/nodes.json` 有 24 条 |
+
+> v2.4 的公版即使节点池为空也能用：用户在 App 里点「从公开源导入」即可，不必再自建私用版。
 
 打包后用 `unzip -p <apk> assets/nodes.json` 或 Python `zipfile` 读一次确认节点数，
 再往外发。**不要把空节点的 APK 放进"给家里人直接用"的文件夹**，也不要把含节点的 APK 传上 Release。
@@ -104,7 +111,9 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 - **ChatGPT**：通过 `cg=true` 的节点组成 `cg-balancer`，只给 OpenAI/Anthropic 域名使用。
 - **防回环**：VPN 建立时 `addDisallowedApplication(自身包名)`，App 自己的流量不走 TUN。
 - **DNS**：国内 `223.5.5.5` 直连解析；国外域名走 Cloudflare DoH（经代理）。
-- **导入**：分享链接逐条解析，失败的单条跳过并写日志；订阅地址下载后按行解析。
+- **导入**：分享链接逐条解析，失败的单条跳过并写日志；订阅地址下载后按行解析（body 无 `://` 时按 base64 解）。
+- **公开源**：7 个聚合列表依次尝试，单源上限 40 条、总数上限 120 条；主地址失败自动换 jsDelivr 镜像；
+  只保留 `parseUri` 能解析的链接，抓完自动触发测速。
 - **空池保护**：节点池为空时不启动 VPN，弹窗引导导入。
 
 ## 许可

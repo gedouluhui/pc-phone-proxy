@@ -233,6 +233,59 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     // ------------------------------------------------------------- 导入
 
     private void showImportDialog() {
+        final String[] items = {
+                "从公开源导入（自动抓取并测速）",
+                "粘贴分享链接 / 订阅地址",
+                "清空已导入的节点"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("导入节点")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) importFromPublicSources();
+                    else if (which == 1) showPasteDialog();
+                    else clearImported();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * 从内置的公开源列表抓节点。APK 里只有 URL、没有任何凭据：每次都是运行时现抓，
+     * 所以公开版装完点这一下就能用，而仓库与安装包都不会泄露别人的节点。
+     */
+    private void importFromPublicSources() {
+        appendLog("从公开源抓取节点（只抓公开列表，不内置任何凭据）…");
+        new Thread(() -> {
+            List<String> logs = new ArrayList<>();
+            try {
+                List<String> uris = ConfigBuilder.fetchPublicSources(logs);
+                int added = ConfigBuilder.addImportedUris(this, uris);
+                int total = ConfigBuilder.loadImportedUris(this).size();
+                runOnUiThread(() -> {
+                    for (String l : logs) appendLog("  · " + l);
+                    appendLog("公开源结果：新增 " + added + " 个，池内共 " + total + " 个");
+                    if (added > 0) {
+                        toast("抓到 " + added + " 个新节点，开始测速…");
+                        rebuildSpinner();
+                        startService(new Intent(this, ProxyVpnService.class)
+                                .setAction(ProxyVpnService.ACTION_MEASURE));
+                        if (ProxyVpnService.state == ProxyVpnService.STATE_RUNNING) {
+                            applyStart(pendingNode, true);
+                        }
+                    } else {
+                        toast("这次没抓到可用节点，稍后再试（公开源会抽风）");
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    toast("抓取失败：" + e.getMessage());
+                    appendLog("抓取失败：" + e.getMessage());
+                });
+            }
+        }, "public-sources").start();
+    }
+
+    private void showPasteDialog() {
         EditText et = new EditText(this);
         et.setHint("粘贴 vless:// vmess:// ss:// trojan:// 链接\n或 http(s) 订阅链接；支持多行");
         et.setMinLines(3);
@@ -241,10 +294,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         if (clip != null && (clip.contains("://"))) et.setText(clip);
 
         new AlertDialog.Builder(this)
-                .setTitle("导入节点")
+                .setTitle("粘贴导入")
                 .setView(et)
                 .setPositiveButton("导入", (d, w) -> doImport(et.getText().toString()))
-                .setNeutralButton("清空已导入", (d, w) -> clearImported())
                 .setNegativeButton("取消", null)
                 .show();
     }

@@ -30,7 +30,41 @@ public final class ConfigBuilder {
 
     public static final String PREFS = "imported";
     public static final String KEY_URIS = "uris";
-    public static final int MAX_IMPORTED = 40;
+    /** 上限：公开源一次能收进来一百多个，40 太小；120 条出站对 Xray 仍是轻松的。 */
+    public static final int MAX_IMPORTED = 120;
+    /** 单个源最多收多少条，避免一个巨型聚合列表把池子塞满。 */
+    private static final int PER_SOURCE = 40;
+
+    /**
+     * 公开订阅源：仓库里只放 URL，**不含任何节点凭据**，运行时才去抓。
+     * 每行 = {名字, 主地址, 镜像地址}。镜像是 jsDelivr 的 GitHub 加速，国内更容易连上；
+     * 主地址与镜像都失败就跳过这一条，不影响其它源。
+     * 这些是第三方公开聚合列表，节点质量与存活率不受本项目控制。
+     */
+    public static final String[][] PUBLIC_SOURCES = {
+            {"barry-far",
+             "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt",
+             "https://cdn.jsdelivr.net/gh/barry-far/V2ray-Config@main/All_Configs_Sub.txt"},
+            {"mahdibland",
+             "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
+             "https://cdn.jsdelivr.net/gh/mahdibland/V2RayAggregator@master/sub/sub_merge.txt"},
+            {"ALIILAPRO",
+             "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt",
+             "https://cdn.jsdelivr.net/gh/ALIILAPRO/v2rayNG-Config@main/sub.txt"},
+            {"peasoft",
+             "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
+             "https://cdn.jsdelivr.net/gh/peasoft/NoMoreWalls@master/list.txt"},
+            {"ermaozi",
+             "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
+             "https://cdn.jsdelivr.net/gh/ermaozi/get_subscribe@main/subscribe/v2ray.txt"},
+            {"aiboboxx",
+             "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub",
+             "https://cdn.jsdelivr.net/gh/aiboboxx/v2rayfree@main/sub"},
+            {"ripaojiedian",
+             "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub",
+             "https://cdn.jsdelivr.net/gh/ripaojiedian/freenode@main/sub"},
+    };
+
 
     /** loadNodes 跳过的条目（tag + 原因），供界面日志诊断用。 */
     public static final List<String> lastSkips = new ArrayList<>();
@@ -208,6 +242,42 @@ public final class ConfigBuilder {
             if (dec != null) body = dec;
         }
         return splitUris(body);
+    }
+
+    /**
+     * 抓取全部公开源（必须在后台线程调用）。每个源先走 GitHub raw，失败再走 jsDelivr 镜像。
+     * log 收每个源的结果，供界面逐行显示；总数封顶 MAX_IMPORTED，单源封顶 PER_SOURCE。
+     * 只收 parseUri 能解析的链接，避免把注释/广告行灌进节点池。
+     */
+    public static List<String> fetchPublicSources(List<String> log) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String[] s : PUBLIC_SOURCES) {
+            if (out.size() >= MAX_IMPORTED) {
+                log.add("已够 " + MAX_IMPORTED + " 条，后面的源不再抓");
+                break;
+            }
+            String name = s[0];
+            String[] urls = (s.length > 2 && s[2] != null && !s[2].isEmpty())
+                    ? new String[]{s[1], s[2]} : new String[]{s[1]};
+            boolean done = false;
+            for (int i = 0; i < urls.length && !done; i++) {
+                String tag = name + (urls.length > 1 && i == 1 ? "（镜像）" : "");
+                try {
+                    List<String> got = fetchSubscription(urls[i]);
+                    int added = 0;
+                    for (String u : got) {
+                        if (added >= PER_SOURCE || out.size() >= MAX_IMPORTED) break;
+                        if (parseUri(u) == null) continue;
+                        if (out.add(u)) added++;
+                    }
+                    log.add(tag + "：" + got.size() + " 条，收下 " + added);
+                    done = true;
+                } catch (Exception e) {
+                    log.add(tag + " 失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                }
+            }
+        }
+        return new ArrayList<>(out);
     }
 
     // --------------------------------------------------------------- 配置
