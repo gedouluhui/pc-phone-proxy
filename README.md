@@ -2,6 +2,8 @@
 
 **Windows 便携版 + Android APP**：自动抓取并实测公开免费节点，挑出当前最快、能过地区封锁的出口；节点掉线自动切换，国内外流量自动分流（国内直连）。两端共用一套节点池，**免费、开源、无账号、无遥测**。
 
+*An auto-selecting proxy for Windows and Android: it harvests public nodes, benchmarks them itself, and keeps domestic traffic direct — no account, no telemetry.*
+
 所有功能全部免费开放：没有付费墙、没有订阅、不卖节点、不接广告；代码你可以自己审、自己改、自己编译。
 
 > **本仓库不附带任何可用节点。** 节点是第三方免费资源，分享凭据等于分享密码。公共版 APK 不内置节点，安装后导入你自己的分享链接或订阅；电脑端脚本用于从公开源抓取、实测并建立你自己的节点池。
@@ -16,10 +18,21 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-**当前版本**：手机端 **v2.3**（2026-11-12，审查修复：https 节点拒绝降级、allowBackup、
-订阅 10 MB 上限、明文订阅权限）· 电脑端脚本随仓库 `main` 更新
+**当前版本**：手机端 **v2.3**（2026-11-12）：`https://` 节点不再被降级成明文、关闭应用备份、
+订阅响应限 10 MB、显式放行 `http://` 订阅（Android 9+ 默认禁止明文）。电脑端脚本随仓库 `main` 更新。
 
 ---
+
+## 目录
+
+- [特性](#特性) · [快速开始](#快速开始) · [隐私设计](#隐私设计)
+- [工作原理](#工作原理) · [构建](#构建) · [已知限制](#已知限制) · [许可与免责](#许可与免责)
+
+## 适合谁
+
+- 愿意自己准备节点分享链接或订阅、能接受免费节点质量波动的人；
+- 想用**同一套分流规则**同时管电脑和手机的人（敏感域直连、国内直连）。
+- 不适合：要开箱即用、要稳定高速、要商业客服的场景——本项目不卖节点、不提供任何节点。
 
 ## 特性
 
@@ -177,3 +190,10 @@ python start_proxy.py
 本项目代码使用 MIT 许可证，见 [`LICENSE`](LICENSE)。第三方组件（Xray-core、AndroidLibXrayLite、sing-box、geoip/geosite 数据）遵循各自许可证，见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 本工具用于个人学习与访问公开的互联网资源；请遵守你所在地区的法律法规，不要用于任何违法用途。
+
+---
+
+## 反馈
+
+提 [Issue](../../issues) 时请附：系统与版本（Windows 版本 / Android 版本 / APK 或脚本版本）、
+哪一步出的问题、`proxy_diag.py` 或 `privacy_check.py` 的输出。**不要贴节点分享链接、订阅地址或截图里的凭据**。
