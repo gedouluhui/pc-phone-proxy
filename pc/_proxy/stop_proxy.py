@@ -87,7 +87,12 @@ def stop_pinned():
             pid = int(pid)
         except Exception:
             continue
+        # 三元组核验：镜像名 + 命令行含本目录。PID 会被内核复用，只比镜像名
+        # 可能把用户自己的 sing-box 或别的进程误杀。
         if P.pid_image(pid).lower() == "sing-box.exe":
+            cmd = P.pid_cmdline(pid)
+            if cmd and HERE.lower() not in cmd.lower():
+                continue
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                            capture_output=True, creationflags=0x08000000)
             killed.append(pid)
@@ -97,6 +102,9 @@ def stop_pinned():
         except Exception:
             continue
         if P.pid_image(pid).lower() == "sing-box.exe":
+            cmd = P.pid_cmdline(pid)
+            if cmd and HERE.lower() not in cmd.lower():
+                continue
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                            capture_output=True, creationflags=0x08000000)
             killed.append(pid)

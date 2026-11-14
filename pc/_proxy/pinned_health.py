@@ -10,6 +10,8 @@ Usage:  python pinned_health.py [--uris file.txt]   # optional external URI list
 """
 import argparse
 import asyncio
+
+import nodes as N
 import io
 import json
 import os
@@ -44,7 +46,8 @@ def to_nodes(uris):
     for i, uri in enumerate(uris):
         ob, meta = N.parse_uri(uri)
         if not ob:
-            print(f"  [skip] cannot parse: {uri[:60]}")
+            # 打码：vless://uuid@ / trojan://pwd@ 的凭据全在前 60 字符里
+            print(f"  [skip] cannot parse: {N.redact_uri(uri)}")
             continue
         k = (ob["type"], ob["server"], ob["server_port"])
         if k in seen:

@@ -140,7 +140,7 @@ async def open_tunnel(rec, host, timeout):
     return await bench.tunnel(rec, host, 443, timeout)
 
 
-async def get_probe(rec, host, path, max_bytes, timeout, keep=65536):
+async def get_probe(rec, host, path, max_bytes, timeout, keep=262144):
     reader = writer = None
     t0 = time.perf_counter()
     try:
@@ -196,9 +196,11 @@ async def post_upload(rec, host, path, nbytes, timeout):
             piece = chunk if left >= len(chunk) else chunk[:left]
             writer.write(piece)
             left -= len(piece)
-        t1 = time.perf_counter()
+        # 计时必须覆盖"真正写出 + 等到响应头"，否则只量到写内存缓冲的几微秒，
+        # 上传带宽会虚高几十倍，进而污染 bestroute.score() 的排序。
         await writer.drain()
         resp = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)
+        t1 = time.perf_counter()
         status = int(resp.split(b" ", 2)[1])
         dur = max(0.001, t1 - t0)
         return {"status": status, "bytes": nbytes, "s": round(dur, 2),

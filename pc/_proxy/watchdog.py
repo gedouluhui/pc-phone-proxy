@@ -18,6 +18,7 @@ What it does (all state goes to watchdog_status.json + logs/watchdog.log):
 Everything is PID-targeted and image-checked; this never kills by name.
 """
 import io
+import tempfile
 import json
 import os
 import subprocess
@@ -98,8 +99,10 @@ def nudge(group):
     which means the failure is the whole process, not one node).
     """
     try:
+        # 必须 HTTPS：bestroute.py 的路由表把 80 端口强制 direct，用 http:// 探测
+        # 会绕过代理，节点全死也报绿灯。
         q = urllib.parse.urlencode(
-            {"url": "http://www.gstatic.com/generate_204", "timeout": "5000"})
+            {"url": "https://www.gstatic.com/generate_204", "timeout": "5000"})
         j = http_json("http://127.0.0.1:9090/group/%s/delay?%s" % (group, q),
                       timeout=40)
 
@@ -135,6 +138,42 @@ def curl_probe(url, port, timeout=18):
         return code, size
     except Exception:
         return "000", 0
+
+
+def curl_probe_body(url, port, timeout=18, keep=262144):
+    """Like curl_probe but also returns the first `keep` bytes of the body.
+
+    Cloudflare interstitials answer 200 with a large page, so status+size alone
+    cannot tell a working gate from a "Just a moment" challenge.
+    """
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="probe_", suffix=".bin")
+        os.close(fd)
+        args = ["curl", "-sS", "--ssl-no-revoke", "--max-time", str(timeout),
+                "-o", tmp, "-w", "%{http_code} %{size_download}",
+                "-x", "http://127.0.0.1:%d" % int(port), url]
+        p = subprocess.run(args, capture_output=True, text=True,
+                           errors="replace", timeout=timeout + 8,
+                           creationflags=NOWIN)
+        parts = (p.stdout or "").split()
+        code = parts[0] if parts else "000"
+        size = int(float(parts[1])) if len(parts) > 1 else 0
+        body = b""
+        try:
+            with open(tmp, "rb") as f:
+                body = f.read(keep)
+        except OSError:
+            pass
+        return code, size, body
+    except Exception:
+        return "000", 0, b""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def run_script(script, *args, **kw):
@@ -343,14 +382,23 @@ def main():
                         st["last_error"] = "%s gate %s" % (role, reason)
                         rebuild("%s gate failed" % role, st)
 
-                code, size = curl_probe("https://chatgpt.com/", GEN)
-                gok = code == "200" and size > 50000
+                code, size, body = curl_probe_body("https://chatgpt.com/", GEN)
+                # Cloudflare 拦截页同样是 200 + 大页面，只看大小会假阳性
+                blocked = (b"challenge-platform" in body
+                           or b"Just a moment" in body
+                           or b"unsupported_country" in body
+                           or b"cf-chl-" in body)
+                gok = code == "200" and size > 50000 and not blocked
                 if not gok:
                     n = nudge("grp-general")
                     if n >= 0:
                         time.sleep(2)
-                        c2, s2 = curl_probe("https://chatgpt.com/", GEN)
-                        if c2 == "200" and s2 > 50000:
+                        c2, s2, b2 = curl_probe_body("https://chatgpt.com/", GEN)
+                        b2_blocked = (b"challenge-platform" in b2
+                                      or b"Just a moment" in b2
+                                      or b"unsupported_country" in b2
+                                      or b"cf-chl-" in b2)
+                        if c2 == "200" and s2 > 50000 and not b2_blocked:
                             gok = True
                             code, size = c2, s2
                             log("ChatGPT gate recovered right after nudge")
@@ -365,13 +413,15 @@ def main():
                     dead = ("group dead" in str(code)) or n < 0
                     gate_fail("general", "%s/%s" % (code, size), dead)
 
-                fcode, _ = curl_probe("http://www.gstatic.com/generate_204", FAST)
+                # HTTPS：80 在 bestroute 里被强制 direct，用它探测等于没走代理
+                fcode, _ = curl_probe("https://www.gstatic.com/generate_204", FAST)
                 fok = fcode in ("204", "200")
                 if not fok:
-                    n = nudge("grp-fast")
+                    # bestroute.py 把 in-h-f / in-s-f 路由到 grp-any，不是 grp-fast
+                    n = nudge("grp-any")
                     if n >= 0:
                         time.sleep(2)
-                        fcode, _ = curl_probe("http://www.gstatic.com/generate_204",
+                        fcode, _ = curl_probe("https://www.gstatic.com/generate_204",
                                               FAST)
                         fok = fcode in ("204", "200")
                         if fok:
@@ -382,7 +432,7 @@ def main():
                 else:
                     gate_fail("fast", fcode, n == 0 or n < 0)
 
-                ccode, _ = curl_probe("http://www.gstatic.com/generate_204", CLI)
+                ccode, _ = curl_probe("https://www.gstatic.com/generate_204", CLI)
                 st["gate"]["cli"] = {"code": ccode, "ok": ccode in ("204", "200")}
 
             # ---- HK node (Reddit) --------------------------------------

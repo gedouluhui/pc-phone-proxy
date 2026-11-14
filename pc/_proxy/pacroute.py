@@ -128,6 +128,10 @@ SENSITIVE = [
     "unionpay.com", "95516.com", "paypal.com", "alipay.com", "tenpay.com",
     "gov.cn", "chinatax.gov.cn", "12333.gov.cn", "12366.gov.cn", "pbc.gov.cn",
     "csrc.gov.cn", "nfra.gov.cn", "edu.cn", "si.12333.gov.cn",
+    # 2026-11 补：银行/支付/账号体系，永不经过第三方节点
+    "pingan.com", "bankcomm.com", "citicbank.com", "spdb.com", "jdpay.com",
+    "baifubao.com", "apple.com", "icloud.com", "icloud.com.cn",
+    "microsoftonline.com", "live.com",
 ]
 
 DIRECT = ["kaggle.com", "kaggleusercontent.com", "ipinfo.io"]
@@ -194,19 +198,36 @@ function inList(h, list) {
 function FindProxyForURL(url, host) {
   host = host.toLowerCase();
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" ||
-      isPlainHostName(host) || shExpMatch(host, "127.*") ||
+      host === "[::1]" || isPlainHostName(host) || shExpMatch(host, "127.*") ||
       shExpMatch(host, "192.168.*") || shExpMatch(host, "10.*") ||
       shExpMatch(host, "172.1[6-9].*") || shExpMatch(host, "172.2[0-9].*") ||
-      shExpMatch(host, "172.3[0-1].*")) {
+      shExpMatch(host, "172.3[0-1].*") || shExpMatch(host, "169.254.*") ||
+      shExpMatch(host, "100.6[4-9].*") || shExpMatch(host, "100.[7-9][0-9].*") ||
+      shExpMatch(host, "100.1[0-1][0-9].*") || shExpMatch(host, "100.12[0-7].*")) {
+    return "DIRECT";
+  }
+  // IPv6 私网/链路本地（PAC 里 host 带方括号）
+  if (host.charAt(0) === "[" &&
+      (host.indexOf("[fc") === 0 || host.indexOf("[fd") === 0 ||
+       host.indexOf("[fe80:") === 0 || host.indexOf("[fe90") === 0 ||
+       host.indexOf("[fea") === 0 || host.indexOf("[feb") === 0)) {
+    return "DIRECT";
+  }
+  // 公司/家庭内网后缀
+  if (dnsDomainIs(host, ".local") || dnsDomainIs(host, ".lan") ||
+      dnsDomainIs(host, ".internal") || dnsDomainIs(host, ".corp") ||
+      dnsDomainIs(host, ".home.arpa")) {
     return "DIRECT";
   }
   if (inList(host, DOMESTIC)) return "DIRECT";
   if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
 %(steam_rule)s%(hk_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
-  if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s; DIRECT";
-  // 默认先走快出口（Google/GitHub/HF 等已验证可过），它打不开时再退回通用出口
-  return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
+  // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
+  // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
+  if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s";
+  // 白名单代理：未收录域名默认直连，避免国内未收录站点与内网请求流入第三方公共节点
+  return "DIRECT";
 }
 """ % {
         "stamp": stamp,

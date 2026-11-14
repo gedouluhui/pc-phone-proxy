@@ -160,6 +160,18 @@ def build_config(gen, fast):
     anytags = list(dict.fromkeys(gtags + ftags))
     cfg = {
         "log": {"level": "error"},
+        # 没有 dns 段时，direct / in-cli 的域名解析完全裸走系统默认 DNS（运营商），
+        # 既可能被污染，也把访问目标暴露给本地 ISP。国内域走阿里 DNS，其余走 DoH 经代理。
+        "dns": {
+            "servers": [
+                {"address": "223.5.5.5",
+                 "domains": list(pacroute.DOMESTIC) + list(pacroute.SENSITIVE),
+                 "skipFallback": True},
+                {"address": "https://1.1.1.1/dns-query", "detour": "grp-general"},
+            ],
+            "queryStrategy": "UseIPv4",
+            "final": "https://1.1.1.1/dns-query",
+        },
         "experimental": {
             # read-only local API: lets 启动/看门狗 read which member urltest is
             # using right now, plus its live delay history.
@@ -212,7 +224,8 @@ def build_config(gen, fast):
         print("[bestroute] WARNING: %d node URI(s) could not be parsed and were dropped:"
               % len(parse_fail))
         for pfx, u in parse_fail[:10]:
-            print("  %s %s" % (pfx, u))
+            # 只打码后的 URI：原文前 60 字符就含 uuid/password，日志会被看门狗收走
+            print("  %s %s" % (pfx, N.redact_uri(u)))
     return cfg, gtags, ftags, used
 
 
@@ -347,7 +360,10 @@ def main():
                     "speed_kbps": vf.get("speed_kbps"), "ok": vf.get("ok")}}
     rows_out = []
     for r in rows:
-        rows_out.append(dict(r, id=r["tag"],
+        safe = dict(r)
+        if safe.get("uri"):
+            safe["uri"] = N.redact_uri(safe["uri"])
+        rows_out.append(dict(safe, id=r["tag"],
                              label=f"{r.get('loc','??')} {r['proto']} {r['server']}:{r['port']}",
                              kind="node", ttfb_ms=r.get("cg_ttfb_ms"),
                              speed_kbps=r.get("dl_kbps"),

@@ -130,6 +130,10 @@ public class ProxyVpnService extends VpnService {
                     .setSession("手机代理")
                     .addAddress("172.19.0.1", 30)
                     .addRoute("0.0.0.0", 0)
+                    // 双栈网络下必须同时接管 IPv6，否则所有 v6 流量与 v6 DNS
+                    // 会绕过 VPN 直接从 Wi-Fi/蜂窝出网（真实 IP 泄漏）。
+                    .addAddress("fd00::1", 126)
+                    .addRoute("::", 0)
                     .addDnsServer("8.8.8.8")
                     .addDnsServer("1.1.1.1")
                     .setMtu(1500)

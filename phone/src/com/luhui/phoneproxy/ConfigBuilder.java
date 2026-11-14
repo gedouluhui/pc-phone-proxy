@@ -304,10 +304,14 @@ public final class ConfigBuilder {
         cfg.put("log", new JSONObject().put("loglevel", "warning"));
 
         // DNS：国内域名走阿里 DNS（直连），其余走 Cloudflare DoH（经代理，防污染）
+        // 敏感域（银行/支付/政务）也必须走国内 DNS：只写 geosite:cn 会让这些
+        // 域名落到 Cloudflare DoH，等于把查询目标暴露给节点。
+        JSONArray cnDomains = new JSONArray().put("geosite:cn");
+        for (String d : SENSITIVE_DOMAINS) cnDomains.put("domain:" + d);
         JSONArray servers = new JSONArray();
         servers.put(new JSONObject()
                 .put("address", "223.5.5.5")
-                .put("domains", new JSONArray().put("geosite:cn"))
+                .put("domains", cnDomains)
                 .put("skipFallback", true));
         servers.put("https://1.1.1.1/dns-query");
         cfg.put("dns", new JSONObject()
@@ -321,7 +325,10 @@ public final class ConfigBuilder {
                 .put("settings", new JSONObject().put("name", "xray0").put("mtu", 1500))
                 .put("sniffing", new JSONObject()
                         .put("enabled", true)
-                        .put("destOverride", new JSONArray().put("http").put("tls")));
+                        // 不嗅探 quic 的话，走 UDP/443 的流量拿不到域名，
+                        // 分流规则失效并可能绕过代理。
+                        .put("destOverride", new JSONArray()
+                                .put("http").put("tls").put("quic")));
         cfg.put("inbounds", new JSONArray().put(tun));
 
         JSONArray outbounds = new JSONArray();
@@ -331,6 +338,9 @@ public final class ConfigBuilder {
                 .put("protocol", "freedom")
                 .put("settings", new JSONObject().put("domainStrategy", "UseIPv4")));
         outbounds.put(new JSONObject().put("tag", "dns-out").put("protocol", "dns"));
+        // QUIC(udp/443) 与 Private DNS(853/tcp) 一律丢弃：QUIC 会绕过基于域名的
+        // 分流，DoT 会让 DNS 查询逃出 VPN 的 dns-out 规则。
+        outbounds.put(new JSONObject().put("tag", "block").put("protocol", "blackhole"));
         cfg.put("outbounds", outbounds);
         // 出站流量统计：不加这两个块，queryAllOutboundTrafficStats 永远返回空，
         // 界面上的 ↓/↑ 就一直是 0 B/s。
@@ -344,6 +354,11 @@ public final class ConfigBuilder {
         JSONArray rules = new JSONArray();
         rules.put(rule().put("inboundTag", new JSONArray().put("tun-in"))
                 .put("port", 53).put("outboundTag", "dns-out"));
+        // 阻断 QUIC：UDP/443 没有可靠的域名嗅探，会让分流规则失效并可能直连泄漏
+        rules.put(rule().put("network", "udp").put("port", 443)
+                .put("outboundTag", "block"));
+        // 阻断 Android Private DNS（DoT/853），强制查询回到上面的 dns-out
+        rules.put(rule().put("port", 853).put("outboundTag", "block"));
         rules.put(rule().put("ip", new JSONArray().put("geoip:private"))
                 .put("outboundTag", "direct"));
         // 2026-11-11 privacy: 敏感域（银行/支付/政务/社保/税务/教育）强制直连，

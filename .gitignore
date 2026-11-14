@@ -20,6 +20,10 @@ sources.json
 raw/
 logs/
 *.pid
+state_backup.json
+pc/_proxy/state_backup.json
+deep_pids.json
+start.lock
 pac_url.txt
 proxy.pac
 report.html

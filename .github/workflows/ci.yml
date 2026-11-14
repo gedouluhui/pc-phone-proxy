@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 语法检查（pc/_proxy）
+        run: python -m compileall -q pc/_proxy
+
+      - name: PAC / SSRF / 脱敏 回归
+        run: python tests_ci/test_pacroute.py
+
+      - name: 发布前防泄漏自检
+        run: python phone/check_release.py

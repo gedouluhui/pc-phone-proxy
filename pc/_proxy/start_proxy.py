@@ -138,6 +138,21 @@ def _kill_one(port=STEAM):
         pid = int(io.open(path).read().strip())
     except Exception:
         return
+    # 不裸 taskkill：先证明这个 PID 还是本目录拉起的 sing-box。
+    # PID 复用时会打到别人的进程上。
+    if P.pid_image(pid).lower() != "sing-box.exe":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    cmd = P.pid_cmdline(pid)
+    if cmd and HERE.lower() not in cmd.lower():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
     subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                    capture_output=True, creationflags=0x08000000)
     try:

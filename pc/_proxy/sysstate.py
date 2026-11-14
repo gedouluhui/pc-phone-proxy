@@ -110,7 +110,11 @@ def desired_env(cli_port=2090):
         "ALL_PROXY": "socks5://" + ep,
         # 本机 / 局域网 / Kaggle / 国内域名不绕代理（sing-box 里也配了直连规则，
         # 这里再兜一层：万一 2090 挂了，国内站点和 Kaggle 仍然能直连）。
-        "NO_PROXY": ("localhost,127.0.0.1,::1,.local,*.cn,.cn,"
+        # 补全 RFC1918 / 链路本地 / 内网后缀：遵守 NO_PROXY 的 Go/Rust/Python CLI
+        # 在内网开发时不该绕道代理（原来只写了 localhost 和 .cn）
+        "NO_PROXY": ("localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,"
+                     "192.168.0.0/16,169.254.0.0/16,.local,.internal,.lan,"
+                     ".corp,.home.arpa,*.cn,.cn,"
                      "kaggle.com,kaggleusercontent.com"),
     }
 

@@ -136,16 +136,33 @@ if not os.path.exists(AAR_CLASSES):
                  "and put it in phone/libs/." % AAR)
     os.makedirs(AAR_DIR, exist_ok=True)
     with zipfile.ZipFile(AAR) as z:
+        # ZipSlip：条目名里的 ../ 会把文件写到 AAR_DIR 之外
+        base = os.path.realpath(AAR_DIR)
+        for name in z.namelist():
+            dest = os.path.realpath(os.path.join(AAR_DIR, name))
+            if not (dest == base or dest.startswith(base + os.sep)):
+                sys.exit("ZipSlip: %r escapes %s" % (name, AAR_DIR))
         z.extractall(AAR_DIR)
 if not os.path.exists(NODES_JSON):
     sys.exit("Node list not found: " + NODES_JSON)
 
-# 1. signing keystore (self-generated, not a user credential)
+# 1. signing keystore
+# 本地自测可以用演示口令，公开 Release 必须换成自己的库与口令，
+# 否则任何人都能用 "android" 重新签名一个同包名 APK 覆盖安装。
+KS_ALIAS = os.environ.get("PROXY_KS_ALIAS", "phoneproxy")
+KS_PASS = os.environ.get("PROXY_KS_PASS", "android")
+RELEASE = bool(os.environ.get("PROXY_RELEASE"))
+if RELEASE and KS_PASS == "android":
+    sys.exit("发布构建请设置 PROXY_KS_PASS（不能沿用演示口令 android），"
+             "并用 PROXY_KEYSTORE 指向正式密钥库")
 if not os.path.exists(KEYSTORE):
+    if RELEASE:
+        sys.exit("发布构建必须提供已存在的正式密钥库：" + KEYSTORE)
+    print("[warn] 使用演示口令生成自测 keystore；发布前请改用 PROXY_KS_PASS")
     run([os.path.join(JDK, "keytool.exe" if os.name == "nt" else "keytool"),
-         "-genkeypair", "-keystore", KEYSTORE, "-alias", "phoneproxy",
+         "-genkeypair", "-keystore", KEYSTORE, "-alias", KS_ALIAS,
          "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
-         "-storepass", "android", "-keypass", "android",
+         "-storepass", KS_PASS, "-keypass", KS_PASS,
          "-dname", "CN=PhoneProxy, OU=Dev, O=OpenSource, C=CN"])
 
 # 2. javac

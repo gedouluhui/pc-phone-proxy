@@ -7,6 +7,7 @@ node_speed.json (top-N with measured kB/s through a local SOCKS5 inbound).
 import argparse
 import asyncio
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -34,6 +35,48 @@ def b64d(s):
         return base64.b64decode(s).decode("utf-8", "replace")
     except Exception:
         return ""
+
+
+def redact_uri(uri):
+    """保留 scheme / host:port / #remark，打码 userinfo 与 base64 载荷。
+
+    订阅 URI 的凭据（uuid/password/token）几乎都在前 60 个字符内，日志和
+    状态 JSON 一律用这个函数，禁止直接落原文。
+    """
+    if not uri:
+        return ""
+    s = str(uri).strip()
+    if "://" not in s:
+        return "***"
+    scheme, rest = s.split("://", 1)
+    frag = ""
+    if "#" in rest:
+        rest, frag = rest.split("#", 1)
+        frag = "#" + frag[:24]
+    if "@" in rest:
+        _, hostpart = rest.rsplit("@", 1)
+        return "%s://***@%s%s" % (scheme, hostpart[:60], frag)
+    return "%s://***%s" % (scheme, frag)
+
+
+def is_forbidden_server(host):
+    """拒绝指向回环/链路本地/私网/云元数据地址的外部订阅节点（防 SSRF）。
+
+    订阅是第三方内容：不加这层过滤，别人塞一个 127.0.0.1 或 169.254.169.254
+    的节点，本地代理就成了打内网和云元数据的跳板。
+    """
+    h = (host or "").strip().strip("[]").lower()
+    if not h or h in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        # CGNAT 100.64.0.0/10 在 ipaddress 里不算 is_private，要单独拦
+        if ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10"):
+            return True
+        return (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
+    except ValueError:
+        return h.endswith((".local", ".lan", ".internal", ".corp", ".home.arpa"))
 
 
 def parse_uri(uri):
@@ -133,8 +176,10 @@ def parse_uri(uri):
                   "username": up.unquote(u.username or ""), "password": up.unquote(u.password or "")}
             q = dict(up.parse_qsl(u.query))
             if q.get("tls") in ("true", "1"):
+                # 默认校验证书；只有订阅显式写 allowInsecure=1 才跳过，
+                # 否则任何人都能用自签证书中间人整条链路。
                 ob["tls"] = {"enabled": True, "server_name": q.get("sni") or u.hostname,
-                             "insecure": True}
+                             "insecure": q.get("allowInsecure") == "1"}
             return ob, {"proto": "http", "net": "tcp", "tls": bool(ob.get("tls"))}
     except Exception:
         return None, None
@@ -157,6 +202,9 @@ def load_nodes():
                 continue
             ob, meta = parse_uri(x["uri"])
             if not ob:
+                continue
+            if is_forbidden_server(ob.get("server", "")):
+                # 订阅里的环回/私网/元数据地址一律丢弃，避免成为内网扫描跳板
                 continue
             if ob["type"] == "shadowsocks" and ob["method"] not in SS_CIPHERS:
                 continue
@@ -353,7 +401,9 @@ def main():
             n = by_tag[tag]
             rows.append({"tag": tag, "delay_ms": d, "proto": n["meta"]["proto"],
                          "server": n["outbound"]["server"], "port": n["outbound"]["server_port"],
-                         "net": n["meta"]["net"], "tls": n["meta"]["tls"], "uri": n["uri"]})
+                         "net": n["meta"]["net"], "tls": n["meta"]["tls"],
+                         # 落盘一律打码；运行用的原文只在内存与 singbox json 里
+                         "uri": redact_uri(n["uri"])})
         with open(os.path.join(HERE, "nodes_alive.json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump({"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "total": len(nodes), "alive": rows}, f, indent=1)
