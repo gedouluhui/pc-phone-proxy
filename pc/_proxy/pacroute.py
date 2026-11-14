@@ -159,7 +159,6 @@ STEAM = [
     "chatgpt.com", "openai.com", "chatgpt.livekit.cloud", "sora.chatgpt.com",
     "platform.openai.com", "oaistatic.com", "oaiusercontent.com",
     "auth.openai.com", "auth0.openai.com",
-    "gemini.google.com", "gemini.google",
 ]
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
@@ -168,7 +167,10 @@ DEFAULT_STEAM = "127.0.0.1:2096"      # 美国出口（sing-box，start_proxy �
 HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
       "redditinc.com", "reddithelp.com",
       # Claude：只有香港这条线能过 Cloudflare（2096 美国出口返回 403）
-      "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com"]
+      "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com",
+      # Gemini：2026-11-15 实测香港 0.53s / 美国 3.19s / 西班牙 1.53s，
+      # 挂美国出口会让 Gemini 打开要三四秒。aistudio 走 FAST(google.com) 即可。
+      "gemini.google.com", "gemini.google"]
 
 
 def _js_list(name, domains):
