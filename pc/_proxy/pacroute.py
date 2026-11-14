@@ -44,6 +44,16 @@ DEFAULT_FAST = "127.0.0.1:2086"      # sing-box HTTP inbound
 DEFAULT_HK = "127.0.0.1:2086"        # 香港免费节点（reddit 只在这条线上通）
 
 DOMESTIC = [
+    # 国内 AI / 编程工具：开代理后必须直连。走国外免费节点会被 WAF 拒或极慢，
+    # 用户实测 Kimi Code 在兜底走代理后直接"没网"。
+    "kimi.com", "moonshot.cn", "moonshotai.cn",
+    "deepseek.com", "deepseek.ai",
+    "doubao.com", "volces.com", "volcengine.com",
+    "tongyi.aliyun.com", "dashscope.aliyuncs.com",
+    "chatglm.cn", "zhipuai.cn", "bigmodel.cn",
+    "baichuan-ai.com", "minimax.chat", "hailuoai.com",
+    "metaso.cn", "tiangong.cn", "yiyan.baidu.com",
+    "codebuddy.cn", "workbuddy.cn", "tencent.com", "qq.com",
     "cn", "baidu.com", "bdstatic.com", "qq.com", "gtimg.com", "taobao.com",
     "tmall.com", "alicdn.com", "alipay.com", "aliyun.com", "jd.com",
     "bilibili.com", "hdslb.com", "douyin.com", "byteimg.com", "bytedance.com",

@@ -160,18 +160,11 @@ def build_config(gen, fast):
     anytags = list(dict.fromkeys(gtags + ftags))
     cfg = {
         "log": {"level": "error"},
-        # 没有 dns 段时，direct / in-cli 的域名解析完全裸走系统默认 DNS（运营商），
-        # 既可能被污染，也把访问目标暴露给本地 ISP。国内域走阿里 DNS，其余走 DoH 经代理。
-        "dns": {
-            "servers": [
-                {"address": "223.5.5.5",
-                 "domains": list(pacroute.DOMESTIC) + list(pacroute.SENSITIVE),
-                 "skipFallback": True},
-                {"address": "https://1.1.1.1/dns-query", "detour": "grp-general"},
-            ],
-            "queryStrategy": "UseIPv4",
-            "final": "https://1.1.1.1/dns-query",
-        },
+        # 注意：不要在这里加 dns 段。本机 sing-box 是 1.12+，
+        # {"address": "..."} 的旧格式会在 config check 阶段直接 FATAL
+        # （legacy DNS server formats removed），整个出口组起不来、回退到 2086，
+        # ChatGPT/Claude 就会全挂。要加必须用 1.12 的新格式：
+        # {"type": "udp", "server": "223.5.5.5"} / {"type": "https", "server": "1.1.1.1"}。
         "experimental": {
             # read-only local API: lets 启动/看门狗 read which member urltest is
             # using right now, plus its live delay history.
