@@ -22,8 +22,8 @@ def check(cond, msg):
 def test_pac_private_and_default():
     pac = pacroute.render_pac()
     # 内网 / 链路本地 / CGNAT 必须直连
-    for frag in ('"169.254.*"', '"100.6[4-9].*"', 'dnsDomainIs(host, ".local")',
-                 'dnsDomainIs(host, ".internal")'):
+    for frag in ('"169.254.*"', '"100.6[4-9].*"', 'host.slice(-6) === ".local"',
+                 'host.slice(-9) === ".internal"'):
         check(frag in pac, "PAC 缺少内网规则: %s" % frag)
     # 默认兜底必须走代理：开代理就要能打开所有国外站点（国内已在前面直连掉）
     tail = pac.split("function FindProxyForURL")[-1]
