@@ -196,6 +196,30 @@ python start_proxy.py
 
 ---
 
+## 安全加固（2026-11-14）
+
+这一轮按安全审计把 P0 问题清掉了，**其中两项会改变默认行为**：
+
+**会感知到的变化**
+
+1. **PAC 默认兜底从「先走节点」改成「直连」**（白名单代理）。只有 `FAST` / `GH` / `GENERAL` 名单里的域名走代理，未收录的国外站会直连——打不开就把域名加进 `pc/_proxy/pacroute.py` 对应的列表，重跑一次 `启动代理.bat`。
+2. **`GENERAL`（ChatGPT / Claude 等）改成 fail-closed**：不再带 `; DIRECT` 回落。节点重建的那几秒里宁可报错，也不把真实 IP 裸发给运营商。
+
+**修掉的问题**
+
+- 看门狗 `fast` / `cli` 探针原来用 `http://…generate_204`，而路由表把 80 端口强制直连——探针根本没经过节点，节点全死也报绿灯；已改 HTTPS，并给 ChatGPT 门加了 Cloudflare 挑战页识别（`Just a moment` / `challenge-platform` / `unsupported_country`）。
+- `deep_test.py` 上传测速的计时点写在了 `drain()` 之前，只量到写内存缓冲，上传带宽虚高几十倍，污染选线排序；已把计时移到「真正写出 + 收到响应头」之后。
+- 订阅 URI 不再进日志和报告：`ACTIVE.json`、`nodes_alive.json`、`pinned_health` 全部走 `redact_uri()`，只剩 `scheme://***@host:port`。
+- 订阅里的节点如果指向 `127.0.0.1` / `10.*` / `169.254.*` / `100.64.*` / IPv6 私网 / `*.local`，直接丢弃（防止把本机代理当内网扫描跳板）；HTTP 节点的 TLS 默认校验证书，只有订阅显式写 `allowInsecure=1` 才跳过。
+- PAC 补上 `169.254.*`、`100.64/10`、IPv6 私网与 `.local/.lan/.internal/.corp` 直连；`NO_PROXY` 补 RFC1918。
+- 杀进程前先做三元组核验（镜像名 + 命令行含本目录），避免 PID 被内核复用后误杀别人的进程。
+- Android：VPN 接管 IPv6（原来只加 `0.0.0.0/0`，双栈网络下 v6 全量泄漏）；嗅探补 `quic`；阻断 `UDP/443` 与 `853`（Private DNS）。
+- `build_apk.py` 解压 `libv2ray.aar` 防 ZipSlip；发布构建不允许沿用演示口令 `android`（设 `PROXY_KS_PASS`）。
+
+**新增门禁**：`.github/workflows/ci.yml` 每次 push 跑 `compileall` + `tests_ci/test_pacroute.py`（PAC 分流 / SSRF / 脱敏断言）+ `phone/check_release.py`。
+
+---
+
 ## 许可与免责
 
 本项目代码使用 MIT 许可证，见 [`LICENSE`](LICENSE)。第三方组件（Xray-core、AndroidLibXrayLite、sing-box、geoip/geosite 数据）遵循各自许可证，见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
