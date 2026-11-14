@@ -31,7 +31,9 @@ CFG = os.path.join(HERE, "singbox_pinned.json")
 GENERAL_HTTP, GENERAL_SOCKS = 2101, 2100
 FAST_HTTP, FAST_SOCKS = 2103, 2102
 CLI_MIXED = 2090
-HEALTH_URL = "http://www.gstatic.com/generate_204"
+# 必须 HTTPS：route 里 {"port": 80, "outbound": "direct"} 会把 http 探测强制直连，
+# urltest 等于在测本地网络，于是所有节点都被判"通"，选出来的可能是完全不能用的节点。
+HEALTH_URL = "https://www.gstatic.com/generate_204"
 HEALTH = os.path.join(HERE, "pinned_health.json")
 
 _health_bad = None

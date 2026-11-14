@@ -154,13 +154,21 @@ STEAM = [
     # Wallpaper Engine（CEF）创意工坊：预览图/CDN 也要走外网，否则页面空白
     "steamuserimages-a.akamaihd.net", "steamusercontent-a.akamaihd.net",
     "wallpaperengine.io",
+    # 2026-11-15 实测：ChatGPT 在 2096（美国）200、在 2086 是 403；
+    # Claude 反过来（2086 200、2096 403）⇒ 两家必须分开走不同出口。
+    "chatgpt.com", "openai.com", "chatgpt.livekit.cloud", "sora.chatgpt.com",
+    "platform.openai.com", "oaistatic.com", "oaiusercontent.com",
+    "auth.openai.com", "auth0.openai.com",
+    "gemini.google.com", "gemini.google",
 ]
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
 DEFAULT_STEAM = "127.0.0.1:2096"      # 美国出口（sing-box，start_proxy 负责拉起）
 # 实测只有香港那条线能过（fast/general/geph 全是 403 "blocked by network security"）
 HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
-      "redditinc.com", "reddithelp.com"]
+      "redditinc.com", "reddithelp.com",
+      # Claude：只有香港这条线能过 Cloudflare（2096 美国出口返回 403）
+      "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com"]
 
 
 def _js_list(name, domains):
