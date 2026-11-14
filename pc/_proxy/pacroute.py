@@ -160,6 +160,12 @@ STEAM = [
     "platform.openai.com", "oaistatic.com", "oaiusercontent.com",
     "auth.openai.com", "auth0.openai.com",
 ]
+# 必须走「支持 Gemini 的地区」的服务主体。香港 IP 不在支持列表，一旦落到
+# 2086 会被强制跳到 "Available regions" 文档页，连对话都开不了。
+# 优先级最高（仅次于内网/国内直连），不受任何动态/静态组覆盖。
+GOOGLE_APP = ["aistudio.google.com", "makersuite.google.com", "gemini.google.com",
+              "notebooklm.google.com", "labs.google"]
+
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
 DEFAULT_STEAM = "127.0.0.1:2096"      # 美国出口（sing-box，start_proxy 负责拉起）
@@ -168,14 +174,14 @@ HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
       "redditinc.com", "reddithelp.com",
       # Claude：只有香港这条线能过 Cloudflare（2096 美国出口返回 403）
       "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com",
-      # Gemini：2026-11-15 实测香港 0.53s / 美国 3.19s / 西班牙 1.53s，
-      # 挂美国出口会让 Gemini 打开要三四秒。
-      "gemini.google.com", "gemini.google",
-      # Google 全家桶的静态资源/登录/API 也是香港最快（0.49~0.51s，
-      # 西班牙 1.2~1.9s、美国 1.4~2.0s）。AI Studio 慢就是这些走了 2103。
-      # 注意：youtube.com / googlevideo.com / ytimg.com 不放这里——视频要带宽，
-      # 香港单节点扛不住，仍走 FAST(2103)。
-      "google.com", "gstatic.com", "googleapis.com", "googleusercontent.com",
+      # Gemini / AI Studio 不放香港：香港 IP 不在 Gemini 支持地区，会被跳转到
+      # "Available regions" 文档页。它们跟着 FAST 的 google.com 走 2103（西班牙）。
+      # Google 的静态资源/API 香港最快（0.43~0.51s），但**只能放静态域**：
+      # 香港 IP 不在 AI Studio / Gemini 的支持地区列表里，google.com 一旦进这个
+      # 列表，aistudio.google.com 会被强制重定向到 "Available regions" 文档页，
+      # 连对话框都打不开。google.com / gemini.google.com 必须走 FAST(2103 西班牙)。
+      # youtube.com / googlevideo.com / ytimg.com 也不放这里——视频要带宽。
+      "gstatic.com", "googleapis.com", "googleusercontent.com",
       "gvt1.com", "ggpht.com", "withgoogle.com"]
 
 
@@ -224,6 +230,7 @@ def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, 
 %(sens_d)s
 %(fast_d)s
 %(gen_d)s
+%(gapp_d)s
 %(hk_d)s
 %(steam_d)s
 %(dyn_d)s
@@ -264,6 +271,8 @@ function FindProxyForURL(url, host) {
   if (inList(host, DOMESTIC)) return "DIRECT";
   if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
+  // Google 服务主体（AI Studio / Gemini）优先级最高：香港 IP 会被地区限制拦截
+  if (inList(host, GOOGLE_APP)) return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
 %(steam_rule)s%(hk_rule)s%(dyn_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
   // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
   // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
@@ -282,6 +291,7 @@ function FindProxyForURL(url, host) {
         "sens_d": _js_list("SENSITIVE", SENSITIVE),
         "fast_d": _js_list("FAST", FAST),
         "gen_d": _js_list("GENERAL", GENERAL),
+        "gapp_d": _js_list("GOOGLE_APP", GOOGLE_APP),
         "hk_d": hk_vars,
         "steam_d": steam_vars,
         "steam_rule": steam_rule,

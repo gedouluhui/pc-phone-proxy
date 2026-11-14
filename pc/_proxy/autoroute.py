@@ -36,8 +36,11 @@ EXITS = {
 GROUPS = {
     "google": (
         "https://www.gstatic.com/generate_204",
-        ["google.com", "gstatic.com", "googleapis.com", "googleusercontent.com",
-         "gvt1.com", "ggpht.com", "withgoogle.com", "gemini.google.com"],
+        # 只放静态资源。google.com / gemini.google.com / aistudio.google.com
+        # 不能进这个组：香港 IP 不在 AI Studio 的支持地区列表里，会被强制跳到
+        # "Available regions" 文档页，连对话都开不了。它们必须走西班牙/美国出口。
+        ["gstatic.com", "googleapis.com", "googleusercontent.com",
+         "gvt1.com", "ggpht.com", "withgoogle.com"],
     ),
     "openai": (
         "https://chatgpt.com/",
