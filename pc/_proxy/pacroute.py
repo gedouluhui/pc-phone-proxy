@@ -169,8 +169,14 @@ HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
       # Claude：只有香港这条线能过 Cloudflare（2096 美国出口返回 403）
       "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com",
       # Gemini：2026-11-15 实测香港 0.53s / 美国 3.19s / 西班牙 1.53s，
-      # 挂美国出口会让 Gemini 打开要三四秒。aistudio 走 FAST(google.com) 即可。
-      "gemini.google.com", "gemini.google"]
+      # 挂美国出口会让 Gemini 打开要三四秒。
+      "gemini.google.com", "gemini.google",
+      # Google 全家桶的静态资源/登录/API 也是香港最快（0.49~0.51s，
+      # 西班牙 1.2~1.9s、美国 1.4~2.0s）。AI Studio 慢就是这些走了 2103。
+      # 注意：youtube.com / googlevideo.com / ytimg.com 不放这里——视频要带宽，
+      # 香港单节点扛不住，仍走 FAST(2103)。
+      "google.com", "gstatic.com", "googleapis.com", "googleusercontent.com",
+      "gvt1.com", "ggpht.com", "withgoogle.com"]
 
 
 def _js_list(name, domains):
