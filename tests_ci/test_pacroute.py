@@ -25,9 +25,10 @@ def test_pac_private_and_default():
     for frag in ('"169.254.*"', '"100.6[4-9].*"', 'dnsDomainIs(host, ".local")',
                  'dnsDomainIs(host, ".internal")'):
         check(frag in pac, "PAC 缺少内网规则: %s" % frag)
-    # 默认兜底必须是 DIRECT（白名单代理），不能把未收录域名送进第三方节点
+    # 默认兜底必须走代理：开代理就要能打开所有国外站点（国内已在前面直连掉）
     tail = pac.split("function FindProxyForURL")[-1]
-    check('return "DIRECT";' in tail, "默认兜底不是 DIRECT")
+    check('return "PROXY ' in tail.split("if (inList(host, GENERAL))")[-1],
+          "默认兜底没有走代理，未收录的国外站点会打不开")
     # GENERAL 必须 fail-closed，不能带 "; DIRECT"
     for line in tail.splitlines():
         if "inList(host, GENERAL)" in line:

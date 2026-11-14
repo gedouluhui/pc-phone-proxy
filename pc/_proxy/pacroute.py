@@ -213,10 +213,11 @@ function FindProxyForURL(url, host) {
        host.indexOf("[fea") === 0 || host.indexOf("[feb") === 0)) {
     return "DIRECT";
   }
-  // 公司/家庭内网后缀
-  if (dnsDomainIs(host, ".local") || dnsDomainIs(host, ".lan") ||
-      dnsDomainIs(host, ".internal") || dnsDomainIs(host, ".corp") ||
-      dnsDomainIs(host, ".home.arpa")) {
+  // 公司/家庭内网后缀。用纯字符串后缀判断而不是 dnsDomainIs/shExpMatch：
+  // WinINet 的 PAC 解释器对 .local/.corp 这类单标签后缀匹配不可靠（实测漏判）。
+  if (host.slice(-6) === ".local" || host.slice(-4) === ".lan" ||
+      host.slice(-9) === ".internal" || host.slice(-5) === ".corp" ||
+      host.slice(-10) === ".home.arpa") {
     return "DIRECT";
   }
   if (inList(host, DOMESTIC)) return "DIRECT";
@@ -226,8 +227,9 @@ function FindProxyForURL(url, host) {
   // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
   // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
   if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s";
-  // 白名单代理：未收录域名默认直连，避免国内未收录站点与内网请求流入第三方公共节点
-  return "DIRECT";
+  // 未收录域名默认走快出口、再退通用出口：开代理就要能打开所有国外站点，
+  // 国内/内网已经在上面的 DOMESTIC / SENSITIVE / DIRECT / 私网规则里直连掉了。
+  return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
 }
 """ % {
         "stamp": stamp,
