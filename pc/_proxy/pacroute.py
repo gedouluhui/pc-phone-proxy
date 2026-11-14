@@ -184,8 +184,22 @@ def _js_list(name, domains):
     return "var %s = [%s];" % (name, arr)
 
 
-def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, steam=None):
+def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, steam=None,
+               dyn=None):
     stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # 动态路由：autoroute.py 定期实测各出口延迟后写 route_map.json，
+    # 这里把「当前最快的出口」渲染成 PAC 规则，排在静态规则前面。
+    dyn_vars = ""
+    dyn_rules = ""
+    for name, g in (dyn or {}).items():
+        proxy = (g or {}).get("proxy")
+        domains = (g or {}).get("domains")
+        if not proxy or not domains:
+            continue
+        var = "DYN_" + "".join(ch if ch.isalnum() else "_" for ch in name.upper())
+        dyn_vars += _js_list(var, domains) + "\n"
+        dyn_rules += ('  if (inList(host, %s)) return "PROXY %s; PROXY %s; PROXY %s; DIRECT";\n'
+                      % (var, proxy, fast, general))
     gh, gp = general.rsplit(":", 1)
     fh, fp = fast.rsplit(":", 1)
     steam_rule = ""
@@ -212,6 +226,7 @@ def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, 
 %(gen_d)s
 %(hk_d)s
 %(steam_d)s
+%(dyn_d)s
 %(direct_d)s
 
 function dom(h, d) { return h === d || dnsDomainIs(h, "." + d); }
@@ -249,7 +264,7 @@ function FindProxyForURL(url, host) {
   if (inList(host, DOMESTIC)) return "DIRECT";
   if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
-%(steam_rule)s%(hk_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
+%(steam_rule)s%(hk_rule)s%(dyn_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
   // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
   // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
   if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s";
@@ -270,12 +285,14 @@ function FindProxyForURL(url, host) {
         "hk_d": hk_vars,
         "steam_d": steam_vars,
         "steam_rule": steam_rule,
+        "dyn_d": dyn_vars,
+        "dyn_rule": dyn_rules,
         "direct_d": _js_list("DIRECT", DIRECT),
     }
 
 
-def write_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, hk=None, steam=None):
-    text = render_pac(general, fast, hk=hk, steam=steam)
+def write_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, hk=None, steam=None, dyn=None):
+    text = render_pac(general, fast, hk=hk, steam=steam, dyn=dyn)
     with io.open(PAC_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     return PAC_PATH
@@ -434,13 +451,22 @@ def _wget(name):
         return None
 
 
+def load_dyn():
+    """读 autoroute.py 产出的动态路由映射（没有就返回空，PAC 退回静态规则）。"""
+    try:
+        with io.open(os.path.join(HERE, "route_map.json"), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("groups") or {}
+    except Exception:
+        return {}
+
+
 def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", steam="auto"):
     if hk == "auto":
         # 香港那条线只在监听时才写进 PAC；它挂了就退回下面两条
         hk = DEFAULT_HK if _port_open(int(DEFAULT_HK.rsplit(":", 1)[1])) else None
     if steam == "auto":
         steam = DEFAULT_STEAM if _port_open(int(DEFAULT_STEAM.rsplit(":", 1)[1])) else None
-    write_pac(general, fast, hk=hk, steam=steam)
+    write_pac(general, fast, hk=hk, steam=steam, dyn=load_dyn())
     actual = start_server(port)
     if not actual:
         return {"ok": False, "err": "PAC server 未起来（端口 %d-%d 均被占用？）"

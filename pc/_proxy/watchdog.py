@@ -435,6 +435,14 @@ def main():
                 ccode, _ = curl_probe("https://www.gstatic.com/generate_204", CLI)
                 st["gate"]["cli"] = {"code": ccode, "ok": ccode in ("204", "200")}
 
+            # ---- 动态路由：每 30 分钟重测各站点组的最快出口并重建 PAC ----
+            # 用户不希望"网一慢就找人改代码"，所以这里定期跑 autoroute.py，
+            # 由它输出 route_map.json，pacroute 渲染时会优先采用。
+            if now - last.get("autoroute", 0) >= 1800:
+                last["autoroute"] = now
+                run_script("autoroute.py", "--apply", timeout=420,
+                           logfile="autoroute.log")
+
             # ---- HK node (Reddit) --------------------------------------
             if now - last.get("hk", 0) >= 300:
                 last["hk"] = now
