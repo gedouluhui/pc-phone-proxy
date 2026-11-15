@@ -35,7 +35,9 @@ import sysstate           # noqa: E402
 
 GEN, FAST, CLI, HK, STEAM = 2101, 2103, 2090, 2086, 2096
 # 2026-11-12: 定期重扫——每 N 小时重新抓源+深测+重建出口；0=关闭。
-REFRESH_HOURS = float(os.environ.get("PROXY_REFRESH_HOURS") or 6)
+# 全量重扫会跑 re-harvest + deep test + rebuild（10~40 分钟，CPU 能吃满一个核），
+# 默认改成 12 小时；需要临时调整设环境变量 PROXY_REFRESH_HOURS。
+REFRESH_HOURS = float(os.environ.get("PROXY_REFRESH_HOURS") or 12)
 STOP = os.path.join(HERE, "STOP_WATCHDOG")
 PID = os.path.join(HERE, "watchdog.pid")
 STATUS = os.path.join(HERE, "watchdog_status.json")
@@ -438,7 +440,7 @@ def main():
             # ---- 动态路由：每 30 分钟重测各站点组的最快出口并重建 PAC ----
             # 用户不希望"网一慢就找人改代码"，所以这里定期跑 autoroute.py，
             # 由它输出 route_map.json，pacroute 渲染时会优先采用。
-            if now - last.get("autoroute", 0) >= 1800:
+            if now - last.get("autoroute", 0) >= 3600:
                 last["autoroute"] = now
                 run_script("autoroute.py", "--apply", timeout=420,
                            logfile="autoroute.log")
@@ -476,7 +478,7 @@ def main():
                     log("env check error: %r" % (e,))
 
             # ---- which member is active now ----------------------------
-            if now - last.get("switch", 0) >= 90:
+            if now - last.get("switch", 0) >= 300:
                 last["switch"] = now
                 for role, grp in (("general", "grp-general"), ("fast", "grp-fast")):
                     name, delay = clash_now(grp)
