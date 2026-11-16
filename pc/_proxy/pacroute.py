@@ -164,7 +164,12 @@ STEAM = [
 # 2086 会被强制跳到 "Available regions" 文档页，连对话都开不了。
 # 优先级最高（仅次于内网/国内直连），不受任何动态/静态组覆盖。
 GOOGLE_APP = ["aistudio.google.com", "makersuite.google.com", "gemini.google.com",
-              "notebooklm.google.com", "labs.google"]
+              "notebooklm.google.com", "labs.google",
+              # AI Studio 的 API 调用也走这些域，同样受地区限制；
+              # 它们原来被 DYN_GOOGLE 带去香港，会导致页面能开、请求全挂。
+              "generativelanguage.googleapis.com",
+              "alkalimakersuite-pa.clients6.google.com",
+              "aida.googleapis.com", "cloudaicompanion.googleapis.com"]
 
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
