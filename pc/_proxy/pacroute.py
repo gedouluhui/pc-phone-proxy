@@ -271,8 +271,10 @@ function FindProxyForURL(url, host) {
   if (inList(host, DOMESTIC)) return "DIRECT";
   if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
-  // Google 服务主体（AI Studio / Gemini）优先级最高：香港 IP 会被地区限制拦截
-  if (inList(host, GOOGLE_APP)) return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
+  // Google 服务主体（AI Studio / Gemini）优先级最高：香港 IP 会被地区限制拦截。
+  // 端口写死成「支持地区」的三个出口，不跟随 fast/general 参数——静态回退模式下
+  // fast 会变成 127.0.0.1:2086（香港），跟随它就会又跳回 Available regions 文档页。
+  if (inList(host, GOOGLE_APP)) return "PROXY 127.0.0.1:2103; PROXY 127.0.0.1:2101; PROXY 127.0.0.1:2096; DIRECT";
 %(steam_rule)s%(hk_rule)s%(dyn_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
   // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
   // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
