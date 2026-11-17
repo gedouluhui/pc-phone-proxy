@@ -361,7 +361,85 @@ def _serve_forever(port=None):
 
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", bind), H)
+    # PAC 服务是这套栈里唯一「谁都不依赖」的长驻进程（DETACHED|NEW_GROUP、
+    # 只读一个文件），所以让它当看门狗的守夜人。2026-11-18：看门狗被外部
+    # TerminateProcess 之后没人知道，状态文件停在最后一刻，出口坏了也不会自愈。
+    try:
+        import threading
+        threading.Thread(target=_guard_loop, name="wd-guard", daemon=True).start()
+    except Exception:
+        pass
     srv.serve_forever()
+
+
+# ------------------------------------------------------- 看门狗保活（守夜人的守夜人）
+WD_PID = os.path.join(HERE, "watchdog.pid")
+WD_STOP = os.path.join(HERE, "STOP_WATCHDOG")
+WD_GUARD = os.path.join(HERE, "watchdog_guard.json")
+
+
+def _wd_alive():
+    try:
+        pid = int(io.open(WD_PID, encoding="utf-8").read().strip())
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        import proxyctl as P
+        # PID 会被复用，必须确认是 python 才算活着
+        return P.pid_image(pid).lower().startswith("python")
+    except Exception:
+        return False
+
+
+def _spawn_watchdog():
+    pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    exe = pyw if os.path.isfile(pyw) else sys.executable
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with io.open(os.path.join(LOG_DIR, "watchdog.out"), "ab") as logf:
+        p = subprocess.Popen([exe, os.path.join(HERE, "watchdog.py")], cwd=HERE,
+                             stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL,
+                             creationflags=0x00000008 | 0x00000200)
+    return p.pid
+
+
+def guard_watchdog():
+    """看门狗没在跑就把它拉起来；连续秒退则退避 15 分钟再试。"""
+    now = time.time()
+    try:
+        g = json.load(io.open(WD_GUARD, encoding="utf-8")) or {}
+    except Exception:
+        g = {}
+    if now < float(g.get("retry_at") or 0):
+        return False
+    died_fast = (g.get("spawn_at") and now - float(g["spawn_at"]) < 180)
+    try:
+        pid = _spawn_watchdog()
+    except Exception:
+        return False
+    g["spawn_at"] = now
+    g["pid"] = pid
+    g["retry_at"] = (now + 900) if died_fast else 0
+    try:
+        with io.open(WD_GUARD, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(g, f)
+    except OSError:
+        pass
+    return True
+
+
+def _guard_loop():
+    while True:
+        time.sleep(60)
+        try:
+            # STOP_WATCHDOG 存在 = 用户正在关代理，别跟他抢
+            if os.path.isfile(WD_STOP) or _wd_alive():
+                continue
+            guard_watchdog()
+        except Exception:
+            pass
 
 
 def _port_open(port=PORT):

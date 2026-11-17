@@ -90,6 +90,43 @@ def test_probe_headers_are_browser_like():
     check("mozilla" in watchdog.PROBE_UA.lower(), "watchdog 探针 UA 不是浏览器")
 
 
+def test_guard_backoff_and_respawn():
+    """PAC 服务里的守夜人：退避期内不拉进程，退避失效才拉一次。
+
+    真实故障场景（2026-11-18）：看门狗被外部 TerminateProcess，日志一行不写、
+    状态文件停在最后一刻，出口坏了也没人修。守夜人必须自己判断「活着没」，
+    而且不能在「拉起来就秒退」时无脑重试（会变成每 60 秒一个僵尸进程）。
+    """
+    import io as _io
+    import json as _json
+    import tempfile
+    import time as _time
+
+    tmp = tempfile.mkdtemp(prefix="guard_")
+    old_guard, old_pid, old_spawn = pacroute.WD_GUARD, pacroute.WD_PID, pacroute._spawn_watchdog
+    spawned = []
+    try:
+        pacroute.WD_PID = os.path.join(tmp, "watchdog.pid")
+        pacroute.WD_GUARD = os.path.join(tmp, "guard.json")
+        pacroute._spawn_watchdog = lambda: (spawned.append(1), 4242)[1]
+
+        # 退避中：retry_at 在未来 -> 不拉
+        with _io.open(pacroute.WD_GUARD, "w", encoding="utf-8") as f:
+            _json.dump({"spawn_at": _time.time(), "retry_at": _time.time() + 900}, f)
+        check(pacroute.guard_watchdog() is False, "退避期内仍然拉起了看门狗")
+        check(not spawned, "退避期内不该 spawn")
+
+        # 退避失效 -> 拉一次，并且因为上一次是「秒退」把 retry_at 推到未来
+        with _io.open(pacroute.WD_GUARD, "w", encoding="utf-8") as f:
+            _json.dump({"spawn_at": _time.time() - 5, "retry_at": 0}, f)
+        check(pacroute.guard_watchdog() is True, "退避失效后没有拉起看门狗")
+        check(len(spawned) == 1, "spawn 次数不对: %d" % len(spawned))
+        g = _json.load(_io.open(pacroute.WD_GUARD, encoding="utf-8"))
+        check(g["retry_at"] > _time.time(), "秒退后没有设置退避窗口")
+    finally:
+        pacroute.WD_GUARD, pacroute.WD_PID, pacroute._spawn_watchdog = old_guard, old_pid, old_spawn
+
+
 def test_hk_gate_needs_candidate():
     """没有香港候选节点时，门控不能反复去重启一个不存在的出口。
 

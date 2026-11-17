@@ -225,11 +225,16 @@ python start_proxy.py
 - `autoroute` 加单实例锁：看门狗的定时任务和手动执行不会同时打同一批出口。
 - PAC 的回落链去重（`PROXY 2103; PROXY 2103; ...` 会让浏览器对死端口多等一轮）。
 
-还有一条：看门狗自己会无声消失。`_restart_watchdog.py` / `start_proxy.py` 原来用
-`DETACHED_PROCESS | CREATE_NO_WINDOW` 起 `watchdog.py`，这组标志自相矛盾（后者会给子进程
-建控制台），宿主控制台一销毁后台进程就被 TerminateProcess —— `finally` 不跑、日志一行不写。
-现在两处都改成和 PAC 服务一致的 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，
-并给 `watchdog.py` 加了 `faulthandler` → `logs/watchdog_crash.log`。
+还有一条：看门狗会无声消失。`finally` 不跑、日志一行不写、状态文件停在最后一刻 ——
+是被 TerminateProcess。查下来的结论是**外部 job 对象回收**（`CREATE_BREAKAWAY_FROM_JOB`
+返回「拒绝访问」），不是这几行代码自己退出的。因此不再赌「谁把它拉起来」，改成互相保活：
+
+- `pacroute.py serve` 里起一个 60 秒的守护线程：`watchdog.pid` 不是活的 python 就重拉看门狗，
+  连续秒退退避 15 分钟，见到 `STOP_WATCHDOG` 就闭嘴；
+- 看门狗本来就会在 PAC 服务挂掉时 `pac_apply`，两者互为守夜人；
+- `watchdog.py` 加 `faulthandler` → `logs/watchdog_crash.log`：硬崩溃留栈、被杀留空文件；
+- 两处 spawn 的 `DETACHED_PROCESS | CREATE_NO_WINDOW` 改成
+  `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`（和 PAC 服务一致，前者那个组合本身是矛盾的）。
 
 配套加了 `doctor.py` / `check-proxy.bat` 体检，和 `tests_ci/test_route_selfheal.py`
 （把上面四条不变量钉进 CI，含「无活出口时必须拒绝写 PAC」「探针必须带浏览器头」
