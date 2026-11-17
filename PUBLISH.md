@@ -64,9 +64,13 @@ git push -u origin main
 
 > **发版前对一遍版本**：`phone/AndroidManifest.xml` 的 `versionName` 是源码真相，
 > `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.5、
-> 用户下到的还是 2.4 且校验值对不上。当前状态：源码 2.5（AI 出口闸门），
-> `dist/` 仍是 2.4 —— 下次发版时先 `python phone/build_apk.py`，再把产物复制成
-> `dist/手机代理-公版.apk` 并重算这一行。
+> 用户下到的还是 2.4 且校验值对不上。
+>
+> 当前状态（2026-11-18）：已发布 **v2.5**
+> （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.5>），
+> 资产 `PhoneProxy-public.apk` 56,955,831 B，
+> SHA256 `8e240103721a0a1361290a6d4aee795644c9ccb62284ba96654026a8712a4992`，
+> 与 `dist/手机代理-公版.apk` 字节一致。下次发版按上面第 5 步重新上传并改这一行。
 
 ## 4. 发布后验证
 
