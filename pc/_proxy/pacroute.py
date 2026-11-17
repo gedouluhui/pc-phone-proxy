@@ -195,6 +195,23 @@ def _js_list(name, domains):
     return "var %s = [%s];" % (name, arr)
 
 
+def _chain(eps, direct=True):
+    """把出口列表渲染成 PAC 回落链，去掉重复端口。
+
+    动态路由里 proxy 常常就等于 fast。不去重会渲染成
+    "PROXY 2103; PROXY 2103; PROXY 2101" —— 浏览器会对着同一个死端口
+    多等一轮超时（默认 20s），页面看起来像卡死。
+    """
+    seen = []
+    for e in eps:
+        if e and e not in seen:
+            seen.append(e)
+    parts = ["PROXY " + e for e in seen]
+    if direct:
+        parts.append("DIRECT")
+    return "; ".join(parts)
+
+
 def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, steam=None,
                dyn=None):
     stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -209,8 +226,8 @@ def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, 
             continue
         var = "DYN_" + "".join(ch if ch.isalnum() else "_" for ch in name.upper())
         dyn_vars += _js_list(var, domains) + "\n"
-        dyn_rules += ('  if (inList(host, %s)) return "PROXY %s; PROXY %s; PROXY %s; DIRECT";\n'
-                      % (var, proxy, fast, general))
+        dyn_rules += ('  if (inList(host, %s)) return "%s";\n'
+                      % (var, _chain([proxy, fast, general])))
     gh, gp = general.rsplit(":", 1)
     fh, fp = fast.rsplit(":", 1)
     steam_rule = ""
@@ -356,6 +373,52 @@ def _port_open(port=PORT):
         s.close()
 
 
+def ep_port(ep):
+    try:
+        return int(str(ep).rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return 0
+
+
+# general/fast 的存活候选。顺序即优先级，全部必须真的在监听才可用。
+ROLE_EPS = {
+    "general": ("127.0.0.1:2101", "127.0.0.1:2090", "127.0.0.1:2103"),
+    "fast": ("127.0.0.1:2103", "127.0.0.1:2101", "127.0.0.1:2090"),
+}
+ANY_EPS = ("127.0.0.1:2101", "127.0.0.1:2103", "127.0.0.1:2090",
+           "127.0.0.1:2096", "127.0.0.1:9910")
+
+
+def live_eps():
+    return [e for e in ANY_EPS if _port_open(ep_port(e))]
+
+
+def resolve_ep(want, role):
+    """把请求的出口换成一个真的在监听的出口；一个都没有时返回 None。
+
+    general/fast 以前不做存活校验，而 hk/steam 做了。这个不对称是实发故障：
+    autoroute.py --apply 无参调用 apply_pac() 会落到 DEFAULT_GENERAL=9910
+    （Geph 未运行）和 DEFAULT_FAST=2086（pinned 配置里已无此 inbound），
+    GENERAL 规则又是 fail-closed 不带 DIRECT，于是 claude.ai / anthropic.com
+    在浏览器里硬断。2026-11-18 实测复现并修复。
+    """
+    if want and _port_open(ep_port(want)):
+        return want
+    for ep in ROLE_EPS.get(role, ()) + ANY_EPS:
+        if _port_open(ep_port(ep)):
+            return ep
+    return None
+
+
+def pac_endpoints(text):
+    """从 PAC 文本里取出 GENERAL 规则实际用的两个端口，供内容级自愈比对。"""
+    import re
+    m = re.search(r'inList\(host,\s*GENERAL\)\)\s*return\s*"([^"]+)"', text or "")
+    if not m:
+        return None
+    return tuple(re.findall(r"127\.0\.0\.1:(\d+)", m.group(1)))
+
+
 def _served_bytes(port=PORT, timeout=2.0):
     import urllib.request
     try:
@@ -478,11 +541,19 @@ def load_dyn():
 
 
 def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", steam="auto"):
+    want_general, want_fast = general, fast
+    general = resolve_ep(general, "general")
+    fast = resolve_ep(fast, "fast")
+    if not general or not fast:
+        # 一个本地出口都没活着。此时写 PAC 只会把 fail-closed 的 GENERAL 规则
+        # 指向空端口，比保留旧表更糟——直接拒绝，让上层去重建出口。
+        return {"ok": False, "err": "no live local exit (want general=%s fast=%s)"
+                % (want_general, want_fast), "general": None, "fast": None}
     if hk == "auto":
         # 香港那条线只在监听时才写进 PAC；它挂了就退回下面两条
-        hk = DEFAULT_HK if _port_open(int(DEFAULT_HK.rsplit(":", 1)[1])) else None
+        hk = DEFAULT_HK if _port_open(ep_port(DEFAULT_HK)) else None
     if steam == "auto":
-        steam = DEFAULT_STEAM if _port_open(int(DEFAULT_STEAM.rsplit(":", 1)[1])) else None
+        steam = DEFAULT_STEAM if _port_open(ep_port(DEFAULT_STEAM)) else None
     write_pac(general, fast, hk=hk, steam=steam, dyn=load_dyn())
     actual = start_server(port)
     if not actual:
@@ -498,7 +569,8 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
     _wset("ProxyEnable", 0, winreg.REG_DWORD)
     notify()
     return {"ok": True, "url": url, "port": actual, "general": general, "fast": fast,
-            "hk": hk, "steam": steam, "pac": PAC_PATH}
+            "hk": hk, "steam": steam, "pac": PAC_PATH,
+            "resolved_from": (want_general, want_fast)}
 
 
 def clear_pac():

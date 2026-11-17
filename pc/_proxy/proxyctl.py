@@ -285,6 +285,16 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
                         {"type": "http", "tag": "in-h", "listen": "127.0.0.1", "listen_port": http_port}],
            "outbounds": [ob]}
     path = os.path.join(HERE, "singbox_one.json")
+    # 先按 PID（校验映像名 + 命令行指向 singbox_one.json）释放端口，再起新进程。
+    # 旧版直接 Popen：新进程 bind 失败 FATAL 退出，而 listen_ok() 看到旧实例
+    # 仍在监听就返回 True，于是 ensure_steam() 连试 5 个节点「都启动成功」，
+    # 实际测的一直是那个旧死出口；one_<port>.pid 还被写成已死新进程的 pid，
+    # 旧实例从此永远杀不掉。2026-11-18 实测：2096 被一个 upstream 已 refused
+    # 的实例从 00:53 占住，PAC 里 Steam/ChatGPT 首选它，每次请求先吃一次 reset。
+    if not wait_port_free([socks_port, http_port], timeout=6.0,
+                          expect_cmd="singbox_one.json"):
+        print("  [warn] ports %d/%d still held, not ours to kill" % (socks_port, http_port))
+        return False
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
     logp = os.path.join(HERE, "logs", "singbox_one.log")
@@ -292,7 +302,16 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
         proc = subprocess.Popen([SING_EXE, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=0x00000008 | 0x08000000)
     for _ in range(30):
+        if proc.poll() is not None:
+            # 新进程已经退出（多半是 bind FATAL）。继续等只会把别人的端口
+            # 当成自己的成功。
+            print("  [warn] sing-box exited rc=%s on ports %d/%d"
+                  % (proc.returncode, socks_port, http_port))
+            return False
         if listen_ok(socks_port) and listen_ok(http_port):
+            if proc.pid not in port_pids(http_port):
+                time.sleep(0.5)
+                continue
             try:
                 with open(os.path.join(HERE, "one_%d.pid" % int(http_port)), "w") as f:
                     f.write(str(proc.pid))

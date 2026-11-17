@@ -167,9 +167,15 @@ def ensure_steam():
     never disturb the pinned general/fast groups."""
     if up(STEAM) and _steam_ok():
         return True
-    cands = [r for r in node_rows() if (r.get("loc") or "").upper() in ("US", "USA")]
+    us = [r for r in node_rows() if (r.get("loc") or "").upper() in ("US", "USA")]
+    # 只按下载排序会选中上传为 0 的坏节点：192.220.47.85 dl=1898kB/s 但
+    # ul=0、github_ok=False，当时能过 Steam 的 countrycode 检查，跑一阵后
+    # 整个出口 reset，2096 变成「端口活着、上游死」。PAC 里 STEAM 和
+    # ChatGPT/OpenAI 都首选 2096，于是每次请求先吃一次连接重置再回退。
+    good = [r for r in us if r.get("github_ok") and (r.get("ul_kbps") or 0) > 0]
+    cands = good or us
     cands.sort(key=lambda r: -(r.get("dl_kbps") or 0))
-    for r in cands[:3]:
+    for r in cands[:5]:
         uri = r.get("uri")
         if not uri:
             continue

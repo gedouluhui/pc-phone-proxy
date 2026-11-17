@@ -20,5 +20,8 @@ jobs:
       - name: PAC / SSRF / 脱敏 回归
         run: python tests_ci/test_pacroute.py
 
+      - name: 出口自愈 / 探针身份 回归
+        run: python tests_ci/test_route_selfheal.py
+
       - name: 发布前防泄漏自检
         run: python phone/check_release.py

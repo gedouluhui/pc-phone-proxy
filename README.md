@@ -57,6 +57,7 @@ APK 内不含任何节点凭据）；另含 v2.3 的安全加固（`https://` �
 - **三通道**：`general 2101`（ChatGPT/Claude）、`fast 2103`（Google/GitHub/HF/网页）、`cli 2090`（git/pip/curl/npm），另有 Reddit 2086、Steam 2096 可选出口
 - **浏览器走 PAC 自动分流**，国内站点直连；命令行代理变量自动配置
 - **看门狗自愈**：端口掉线、站点打不开、PAC 被改都会自动修复；检测失败时降级而不是拆掉唯一存活的栈
+- **一键体检**：`check-proxy.bat` 按依赖顺序跑「出口端口 → PAC 内容 → 系统代理 → 7 个站点实测 → 出口身份 → 看门狗」，第一个 FAIL 就是根因所在层
 - **定期重扫**：默认每 6 小时自动重抓公开源 → 深测速度/ChatGPT → 重建出口，把更快的节点换上来（`PROXY_REFRESH_HOURS` 可调）
 - 所有监听端口只绑定 `127.0.0.1`；`stop_proxy.py` 一键撤掉 PAC 与环境变量
 
@@ -105,9 +106,11 @@ pc/
 │  ├─ stop_proxy.py         ← 撤掉代理，恢复直连
 │  ├─ watchdog.py           ← 后台自愈
 │  ├─ pacroute.py           ← 本地 PAC 服务 + 分流名单
+│  ├─ doctor.py             ← 一键体检（端口→PAC→逐站→出口身份→看门狗）
 │  ├─ privacy_check.py      ← 隐私自检（只读）
 │  └─ proxy_diag.py         ← 分流诊断（某域名该直连还是代理、哪条路可达）
 ├─ start-proxy.bat
+├─ check-proxy.bat          ← 体检入口
 └─ stop-proxy.bat
 ```
 
@@ -196,13 +199,45 @@ python start_proxy.py
 
 ---
 
+## 分流自愈（2026-11-18）
+
+这一轮修的是「明明出口都活着，浏览器里 Claude 打不开」——由四个各自都不报错的
+缺陷接力造成，任何一个单独修都看不出效果：
+
+1. `autoroute.py --apply` 无参调用 `apply_pac()`，落到静态默认端口（`9910` 迷雾通
+   未运行 / `2086` 在 pinned 配置里根本没有 inbound），把看门狗写对的 PAC 覆盖掉；
+2. `apply_pac()` 不校验端口存活，照样写出 **fail-closed**（故意不带 `; DIRECT`）的
+   `GENERAL` 规则 → 浏览器硬断；
+3. 看门狗的 PAC 自愈只比对 URL 和「PAC 服务器活着」，不比对内容 → URL 没变，
+   永不修复；
+4. `autoroute` 的探针只发 UA。`claude.ai` 对「只有 UA 的 curl」返 403 Cloudflare
+   挑战，而补齐 `Accept / Accept-Language / sec-ch-ua` 的同一个出口是 302 →
+   anthropic 组每轮都被判「全灭」，从 `route_map.json` 里消失。
+
+现在的行为：
+
+- `apply_pac()` 先把 `general/fast` 换成**真的在监听**的端口；一个活出口都没有时
+  **拒绝写 PAC**（`ok=False`），不再把 fail-closed 规则指向空端口。
+- 看门狗从 PAC 服务取回正文，解出 `GENERAL` 实际指向的端口，任一不监听就重建。
+- `autoroute` 先对每个出口实打一次 HTTPS，上游已死的出口（端口在、上游 reset）
+  不参与测速；整组不可用时**沿用旧路由**，不再把这组删掉。
+- 两个探针都发浏览器请求头。
+- `autoroute` 加单实例锁：看门狗的定时任务和手动执行不会同时打同一批出口。
+- PAC 的回落链去重（`PROXY 2103; PROXY 2103; ...` 会让浏览器对死端口多等一轮）。
+
+配套加了 `doctor.py` / `check-proxy.bat` 体检，和 `tests_ci/test_route_selfheal.py`
+（把上面四条不变量钉进 CI，含「无活出口时必须拒绝写 PAC」「探针必须带浏览器头」
+「无香港候选时不得反复重启」）。
+
+---
+
 ## 安全加固（2026-11-14）
 
 这一轮按安全审计把 P0 问题清掉了，**其中两项会改变默认行为**：
 
 **会感知到的变化**
 
-1. **PAC 默认兜底从「先走节点」改成「直连」**（白名单代理）。只有 `FAST` / `GH` / `GENERAL` 名单里的域名走代理，未收录的国外站会直连——打不开就把域名加进 `pc/_proxy/pacroute.py` 对应的列表，重跑一次 `启动代理.bat`。
+1. **PAC 的默认兜底走「快出口 → 通用出口 → 直连」**：未收录的国外站会先试节点，只有国内/内网/银行政务域名直连（`DOMESTIC` / `SENSITIVE` / `DIRECT` 三张表）。打不开某站就先跑 `check-proxy.bat` 看是哪个出口断了，别急着改名单。
 2. **`GENERAL`（ChatGPT / Claude 等）改成 fail-closed**：不再带 `; DIRECT` 回落。节点重建的那几秒里宁可报错，也不把真实 IP 裸发给运营商。
 
 **修掉的问题**
@@ -216,7 +251,7 @@ python start_proxy.py
 - Android：VPN 接管 IPv6（原来只加 `0.0.0.0/0`，双栈网络下 v6 全量泄漏）；嗅探补 `quic`；阻断 `UDP/443` 与 `853`（Private DNS）。
 - `build_apk.py` 解压 `libv2ray.aar` 防 ZipSlip；发布构建不允许沿用演示口令 `android`（设 `PROXY_KS_PASS`）。
 
-**新增门禁**：`.github/workflows/ci.yml` 每次 push 跑 `compileall` + `tests_ci/test_pacroute.py`（PAC 分流 / SSRF / 脱敏断言）+ `phone/check_release.py`。
+**新增门禁**：`.github/workflows/ci.yml` 每次 push 跑 `compileall` + `tests_ci/test_pacroute.py`（PAC 分流 / SSRF / 脱敏断言）+ `tests_ci/test_route_selfheal.py`（出口存活自愈 / 探针身份 / 无候选不重启）+ `phone/check_release.py`。
 
 ---
 

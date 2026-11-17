@@ -15,6 +15,7 @@ import argparse
 import io
 import json
 import os
+import socket
 import statistics
 import subprocess
 import sys
@@ -66,11 +67,23 @@ GROUPS = {
 OK_CODES = {"200", "204", "301", "302", "304"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+# 见 probe()：Cloudflare 挑战页的判定不只看 UA。
+HDRS = ["-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "-H", "Accept-Language: en-US,en;q=0.9",
+        "-H", 'sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24"',
+        "-H", 'sec-ch-ua-platform: "Windows"',
+        "-H", "Upgrade-Insecure-Requests: 1"]
 
 
 def probe(url, port, timeout=15):
-    """返回 (ok, ttfb_seconds)。只有 2xx/3xx 才算可用。"""
-    args = ["curl", "-s", "-o", "NUL", "-m", str(timeout), "-A", UA,
+    """返回 (ok, ttfb_seconds)。只有 2xx/3xx 才算可用。
+
+    只带 UA 不够：claude.ai 对「只有 UA 的 curl」返回 403 Cloudflare 挑战，
+    而带完整浏览器头的同一个出口是 302。结果是 anthropic 组每个周期都被判
+    「所有出口不可用」而消失，claude.ai 掉回静态 GENERAL 规则。
+    这里补齐 Accept / Accept-Language / sec-ch-ua 三个必需的挑战门槛。
+    """
+    args = ["curl", "-s", "-o", "NUL", "-m", str(timeout), "-A", UA] + HDRS + [
             "-x", "http://127.0.0.1:%d" % port,
             "-w", "%{http_code} %{time_starttransfer}", url]
     try:
@@ -85,10 +98,34 @@ def probe(url, port, timeout=15):
         return False, 99.0
 
 
-def measure_group(url):
+def active_exits():
+    """只保留真的能把 HTTPS 送出去的出口。
+
+    端口在监听 != 上游活着：2096 的 singbox_one.json 只有一个死掉的 http
+    上游，TCP 连得上但每个请求都 reset；2086 在 pinned 配置里已无 inbound。
+    不过滤就会每组白测 3 次，还可能把死出口选成 best。
+    """
+    live = {}
+    for name, port in EXITS.items():
+        s = socket.socket()
+        s.settimeout(0.4)
+        try:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                continue
+        finally:
+            s.close()
+        ok, _ = probe("https://www.gstatic.com/generate_204", port, timeout=10)
+        if ok:
+            live[name] = port
+        else:
+            print("[exit %s:%d] 上游不可用，跳过" % (name, port))
+    return live
+
+
+def measure_group(url, exits):
     """对每个出口测 3 次，返回 {exit_name: median_ttfb} 与可用标记。"""
     res = {}
-    for name, port in EXITS.items():
+    for name, port in exits.items():
         samples = []
         for _ in range(3):
             ok, ttfb = probe(url, port)
@@ -100,15 +137,34 @@ def measure_group(url):
 
 
 def build():
+    exits = active_exits()
+    if not exits:
+        print("没有任何可用出口，保留旧 route_map.json")
+        try:
+            return (json.load(io.open(OUT, encoding="utf-8")) or {}).get("groups") or {}
+        except Exception:
+            return {}
+    try:
+        old = (json.load(io.open(OUT, encoding="utf-8")) or {}).get("groups") or {}
+    except Exception:
+        old = {}
     groups = {}
     for name, (url, domains) in GROUPS.items():
-        res = measure_group(url)
+        res = measure_group(url, exits)
         if not res:
-            print("[%s] 所有出口都不可用，保留旧配置" % name)
+            # 403 挑战页不计分是对的，但"不计分"不等于"这个组消失"。
+            # 旧版这里 groups={} 重建后直接跳过，anthropic 组因此从
+            # route_map 里蒸发，claude.ai 落回静态 GENERAL 规则。
+            if name in old:
+                groups[name] = old[name]
+                print("[%s] 全部出口被挑战/不可用，沿用旧路由 %s"
+                      % (name, old[name].get("proxy")))
+            else:
+                print("[%s] 所有出口都不可用且无旧配置，交给 PAC 静态规则" % name)
             continue
         best = min(res, key=res.get)
         groups[name] = {
-            "proxy": "127.0.0.1:%d" % EXITS[best],
+            "proxy": "127.0.0.1:%d" % exits[best],
             "exit": best,
             "ttfb": res[best],
             "samples": res,
@@ -140,6 +196,26 @@ def show():
     return 0
 
 
+LOCK = os.path.join(HERE, "autoroute.lock")
+
+
+def _acquire():
+    """单实例锁。返回文件句柄（保活即持锁），拿不到返回 None。
+
+    看门狗每小时跑一次 --apply，用户也可能同时在终端手动跑。两个实例会同时
+    打同一批出口：互相抢带宽把 TTFB 抬到超时，anthropic 组因此被判「全灭」，
+    后跑完的那个用降级结果覆盖 route_map.json —— 2026-11-18 实测撞过一次。
+    msvcrt 的锁随进程退出自动释放，不会留下需要人工清的 stale lock。
+    """
+    try:
+        import msvcrt
+        f = open(LOCK, "a+")
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        return f
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="测完重建 PAC")
@@ -147,12 +223,33 @@ def main():
     a = ap.parse_args()
     if a.show:
         return show()
-    build()
-    if a.apply:
-        import pacroute
-        info = pacroute.apply_pac()
-        print("pac", info.get("ok"), info.get("url"))
-    return 0
+    lock = _acquire()
+    if lock is None:
+        print("另一个 autoroute 正在跑，本次跳过（避免两个实例互相抢带宽）")
+        return 0
+    try:
+        build()
+        if a.apply:
+            import pacroute
+            # 必须显式传活着的端口。无参 apply_pac() 会落到 DEFAULT_GENERAL=9910
+            # (Geph 未运行) / DEFAULT_FAST=2086 (pinned 已无此 inbound)，把
+            # fail-closed 的 GENERAL 规则指向两个死端口，Claude 直接打不开。
+            info = pacroute.apply_pac(pacroute.resolve_ep(None, "general"),
+                                      pacroute.resolve_ep(None, "fast"))
+            print("pac", info.get("ok"), info.get("url"), info.get("err", ""),
+                  "general=%s fast=%s" % (info.get("general"), info.get("fast")))
+            return 0 if info.get("ok") else 1
+        return 0
+    finally:
+        try:
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        except Exception:
+            pass
+        try:
+            lock.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

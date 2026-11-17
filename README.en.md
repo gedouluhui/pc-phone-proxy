@@ -66,9 +66,11 @@ pc/
 │  ├─ stop_proxy.py         ← remove proxy, back to direct
 │  ├─ watchdog.py           ← background self-healing
 │  ├─ pacroute.py           ← local PAC server + split lists
+│  ├─ doctor.py             ← one-shot health check (ports → PAC → sites → egress IP → watchdog)
 │  ├─ privacy_check.py      ← read-only privacy audit
 │  └─ proxy_diag.py         ← why is this domain direct/proxied, and which path works
 ├─ start-proxy.bat
+├─ check-proxy.bat          ← health check entry point
 └─ stop-proxy.bat
 ```
 
@@ -118,6 +120,24 @@ links and bundled nodes go through the same parser.
   `javac → d8 → aapt2 → zip → zipalign → apksigner`. Needs JDK 17, Android SDK build-tools and
   `libv2ray.aar` from [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite/releases).
 - **Windows**: plain Python, no build step — drop `sing-box.exe` into `pc/_proxy/bin/`.
+
+## Split-routing self-healing (2026-11-18)
+
+Four defects, each harmless on its own, combined into "all egresses are up but Claude will not
+open in a browser": `autoroute.py --apply` called `apply_pac()` without arguments and fell back to
+static default ports (`9910` Geph not running, `2086` not an inbound in the pinned config); `apply_pac()`
+never checked whether those ports were listening and still wrote a **fail-closed** `GENERAL` rule;
+the watchdog's PAC self-heal only compared the registry URL and server liveness, so it never noticed
+the content was wrong; and `autoroute`'s probes sent only a User-Agent, so `claude.ai` answered 403 to
+the probe (302 with `Accept` / `Accept-Language` / `sec-ch-ua`), which dropped the whole anthropic group
+from `route_map.json`.
+
+Now: `apply_pac()` resolves `general/fast` to ports that actually listen and **refuses to write** when
+none do; the watchdog parses the served PAC and re-applies if any `GENERAL` port is dead; `autoroute`
+skips exits whose upstream is dead and keeps the previous routing for a group it cannot measure;
+both probes send browser headers; `autoroute` holds a single-instance lock; the PAC fallback chain is
+de-duplicated. `doctor.py` / `check-proxy.bat` gives a layered verdict (ports → PAC → system proxy →
+7 sites → egress identity → watchdog), and `tests_ci/test_route_selfheal.py` pins all of it in CI.
 
 ## Known limits
 

@@ -126,8 +126,20 @@ def nudge(group):
         return -1
 
 
+# 探针必须装成浏览器：chatgpt.com / claude.ai 对 curl 默认 UA 直接返 403，
+# 门控会把它当成「出口坏了」并白重建一次出口组。真实用户走的是浏览器。
+PROBE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+PROBE_HDRS = ["-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "-H", "Accept-Language: en-US,en;q=0.9",
+              "-H", 'sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24"',
+              "-H", 'sec-ch-ua-platform: "Windows"',
+              "-H", "Upgrade-Insecure-Requests: 1"]
+
+
 def curl_probe(url, port, timeout=18):
     args = ["curl", "-sS", "--ssl-no-revoke", "--max-time", str(timeout),
+            "-A", PROBE_UA] + PROBE_HDRS + [
             "-o", "NUL", "-w", "%{http_code} %{size_download}",
             "-x", "http://127.0.0.1:%d" % int(port), url]
     try:
@@ -153,6 +165,7 @@ def curl_probe_body(url, port, timeout=18, keep=262144):
         fd, tmp = tempfile.mkstemp(prefix="probe_", suffix=".bin")
         os.close(fd)
         args = ["curl", "-sS", "--ssl-no-revoke", "--max-time", str(timeout),
+                "-A", PROBE_UA] + PROBE_HDRS + [
                 "-o", tmp, "-w", "%{http_code} %{size_download}",
                 "-x", "http://127.0.0.1:%d" % int(port), url]
         p = subprocess.run(args, capture_output=True, text=True,
@@ -242,9 +255,42 @@ def hk_up():
     return up(HK)
 
 
+_HK_POOL = {"at": 0.0, "uri": None, "why": ""}
+
+
+def hk_candidate(max_age=3600):
+    """Return a usable HK URI from the deep-test pool, or None.
+
+    Cached: reading node_deep.json every 5 minutes to answer the same "no HK
+    node exists" question is pure noise. 2026-11-18: the pool had 30 nodes and
+    zero HK, so every gate cycle spawn-tried a node that could not exist and
+    logged "HK node (Reddit) down -> restart" forever (watchdog.log showed one
+    every 5 min for hours). Never start a process we have no candidate for.
+    """
+    now = time.time()
+    if now - _HK_POOL["at"] < max_age:
+        return _HK_POOL["uri"]
+    _HK_POOL["at"] = now
+    try:
+        import start_proxy as S
+        _HK_POOL["uri"] = S.best_hk_uri()
+        _HK_POOL["why"] = "" if _HK_POOL["uri"] else "深测池里没有香港节点"
+    except Exception as e:
+        _HK_POOL["uri"] = None
+        _HK_POOL["why"] = repr(e)
+    return _HK_POOL["uri"]
+
+
 def ensure_hk_node():
     if hk_up():
         return True
+    if not hk_candidate():
+        # 没有候选就没什么可重启的：Reddit 已在 PAC 的 FAST 列表里，
+        # 2086 不存在时 PAC 会直接省掉 HK 规则。只在状态变化时记一行。
+        if _HK_POOL["why"] and _HK_POOL.get("logged") != _HK_POOL["at"]:
+            _HK_POOL["logged"] = _HK_POOL["at"]
+            log("HK exit skipped: %s (Reddit -> fast)" % _HK_POOL["why"])
+        return False
     log("HK node (Reddit) down -> restart")
     try:
         import start_proxy as S
@@ -344,6 +390,16 @@ def main():
         "rebuild_cooldown": 600, "rescan_cooldown": 12 * 3600,
     }
     last = {}
+    # 冷启动不要立刻跑 autoroute：它最长 7 分钟（5 组 × 4 出口 × 3 次），
+    # 期间第一次心跳和 PAC 自愈都还没跑，面板上看起来像「看门狗挂了」。
+    # route_map 新鲜就按正常间隔走；缺失或过旧才在 120s 后补一次。
+    try:
+        age = time.time() - os.path.getmtime(os.path.join(HERE, "route_map.json"))
+    except OSError:
+        age = 1e9
+    last["autoroute"] = start = time.time()
+    if age > 6 * 3600:
+        last["autoroute"] = start - (3600 - 120)
     fails = {"ports": 0, "general": 0, "fast": 0, "steam": 0}
     try:
         while True:
@@ -442,6 +498,8 @@ def main():
             # 由它输出 route_map.json，pacroute 渲染时会优先采用。
             if now - last.get("autoroute", 0) >= 3600:
                 last["autoroute"] = now
+                # 先把心跳写掉：autoroute 最长 7 分钟，期间状态文件不能停在旧值上
+                write_status(st)
                 run_script("autoroute.py", "--apply", timeout=420,
                            logfile="autoroute.log")
 
@@ -466,7 +524,20 @@ def main():
             if now - last.get("pac", 0) >= 120:
                 last["pac"] = now
                 url = pacroute._wget("AutoConfigURL")
-                if url != sysstate.pac_url() or not pacroute.server_alive():
+                stale = url != sysstate.pac_url() or not pacroute.server_alive()
+                if not stale:
+                    # URL 对 + server 活着 != 内容对。autoroute.py --apply 曾用
+                    # 死默认端口(9910/2086)覆盖 PAC，URL 没变，旧自愈永不触发，
+                    # fail-closed 的 GENERAL 规则就把 Claude 永久断在浏览器里。
+                    # 这里只校验「GENERAL 指向的端口都活着」，不校验等于 GEN/FAST：
+                    # 2101 挂掉时 resolve_ep 会合法地换成 2090，比对相等会无限重刷。
+                    served = pacroute._served_bytes()
+                    eps = pacroute.pac_endpoints(
+                        served.decode("utf-8", "replace") if served else "")
+                    if not eps or any(not pacroute._port_open(int(p)) for p in eps):
+                        log("PAC GENERAL -> dead/absent ports %s -> re-apply" % (eps,))
+                        stale = True
+                if stale:
                     log("PAC missing/stale (%s, want %s) -> re-apply"
                         % (url, sysstate.pac_url()))
                     pac_apply()

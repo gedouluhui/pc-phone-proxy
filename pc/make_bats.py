@@ -31,7 +31,19 @@ echo.
 pause
 """
 
-for name, text in (("start-proxy.bat", START), ("stop-proxy.bat", STOP)):
+CHECK = r"""@echo off
+setlocal
+title Portable Proxy - health check
+cd /d "%~dp0"
+set "PY=%~dp0..\runtime\python\python.exe"
+if not exist "%PY%" set "PY=python"
+"%PY%" -u "_proxy\doctor.py"
+echo.
+pause
+"""
+
+for name, text in (("start-proxy.bat", START), ("stop-proxy.bat", STOP),
+                   ("check-proxy.bat", CHECK)):
     data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
     with open(os.path.join(HERE, name), "wb") as f:
         f.write(data)
