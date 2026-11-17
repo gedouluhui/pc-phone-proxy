@@ -26,11 +26,16 @@ No account, no telemetry, no paid tier.
 
 ## What it does
 
-**Android (7.0+, v2.4)**
+**Android (7.0+, v2.5)**
 
 - One-tap start: benchmarks the whole pool concurrently, then Xray's observatory re-checks it every 30 s
   and fails over automatically
 - Split tunnelling: `geosite:cn` / `geoip:cn` / private ranges direct, everything else through the proxy
+- **AI egress gate (v2.5)**: one tap probes `chatgpt.com` and `claude.ai` through the fastest nodes on the
+  device; only nodes that answer 200/204 to *both* join `cg-balancer`, which is the only path for
+  ChatGPT/Claude domains. Results are keyed by node fingerprint and kept 7 days (the list shows `AI✓`).
+  Without it, publicly imported nodes have no region qualification at all and AI traffic lands on a random
+  egress — the classic "internet works but ChatGPT returns 403"
 - Import: `vless://` `vmess://` `trojan://` `ss://` share links, `http(s)` subscriptions, or the built-in
   public-source importer (7 lists, GitHub raw + jsDelivr mirror, 40 per source, 120 total)
 - TUN mode, no root; four ABIs (arm64-v8a, armeabi-v7a, x86, x86_64)

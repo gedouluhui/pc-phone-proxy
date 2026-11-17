@@ -42,6 +42,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private TextView logView;
     private Button button;
     private Button measureBtn;
+    private Button gateBtn;
     private Button importBtn;
     private Spinner spinner;
 
@@ -55,6 +56,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private final StringBuilder logBuf = new StringBuilder();
     private String pendingNode = "auto";
     private String appliedSelection = "auto";
+    private int gateOk = 0;
+    private int gateTotal = 0;
     private boolean populating = false;
     private boolean emptyHinted = false;
 
@@ -127,6 +130,27 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         mp.rightMargin = dp(8);
         tools.addView(measureBtn, mp);
+
+        gateBtn = new Button(this);
+        gateBtn.setText("AI 闸门");
+        gateBtn.setTextSize(14);
+        gateBtn.setAllCaps(false);
+        // 为什么要单独一个按钮：测速只证明「连得上」，不证明「ChatGPT 认这个出口」。
+        // 挂到 60 秒级自动跑会让免费节点池的 CPU/流量白烧，交给用户按需点一次。
+        gateBtn.setOnClickListener(v -> {
+            gateOk = 0;
+            gateTotal = 0;
+            gateBtn.setText("验证中…");
+            appendLog("验证 AI 出口（ChatGPT / Claude）…");
+            toast("开始验证，约 1-2 分钟");
+            Intent i = new Intent(this, ProxyVpnService.class)
+                    .setAction(ProxyVpnService.ACTION_GATE);
+            startService(i);
+        });
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        gp.rightMargin = dp(8);
+        tools.addView(gateBtn, gp);
 
         importBtn = new Button(this);
         importBtn.setText("导入节点 / 订阅");
@@ -217,7 +241,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         Long ms = nodeMs.get(n.tag);
         String suffix = "";
         if (ms != null) suffix = ms < 0 ? " · 不可用" : " · " + ms + "ms";
-        return n.name + suffix;
+        // AI✓ = 这个节点实测过得了 ChatGPT/Claude 的地区闸门（AI 域名只走这些）
+        return n.name + (n.cg ? " · AI✓" : "") + suffix;
     }
 
     private void refreshLabels() {
@@ -499,6 +524,28 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     @Override
     public void onNodesChanged() {
         ui.post(this::rebuildSpinner);
+    }
+
+    @Override
+    public void onGate(String tag, boolean ok, int done, int total) {
+        ui.post(() -> {
+            gateTotal = total;
+            if (ok) gateOk++;
+            if (done >= total) {
+                gateBtn.setText("AI 闸门");
+                appendLog("AI 闸门结果：" + gateOk + "/" + total
+                        + " 个节点能过 ChatGPT/Claude"
+                        + (gateOk == 0 ? "（这批都不行，换节点源或换网络）" : ""));
+                gateOk = 0;
+                gateTotal = 0;
+                rebuildSpinner();   // 重新读一遍 cg 标记，标签上的 AI✓ 才会更新
+            } else if (!ok) {
+                appendLog("  " + tag + " 未通过 AI 闸门（" + done + "/" + total + "）");
+                gateBtn.setText("验证中 " + done + "/" + total);
+            } else {
+                gateBtn.setText("验证中 " + done + "/" + total);
+            }
+        });
     }
 
     // ------------------------------------------------------------- 视图

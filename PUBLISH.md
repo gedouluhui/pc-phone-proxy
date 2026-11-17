@@ -62,6 +62,12 @@ git push -u origin main
 
 > GitHub 会把 Release 资产名里的中文剥掉（实测 `手机代理-公版.apk` 会变成 `-.apk`），所以资产名统一用 ASCII 的 `PhoneProxy-public.apk`；本地构建产物仍叫 `手机代理-公版.apk`，两者字节相同。
 
+> **发版前对一遍版本**：`phone/AndroidManifest.xml` 的 `versionName` 是源码真相，
+> `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.5、
+> 用户下到的还是 2.4 且校验值对不上。当前状态：源码 2.5（AI 出口闸门），
+> `dist/` 仍是 2.4 —— 下次发版时先 `python phone/build_apk.py`，再把产物复制成
+> `dist/手机代理-公版.apk` 并重算这一行。
+
 ## 4. 发布后验证
 
 - 仓库首页的 README 能正常显示，图片 `docs/phone-connected.png` 能打开。

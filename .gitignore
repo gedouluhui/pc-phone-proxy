@@ -53,3 +53,5 @@ __pycache__/
 # --- releases (upload the APK as a release asset, do not commit it) ---
 dist/*.apk
 pc/_proxy/route_map.json
+phone/手机代理.apk
+phone/*.idsig

@@ -11,11 +11,14 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * v2：内置节点（随 APK 打包）+ 用户导入节点（剪贴板 / 订阅链接）合并成一份 Xray 配置。
@@ -69,11 +72,25 @@ public final class ConfigBuilder {
     /** loadNodes 跳过的条目（tag + 原因），供界面日志诊断用。 */
     public static final List<String> lastSkips = new ArrayList<>();
 
+    /**
+     * AI 出口闸门的探针。必须是「被地区封锁时返回 403、正常时返回 200」的地址。
+     *
+     * libv2ray 的 measureInstDelay 只把 200 / 204 算成功（其它状态码返回 -1），
+     * 所以这两个 URL 能真实区分「节点能不能用 ChatGPT / Claude」：
+     * 机房 IP 被 Cloudflare 判定不支持地区时是 403 → 判失败。
+     * 用 /cdn-cgi/trace 而不是首页：首页对无 UA 的 Go 客户端会走挑战页。
+     */
+    public static final String[] AI_PROBES = {
+            "https://chatgpt.com/cdn-cgi/trace",
+            "https://claude.ai/cdn-cgi/trace",
+    };
+
     public static final class Node {
         public final String tag;          // g3 / i0 ……（同时用于 proxy-<tag> 出站标签）
         public final String name;         // 展示名，如 "g3 · IT vless"
+        public final String key;          // server:port/proto 的短哈希，跨重排/重导入稳定
         public final boolean imported;
-        public final boolean cg;          // 深测确认可过 ChatGPT 地区闸门
+        public boolean cg;                // 过得了 ChatGPT/Claude 地区闸门
         public final JSONObject outbound; // tag 已改为 proxy-<tag>
 
         Node(String tag, String name, boolean imported, boolean cg, JSONObject outbound) {
@@ -82,6 +99,45 @@ public final class ConfigBuilder {
             this.imported = imported;
             this.cg = cg;
             this.outbound = outbound;
+            this.key = nodeKey(outbound);
+        }
+    }
+
+    /**
+     * 节点身份：server:port/protocol 的哈希。
+     *
+     * 不能用 tag 当键：导入节点的 tag 是 i0/i1… 按位置生成，用户删掉一个或换一次源，
+     * 后面所有节点的 tag 都会平移，闸门结果就会张冠李戴（把能过 AI 的标记贴到
+     * 不能过的节点上，比没有标记更糟）。
+     */
+    public static String nodeKey(JSONObject ob) {
+        String id = "";
+        try {
+            JSONObject s = ob.optJSONObject("settings");
+            JSONArray v = s != null ? s.optJSONArray("vnext") : null;
+            JSONArray sv = s != null ? s.optJSONArray("servers") : null;
+            JSONObject ep = null;
+            if (v != null && v.length() > 0) ep = v.optJSONObject(0);
+            else if (sv != null && sv.length() > 0) ep = sv.optJSONObject(0);
+            if (ep != null) {
+                id = ep.optString("address", "") + ":" + ep.optInt("port", 0)
+                        + "/" + ob.optString("protocol", "");
+            }
+        } catch (Throwable ignored) {
+        }
+        if (id.isEmpty()) id = ob.optString("tag", "");
+        return sha1hex(id);
+    }
+
+    private static String sha1hex(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] d = md.digest(s.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(s.hashCode());
         }
     }
 
@@ -147,6 +203,12 @@ public final class ConfigBuilder {
             }
             out.add(new Node(tag, tag + " · " + displayName(ob), true, false, ob));
         }
+        // 本机实测过的闸门结果优先于内置 JSON 里的静态标记：
+        // 公开源导入的节点没有 cg 字段，全靠这一步才有资格进 cg-balancer。
+        Set<String> gated = loadGateKeys(ctx);
+        for (Node n : out) {
+            if (!n.cg && gated.contains(n.key)) n.cg = true;
+        }
         return out;
     }
 
@@ -177,6 +239,61 @@ public final class ConfigBuilder {
         for (String u : uris) arr.put(u);
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_URIS, arr.toString()).apply();
+    }
+
+    // -------------------------------------------------- AI 出口闸门（本机实测结果）
+
+    private static final String KEY_GATE = "gate_ok";
+
+    /** 闸门结果有效期（天）。免费节点换手很快，太久以前的结果反而误导。 */
+    public static final int GATE_TTL_DAYS = 7;
+
+    private static long today() {
+        return System.currentTimeMillis() / 86400000L;
+    }
+
+    /** 仍有效的「过闸门」节点 key 集合（条目格式 key@epochDay）。 */
+    public static Set<String> loadGateKeys(Context ctx) {
+        Set<String> out = new HashSet<>();
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> raw = new HashSet<>();
+        try {
+            Set<String> got = sp.getStringSet(KEY_GATE, null);
+            if (got != null) raw.addAll(got);
+        } catch (Exception ignored) {
+        }
+        long now = today();
+        for (String e : raw) {
+            int at = e.lastIndexOf('@');
+            if (at <= 0) continue;
+            try {
+                if (now - Long.parseLong(e.substring(at + 1)) <= GATE_TTL_DAYS) {
+                    out.add(e.substring(0, at));
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return out;
+    }
+
+    /** 记录一个节点的闸门结果；失败就把它从白名单里摘掉。 */
+    public static void saveGate(Context ctx, String key, boolean ok) {
+        if (key == null || key.isEmpty()) return;
+        SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> next = new HashSet<>();
+        try {
+            Set<String> got = sp.getStringSet(KEY_GATE, null);
+            if (got != null) {
+                for (String e : got) {
+                    int at = e.lastIndexOf('@');
+                    if (at > 0 && e.substring(0, at).equals(key)) continue; // 覆盖旧结果
+                    next.add(e);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (ok) next.add(key + "@" + today());
+        sp.edit().putStringSet(KEY_GATE, next).apply();
     }
 
     /** 合并导入（去重、限 40 条），返回新增条数。 */

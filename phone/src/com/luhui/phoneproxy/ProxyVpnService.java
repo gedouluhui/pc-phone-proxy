@@ -14,9 +14,13 @@ import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import libv2ray.CoreCallbackHandler;
 import libv2ray.CoreController;
@@ -32,6 +36,7 @@ public class ProxyVpnService extends VpnService {
     public static final String ACTION_START = "com.luhui.phoneproxy.START";
     public static final String ACTION_STOP = "com.luhui.phoneproxy.STOP";
     public static final String ACTION_MEASURE = "com.luhui.phoneproxy.MEASURE";
+    public static final String ACTION_GATE = "com.luhui.phoneproxy.GATE";
     public static final String EXTRA_NODE = "node"; // "auto" 或节点 tag
     public static final String EXTRA_FORCE = "force"; // true=即使选择未变也重启（导入新节点后生效）
 
@@ -46,6 +51,8 @@ public class ProxyVpnService extends VpnService {
         void onTraffic(long upBps, long downBps, String activeTag);
         void onMeasure(String tag, long ms); // ms < 0 表示不可用
         void onNodesChanged();
+        /** AI 闸门进度：done/total，ok 表示该节点通过了 ChatGPT+Claude 两个探针。 */
+        void onGate(String tag, boolean ok, int done, int total);
     }
 
     public static volatile Listener listener;
@@ -58,6 +65,11 @@ public class ProxyVpnService extends VpnService {
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService measurePool = Executors.newFixedThreadPool(4);
+    /** tag -> 上次实测延迟（ms）。闸门只验证最快的那些，避免 120 个节点跑十几分钟。 */
+    private final Map<String, Long> delayMs = new ConcurrentHashMap<>();
+    /** 一次闸门最多验证多少个节点。 */
+    private static final int GATE_MAX = 24;
+    private volatile boolean gating = false;
     private CoreController controller;
     private ParcelFileDescriptor tunFd;
     private volatile boolean starting = false;
@@ -75,6 +87,12 @@ public class ProxyVpnService extends VpnService {
         if (ACTION_MEASURE.equals(action)) {
             if (state != STATE_RUNNING) startForegroundCompat();
             kickMeasureAll(state != STATE_RUNNING);
+            return START_NOT_STICKY;
+        }
+        if (ACTION_GATE.equals(action)) {
+            // 测节点不需要 VPN 在跑：measureOutboundDelay 自己起临时实例。
+            if (state != STATE_RUNNING) startForegroundCompat();
+            kickGate(state != STATE_RUNNING);
             return START_NOT_STICKY;
         }
 
@@ -126,6 +144,15 @@ public class ProxyVpnService extends VpnService {
 
             String config = ConfigBuilder.fullConfig(nodes, selection);
 
+            int gated = 0;
+            for (ConfigBuilder.Node n : nodes) if (n.cg) gated++;
+            if (gated == 0) {
+                // 静默降级是最坑的：用户只会看到 ChatGPT 403，却不知道是出口没验证
+                log("提示：AI 出口还没验证 → ChatGPT/Claude 可能 403。点「AI 闸门」验一次。");
+            } else {
+                log("AI 出口：" + gated + " 个已验证节点，AI 域名只走它们");
+            }
+
             Builder builder = new Builder()
                     .setSession("手机代理")
                     .addAddress("172.19.0.1", 30)
@@ -154,6 +181,9 @@ public class ProxyVpnService extends VpnService {
 
             currentSelection = selection;
             ConfigBuilder.Node sel = ConfigBuilder.find(nodes, selection);
+            if (sel != null && !sel.cg) {
+                log("注意：固定节点 " + sel.name + " 没通过 AI 闸门，ChatGPT/Claude 可能 403");
+            }
             runningNode = sel != null ? sel.name
                     : ("自动选线（" + nodes.size() + " 节点池）");
             setState(STATE_RUNNING, "已连接 · " + runningNode);
@@ -186,6 +216,7 @@ public class ProxyVpnService extends VpnService {
                     long ms = -1;
                     try {
                         ms = Libv2ray.measureOutboundDelay(ConfigBuilder.measureConfig(n), "");
+                        if (ms > 0) delayMs.put(n.tag, ms); else delayMs.remove(n.tag);
                     } catch (Throwable ignored) {
                     } finally {
                         latch.countDown();
@@ -199,6 +230,88 @@ public class ProxyVpnService extends VpnService {
             } catch (InterruptedException ignored) {}
             if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
         }, "measure-all").start();
+    }
+
+    /**
+     * AI 出口闸门：对最快的 GATE_MAX 个节点各跑 chatgpt.com / claude.ai 两个探针。
+     *
+     * 为什么必须在手机上实测，而不是照搬电脑端的深测结果：用户多半用「公开源导入」，
+     * 那批节点在 App 里没有 cg 标记，AI 域名只能落回普通 balancer，等于交给一个
+     * 可能被 Cloudflare 判「不支持地区」的出口——现象就是 ChatGPT/Claude 打开 403。
+     * libv2ray 的 measureInstDelay 只把 200/204 当成功，地区封锁是 403 → 返回 -1，
+     * 所以两个探针能真实区分「能过闸门」和「只是延迟低」。
+     */
+    private void kickGate(boolean stopWhenIdle) {
+        if (gating) {
+            log("AI 闸门已经在跑了，等它出结果…");
+            return;
+        }
+        gating = true;
+        new Thread(() -> {
+            try {
+                List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
+                if (nodes.isEmpty()) {
+                    log("没有节点可验证");
+                    return;
+                }
+                // 先验最快的那些：慢节点本来也抢不到流量，没必要为它们花时间
+                List<ConfigBuilder.Node> cand = new ArrayList<>(nodes);
+                cand.sort((a, b) -> Long.compare(
+                        delayMs.containsKey(a.tag) ? delayMs.get(a.tag) : Long.MAX_VALUE / 2,
+                        delayMs.containsKey(b.tag) ? delayMs.get(b.tag) : Long.MAX_VALUE / 2));
+                final int total = Math.min(cand.size(), GATE_MAX);
+                log("AI 出口验证：" + total + "/" + nodes.size() + " 个节点 × "
+                        + ConfigBuilder.AI_PROBES.length + " 个探针（ChatGPT / Claude）…");
+                final AtomicInteger done = new AtomicInteger();
+                final AtomicInteger ok = new AtomicInteger();
+                ExecutorService pool = Executors.newFixedThreadPool(4);
+                for (int i = 0; i < total; i++) {
+                    final ConfigBuilder.Node n = cand.get(i);
+                    pool.submit(() -> {
+                        boolean pass = probeAiGate(n);
+                        try {
+                            ConfigBuilder.saveGate(this, n.key, pass);
+                        } catch (Throwable ignored) {
+                        }
+                        int d = done.incrementAndGet();
+                        if (pass) ok.incrementAndGet();
+                        Listener l = listener;
+                        if (l != null) l.onGate(n.tag, pass, d, total);
+                        if (d == total) {
+                            log("AI 出口验证完成：合格 " + ok.get() + "/" + total
+                                    + (ok.get() == 0
+                                    ? "。这批节点都过不了地区闸门，换节点源或换网络再试"
+                                    : "。ChatGPT/Claude 只会走这些节点"));
+                        }
+                    });
+                }
+                pool.shutdown();
+                pool.awaitTermination(15, java.util.concurrent.TimeUnit.MINUTES);
+            } catch (Throwable e) {
+                log("AI 闸门失败：" + e.getMessage());
+            } finally {
+                gating = false;
+                if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
+            }
+        }, "ai-gate").start();
+    }
+
+    /** 两个探针都返回 >0 才算过（libv2ray 只把 200/204 认作成功）。 */
+    private static boolean probeAiGate(ConfigBuilder.Node n) {
+        String cfg;
+        try {
+            cfg = ConfigBuilder.measureConfig(n);
+        } catch (Throwable t) {
+            return false;
+        }
+        for (String url : ConfigBuilder.AI_PROBES) {
+            try {
+                if (Libv2ray.measureOutboundDelay(cfg, url) <= 0) return false;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void stopIdleMeasure() {

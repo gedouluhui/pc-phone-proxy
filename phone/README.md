@@ -3,6 +3,38 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## AI 出口闸门（v2.5）
+
+**问题**：公开源导入的节点没有任何「地区资格」信息。App 原来的 `cg-balancer` 只认
+内置 `assets/nodes.json` 里的 `cg` 标记（由电脑端深测写入），所以公版用户 100% 走普通
+balancer，ChatGPT / Claude 被 Cloudflare 判「不支持地区」→ 403，而用户只看到「能上网但
+AI 打不开」。
+
+**做法**：新增 `ACTION_GATE` 与界面上的「AI 闸门」按钮。对**延迟最快的 24 个节点**，
+用 `Libv2ray.measureOutboundDelay` 各打两个探针：
+
+| 探针 | 判据 |
+|---|---|
+| `https://chatgpt.com/cdn-cgi/trace` | 200/204 |
+| `https://claude.ai/cdn-cgi/trace` | 200/204 |
+
+`libv2ray` 内部的 `measureInstDelay` **只把 200 / 204 认作成功**（其它状态码返回 -1），
+所以地区封锁的 403 会被正确判失败——这不是「ping 得通就算过」。两个都过才写进
+`SharedPreferences` 的白名单，`loadNodes()` 把它并进 `Node.cg`，AI 域名规则只挂
+`cg-balancer`。
+
+几个刻意的取舍：
+
+- **按节点指纹存，不按 tag**：导入节点的 tag 是 `i0/i1…` 按位置生成的，换一次源整批平移，
+  用 tag 会把「能过闸门」的标记贴到别的节点上。指纹是 `server:port/protocol` 的 SHA-1 前 8 字节。
+- **结果 7 天过期**：免费节点换手快，两周前的结论比没有结论更误导。
+- **只验最快的 24 个**：120 个节点 × 2 探针 × 12s 超时会把手机烤熟；慢节点本来也抢不到流量。
+- **开代理时如果 `cg` 池为空会明确提示**，不再静默降级（原来这是最坑的一点）。
+- **不自动跑**：测一次是分钟级的耗电动作，交给用户按需点；导入后日志会提示。
+
+手动验证：连上代理 → 点「AI 闸门」→ 等 1-2 分钟 → 日志给出「合格 N/24」，
+节点列表里通过的打 `AI✓`。
+
 ## 环境
 
 | 依赖 | 说明 |
