@@ -29,6 +29,18 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+
+# pythonw 没有控制台：解释器级硬崩溃（访问违例、栈溢出、COM/WMI 抛 SEH）
+# 不会进 logs/watchdog.log，进程就这么无声消失，而「看门狗死了」比「出口挂了」
+# 更难发现——没人守着守夜人。faulthandler 把这类栈写进单独的文件。
+try:
+    import faulthandler
+    os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
+    _CRASH = open(os.path.join(HERE, "logs", "watchdog_crash.log"), "a")
+    faulthandler.enable(file=_CRASH)
+except Exception:
+    _CRASH = None
+
 import pacroute           # noqa: E402
 import proxyctl as P      # noqa: E402
 import sysstate           # noqa: E402

@@ -225,6 +225,12 @@ python start_proxy.py
 - `autoroute` 加单实例锁：看门狗的定时任务和手动执行不会同时打同一批出口。
 - PAC 的回落链去重（`PROXY 2103; PROXY 2103; ...` 会让浏览器对死端口多等一轮）。
 
+还有一条：看门狗自己会无声消失。`_restart_watchdog.py` / `start_proxy.py` 原来用
+`DETACHED_PROCESS | CREATE_NO_WINDOW` 起 `watchdog.py`，这组标志自相矛盾（后者会给子进程
+建控制台），宿主控制台一销毁后台进程就被 TerminateProcess —— `finally` 不跑、日志一行不写。
+现在两处都改成和 PAC 服务一致的 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，
+并给 `watchdog.py` 加了 `faulthandler` → `logs/watchdog_crash.log`。
+
 配套加了 `doctor.py` / `check-proxy.bat` 体检，和 `tests_ci/test_route_selfheal.py`
 （把上面四条不变量钉进 CI，含「无活出口时必须拒绝写 PAC」「探针必须带浏览器头」
 「无香港候选时不得反复重启」）。

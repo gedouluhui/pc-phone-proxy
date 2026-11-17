@@ -291,7 +291,11 @@ def ensure_watchdog():
         p = subprocess.Popen([exe, os.path.join(HERE, "watchdog.py")], cwd=HERE,
                              stdout=logf, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL,
-                             creationflags=0x00000008 | 0x08000000)  # DETACHED|NO_WINDOW
+                             # DETACHED|NEW_PROCESS_GROUP，与 pacroute 的 PAC 服务一致。
+                             # 原来用 DETACHED|CREATE_NO_WINDOW 是自相矛盾的组合：
+                             # NO_WINDOW 会给子进程建控制台，宿主控制台一销毁，看门狗
+                             # 就无声消失（不写日志、不跑 finally）。2026-11-18 实测。
+                             creationflags=0x00000008 | 0x00000200)
     with io.open(WATCH_PID, "w", encoding="utf-8", newline="\n") as f:
         f.write(str(p.pid))
     time.sleep(1.0)
