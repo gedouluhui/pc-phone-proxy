@@ -6,8 +6,8 @@ Checks the two mistakes that actually happened:
   2. the APK you are about to publish embeds real nodes instead of the empty sample.
 
 Usage:
-    python check_release.py                     # git check only
-    python check_release.py ../dist/手机代理-公版.apk   # also inspect the APK
+    python check_release.py                     # git check + inspect built artifacts
+    python check_release.py ../dist/手机代理-公版.apk   # also inspect that APK
 """
 import json
 import subprocess
@@ -40,6 +40,15 @@ def git_tracked():
     return [l.strip() for l in out.splitlines() if l.strip()]
 
 
+def nodes_in(apk: Path) -> int:
+    try:
+        with zipfile.ZipFile(apk) as z:
+            nodes = json.loads(z.read("assets/nodes.json").decode("utf-8"))
+        return len(nodes) if isinstance(nodes, list) else -1
+    except Exception:  # noqa: BLE001
+        return -1
+
+
 def main() -> int:
     bad = []
     for path in git_tracked():
@@ -54,22 +63,26 @@ def main() -> int:
     else:
         print("OK: git tracks no node credentials, keystores or APKs")
 
-    if len(sys.argv) > 1:
-        apk = Path(sys.argv[1])
+    # 发布物（dist/ 与本地构建产物）必须内置空节点表。
+    # 2026-11-18：v2.5 的第一个 Release 资产就是这样把 24 个节点凭据带上去的——
+    # git 里干净不等于 APK 里干净，两者必须分开查。
+    targets = [Path(a) for a in sys.argv[1:]]
+    if not targets:
+        for cand in (ROOT / "dist" / "手机代理-公版.apk",
+                     HERE / "手机代理.apk"):
+            if cand.is_file():
+                targets.append(cand)
+    for apk in targets:
         if not apk.is_file():
             print("SKIP: APK not found:", apk)
-        else:
-            with zipfile.ZipFile(apk) as z:
-                try:
-                    nodes = json.loads(z.read("assets/nodes.json").decode("utf-8"))
-                    n = len(nodes) if isinstance(nodes, list) else -1
-                except Exception:  # noqa: BLE001
-                    n = -1
-            print("APK %s embeds %s node(s)" % (apk.name, n))
-            if n > 0:
-                print("NOTE: this build carries real credentials - do NOT upload it to a public release.")
-            elif n == 0:
-                print("OK: empty node pool (safe for public release).")
+            continue
+        n = nodes_in(apk)
+        print("APK %s embeds %s node(s)" % (apk.name, n))
+        if n > 0:
+            bad.append(str(apk))
+            print("FAIL: 这是私用版，不能作为公开发布物（重新用 --public 构建）。")
+        elif n == 0:
+            print("OK: empty node pool (safe for public release).")
     return 1 if bad else 0
 
 

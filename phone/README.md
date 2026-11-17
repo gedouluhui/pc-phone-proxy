@@ -72,6 +72,11 @@ App 支持三种节点来源：
 2. **用户导入**：粘贴分享链接或订阅地址。
 3. **安装包内置**（`assets/nodes.json`）：只用于自用版。公共版不内置任何节点；要做一个只给自己用的版本：
 
+> **构建公开版一律 `python build_apk.py --public`**。不带这个参数时脚本会把本地
+> `assets/nodes.json`（真实凭据）打进 APK——2026-11-18 的 v2.5 首个 Release 资产就是这么
+> 把 24 个节点传上去的（十分钟后删除并替换）。现在 `--public` 会强制空表、打包后读回 APK
+> 断言节点数为 0；`python check_release.py` 也会检查 `dist/` 与本地产物的节点数。
+
 ```bash
 # 方式 A：从电脑端 pinned.json（分享链接 -> outbound）
 python gen_nodes.py /path/to/pinned.json

@@ -69,8 +69,14 @@ git push -u origin main
 > 当前状态（2026-11-18）：已发布 **v2.5**
 > （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.5>），
 > 资产 `PhoneProxy-public.apk` 56,955,831 B，
-> SHA256 `8e240103721a0a1361290a6d4aee795644c9ccb62284ba96654026a8712a4992`，
+> SHA256 `072347bb231169433660c91a0dfea4032ef211f2080fb9fe9651cde6c04261df`，
 > 与 `dist/手机代理-公版.apk` 字节一致。下次发版按上面第 5 步重新上传并改这一行。
+>
+> **公开版必须 `python build_apk.py --public`**。不带参数时脚本会把本地
+> `assets/nodes.json`（真实节点凭据）打进 APK；2026-11-18 第一次发的 v2.5 资产就是这样
+> 把 24 个节点带上去的，十分钟后才发现并替换。现在 `--public` 会强制空表并在打包后
+> 读回 APK 断言节点数为 0，`python phone/check_release.py`（无参数）也会检查
+> `dist/` 与本地产物的节点数。两者都不通过就不要上传。
 
 ## 4. 发布后验证
 

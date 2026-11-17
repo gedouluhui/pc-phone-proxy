@@ -16,15 +16,25 @@ Configuration (environment variables, all optional)
   PROXY_APK_OUT    output APK path
   PROXY_NODES_JSON node list to embed (default assets/nodes.json)
 
+Command line
+  python build_apk.py --public   build the credential-free variant (nodes.json = [])
+
+  **发布公开版必须带 --public**。assets/nodes.json 是本地私用池（被 .gitignore 忽略），
+  build_apk.py 会无条件把它打进 APK；忘一次就把几十个节点的凭据传到公开 Release 上了。
+  2026-11-18 真踩过一次（v2.5 首个资产），所以现在 --public 会强制空表，并且打包后
+  会重新读一遍 APK 里的 assets/nodes.json 断言它是 []。
+
 Node list format: [{"tag":"p0","name":"...","outbound":{...}}, ...]
 Use gen_nodes.py to convert share links (pinned.json) into this format.
 An empty [] builds an app with no bundled nodes; users then import their own
 share links or subscription inside the app.
 """
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 import glob
 
@@ -105,10 +115,17 @@ KEYSTORE = os.environ.get("PROXY_KEYSTORE") or os.path.join(ROOT, "phoneproxy.ke
 OUT_APK = os.environ.get("PROXY_APK_OUT") or os.path.join(ROOT, "手机代理.apk")
 # Prefer a node list you generated (assets/nodes.json, git-ignored); otherwise
 # the committed empty sample, which builds an app with no bundled nodes.
+PUBLIC = "--public" in sys.argv
 NODES_JSON = (os.environ.get("PROXY_NODES_JSON")
               or (os.path.join(ROOT, "assets", "nodes.json")
                   if os.path.exists(os.path.join(ROOT, "assets", "nodes.json"))
                   else os.path.join(ROOT, "assets", "nodes.sample.json")))
+if PUBLIC:
+    # 公开版：不看本地私用池，直接用一个只有 [] 的临时文件，避免「忘了加参数」
+    # 或者「sample 被改坏」两种翻车方式。
+    NODES_JSON = os.path.join(tempfile.gettempdir(), "phoneproxy_public_nodes.json")
+    with open(NODES_JSON, "w", encoding="utf-8") as f:
+        f.write("[]\n")
 
 env = dict(os.environ, JAVA_HOME=os.path.dirname(JDK), PYTHONIOENCODING="utf-8")
 
@@ -214,4 +231,24 @@ run([exe(BT, "apksigner.bat" if os.name == "nt" else "apksigner"), "sign",
      "--out", OUT_APK, aligned])
 run([exe(BT, "apksigner.bat" if os.name == "nt" else "apksigner"),
      "verify", "--print-certs", OUT_APK])
+
+# 7. 打包后自检：读回 APK 里的 assets/nodes.json，确认里面到底装了什么
+with zipfile.ZipFile(OUT_APK) as z:
+    try:
+        embedded = z.read("assets/nodes.json").decode("utf-8", "replace")
+    except KeyError:
+        embedded = "[]"
+try:
+    count = len(json.loads(embedded))
+except Exception:
+    count = -1
+if PUBLIC or os.environ.get("PROXY_RELEASE_BUILD"):
+    if count != 0:
+        sys.exit("FATAL: --public 构建里竟然有 %d 个节点（assets/nodes.json）。"
+                 "这会泄露节点凭据，拒绝产出。" % count)
+    print("public build: assets/nodes.json = [] (0 nodes)")
+else:
+    print("WARNING: 这个 APK 内嵌了 %d 个节点凭据（私用版）。"
+          "**不要**上传到公开 Release；公开版请用 python build_apk.py --public。"
+          % count)
 print("APK OK:", OUT_APK, os.path.getsize(OUT_APK), "bytes")
