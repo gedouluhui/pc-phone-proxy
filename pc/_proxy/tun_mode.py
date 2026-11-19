@@ -42,6 +42,7 @@ TUN_ADDR = "172.19.0.1/30"
 # taken by Clash Verge / mihomo / an older TUN copy; sharing it made our exits
 # die at startup with a message that looked exactly like "every node is dead".
 CLASH_PORT = 19091
+GEOIP_SRS = os.path.join(HERE, "rulesets", "geoip-cn.srs")
 CREATE_NO_WINDOW = 0x08000000
 
 
@@ -218,12 +219,21 @@ def build_config():
         "outbounds": outbounds,
         "route": {
             "auto_detect_interface": True,
+            # 直连优先：用中国 IP 段做兜底判断。域名列表只能覆盖已知站点，
+            # 大量国内 CDN/下载器用的是陌生域名或纯 IP，只有按目标 IP 判定才
+            # 能做到「能直连的一律直连，只有真出国的才走节点」。
+            "rule_set": ([{"type": "local", "tag": "geoip-cn", "format": "binary",
+                           "path": GEOIP_SRS}] if os.path.isfile(GEOIP_SRS) else []),
             "final": "grp-any",
             "rules": [
                 # 先嗅探域名：后面的 domain_suffix 才能命中 TLS/HTTP 目标
                 {"action": "sniff", "inbound": ["tun-in"],
                  "sniffer": ["http", "tls", "quic"], "timeout": "500ms"},
                 # 隐私与国内直连：与分流模式完全一致的优先级
+                # Steam / 壁纸引擎要外区商店与创意工坊，必须在直连判定之前
+                # 显式拦下来走代理（steamcontent 等下载 CDN 已在 DIRECT 里，
+                # 命中上一条，不受影响）。
+                {"domain_suffix": pacroute.STEAM, "outbound": "grp-any"},
                 {"domain_suffix": pacroute.DOMESTIC, "outbound": "direct"},
                 {"domain_suffix": pacroute.SENSITIVE, "outbound": "direct"},
                 {"ip_is_private": True, "outbound": "direct"},
@@ -238,6 +248,9 @@ def build_config():
                 {"domain_suffix": pacroute.GOOGLE_APP,
                  "outbound": "grp-google" if gmembers else "grp-general"},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},
+                # 目标 IP 在中国境内 -> 直连。放在最后，前面显式规则优先。
+                *([{"rule_set": "geoip-cn", "outbound": "direct"}]
+                  if os.path.isfile(GEOIP_SRS) else []),
             ],
         },
     }

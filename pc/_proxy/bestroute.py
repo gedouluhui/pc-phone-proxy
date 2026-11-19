@@ -36,6 +36,7 @@ CLI_MIXED = 2090
 # urltest 等于在测本地网络，于是所有节点都被判"通"，选出来的可能是完全不能用的节点。
 HEALTH_URL = "https://www.gstatic.com/generate_204"
 HEALTH = os.path.join(HERE, "pinned_health.json")
+GEOIP_SRS = os.path.join(HERE, "rulesets", "geoip-cn.srs")
 
 _health_bad = None
 
@@ -220,7 +221,13 @@ def build_config(gen, fast):
                        {"type": "urltest", "tag": "grp-any", "outbounds": anytags,
                         "url": HEALTH_URL, "interval": "60s", "tolerance": 400}]
                       + outbounds + [{"type": "direct", "tag": "direct"}]),
-        "route": {"rules": [
+        "route": {
+            # 直连优先（同 TUN）：国内 IP 段一律 direct，域名列表只负责那些
+            # 需要提前分流的站点。2090 是给不认 PAC 的程序用的，它们访问的
+            # 国内 CDN 往往没有域名特征，只能靠 IP 判定。
+            "rule_set": ([{"type": "local", "tag": "geoip-cn", "format": "binary",
+                           "path": GEOIP_SRS}] if os.path.isfile(GEOIP_SRS) else []),
+            "rules": [
             # 2026-11-11 WorkBuddy hotfix: 国内域名在所有门强制直连（含米哈游全家桶）。
             # PAC 只管浏览器；游戏/CLI 走 env 或缓存 PAC 时会把登录请求送进 2103/2090，
             # 海外节点到不了国服登录接口（实测 000）。此规则在任何 inbound 判定前生效。
@@ -248,6 +255,8 @@ def build_config(gen, fast):
             {"inbound": ["in-cli"], "domain_suffix": pacroute.DIRECT,
              "outbound": "direct"},
             {"inbound": ["in-cli"], "ip_is_private": True, "outbound": "direct"},
+            *([{"inbound": ["in-cli"], "rule_set": "geoip-cn", "outbound": "direct"}]
+              if os.path.isfile(GEOIP_SRS) else []),
             {"inbound": ["in-cli"], "outbound": "grp-any"},
         ]},
     }
