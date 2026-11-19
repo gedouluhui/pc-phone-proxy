@@ -12,16 +12,21 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - name: 语法检查（pc/_proxy）
         run: python -m compileall -q pc/_proxy
 
-      - name: PAC / SSRF / 脱敏 回归
-        run: python tests_ci/test_pacroute.py
+      - name: PC 回归（PAC / SSRF / 发布闸门 / 脱敏）
+        run: python -m unittest discover -s tests_ci -v
 
-      - name: 出口自愈 / 探针身份 回归
-        run: python tests_ci/test_route_selfheal.py
+      - name: 订阅地址护栏 PoC（JDK）
+        run: python phone/tests/run_guard_poc.py
 
       - name: 发布前防泄漏自检
         run: python phone/check_release.py

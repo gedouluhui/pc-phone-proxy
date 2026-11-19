@@ -1,0 +1,10 @@
+{
+  "kind": "subscription-uri-poc",
+  "jdk": "jdk-17",
+  "source": "phone/src/com/luhui/phoneproxy/SubscriptionGuard.java",
+  "cases": 39,
+  "passed": 39,
+  "failed": 0,
+  "failures": [],
+  "exit": 0
+}

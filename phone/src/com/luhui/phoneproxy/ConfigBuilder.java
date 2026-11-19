@@ -330,13 +330,41 @@ public final class ConfigBuilder {
 
     /** 拉取订阅链接（在后台线程调用）。返回其中的分享链接。 */
     public static List<String> fetchSubscription(String url) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(25000);
-        c.setRequestProperty("User-Agent",
-                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
-        int code = c.getResponseCode();
-        if (code != 200) throw new IllegalStateException("HTTP " + code);
+        java.net.URI target;
+        try {
+            target = SubscriptionGuard.check(url);
+        } catch (SubscriptionGuard.Rejected rejected) {
+            // Untrusted input decides where the app connects; refuse before DNS.
+            throw new IllegalArgumentException("订阅地址不可用：" + rejected.reason);
+        }
+        HttpURLConnection c = null;
+        for (int hop = 0; hop <= SubscriptionGuard.MAX_REDIRECTS; hop++) {
+            c = (HttpURLConnection) target.toURL().openConnection();
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(25000);
+            // Redirects are followed by hand so every hop passes the same guard;
+            // otherwise a public URL could bounce the app into 127.0.0.1.
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+            int code = c.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String location = c.getHeaderField("Location");
+                c.disconnect();
+                if (location == null) throw new IllegalStateException("HTTP " + code + " 无 Location");
+                if (hop == SubscriptionGuard.MAX_REDIRECTS) {
+                    throw new IllegalStateException("重定向次数过多");
+                }
+                try {
+                    target = SubscriptionGuard.check(location);
+                } catch (SubscriptionGuard.Rejected rejected) {
+                    throw new IllegalStateException("重定向被拒绝：" + rejected.reason);
+                }
+                continue;
+            }
+            if (code != 200) throw new IllegalStateException("HTTP " + code);
+            break;
+        }
         InputStream in = c.getInputStream();
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[16384];

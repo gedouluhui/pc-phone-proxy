@@ -1,0 +1,72 @@
+{
+  "kind": "android-emulator-verification",
+  "recorded": "2026-11-19",
+  "limitation": "Android emulator (sdk_gphone64_x86_64, API 36), not a physical handset. No device was attached to adb; this is the closest executable substitute and is labelled as such.",
+  "device": {
+    "model": "sdk_gphone64_x86_64",
+    "sdk": 36,
+    "abi": "x86_64"
+  },
+  "apk": {
+    "path": "phone/手机代理.apk",
+    "versionName": "2.5",
+    "versionCode": 7,
+    "bytes": 56955831,
+    "sha256": "ad8c304afb8c617a62237528147b6cf8550a73bd02abdb7deabfd82c1d02e23b",
+    "build": "python phone/build_apk.py --public with PROXY_NODES_JSON=assets/nodes.sample.json"
+  },
+  "checks": [
+    {
+      "name": "install_replaces_older_build",
+      "result": "pass",
+      "evidence": "The emulator had 2.0 (versionCode 2, ALLOW_BACKUP) signed with another key. Uninstalling then installing this build reports versionName=2.5, versionCode=7."
+    },
+    {
+      "name": "backup_disabled",
+      "result": "pass",
+      "evidence": "dumpsys package flags for the old build: [HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP]; for this build: [HAS_CODE ALLOW_CLEAR_USER_DATA]."
+    },
+    {
+      "name": "uninstall_leaves_nothing",
+      "result": "pass",
+      "evidence": "After pm uninstall: pm path empty, dumpsys package reports 'Unable to find package', /sdcard/Android/data/com.luhui.phoneproxy does not exist."
+    },
+    {
+      "name": "notification_denied_app_still_works",
+      "result": "pass",
+      "evidence": "Denied POST_NOTIFICATIONS (granted=false), app renders and remains usable; a repeated request on every cold start was found and fixed (notif_asked flag)."
+    },
+    {
+      "name": "empty_pool_is_explained_and_does_not_crash",
+      "result": "pass",
+      "evidence": "Public build ships zero nodes; the screen says 节点池为空 and logcat shows no crash when 启动代理 is tapped."
+    },
+    {
+      "name": "private_subscription_url_rejected_at_runtime",
+      "result": "pass",
+      "evidence": "Importing http://127.0.0.1:8080/nodes.txt shows 导入失败：订阅地址不可用：host_private (evidence/proxy-uri-ssrf-rejected2.png)."
+    },
+    {
+      "name": "public_subscription_url_reaches_the_network",
+      "result": "pass",
+      "evidence": "Importing https://example.com/subs.txt shows 导入失败：HTTP 404, i.e. the guard allowed the host and the request returned a status (evidence/proxy-uri-public-result.png)."
+    },
+    {
+      "name": "background_ui_updates_fixed",
+      "result": "pass",
+      "evidence": "The first emulator run showed 导入失败：Only the original thread that created a view hierarchy can touch its views. appendLog/toast now hop to the main thread; the same import then showed the real reason."
+    }
+  ],
+  "screenshots": [
+    "evidence/proxy-emulator-start.png",
+    "evidence/proxy-emulator-denied.png",
+    "evidence/proxy-emulator-empty-start.png",
+    "evidence/proxy-uri-file-rejected3.png",
+    "evidence/proxy-uri-ssrf-rejected2.png",
+    "evidence/proxy-uri-public-result.png"
+  ],
+  "not_verified": [
+    "A physical handset (none attached to adb).",
+    "Real VPN tunnel traffic: the public build has no nodes and the test device has no account; the VPN service path is exercised only through its start/stop state machine."
+  ]
+}

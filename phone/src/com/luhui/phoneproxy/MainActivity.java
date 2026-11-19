@@ -205,7 +205,16 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
+            // Ask once. Android shows the dialog again on every request, and a
+            // user who said no should not be asked at each cold start; the app
+            // works without the notification permission.
+            boolean asked = getSharedPreferences("phoneproxy", MODE_PRIVATE)
+                    .getBoolean("notif_asked", false);
+            if (!asked) {
+                getSharedPreferences("phoneproxy", MODE_PRIVATE).edit()
+                        .putBoolean("notif_asked", true).apply();
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
+            }
         }
     }
 
@@ -575,12 +584,25 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     }
 
     private void appendLog(String line) {
+        // The import and probe paths log from background threads; touching a
+        // TextView there throws CalledFromWrongThreadException and swallows the
+        // real error (found on the emulator, v2.5 build).
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread(() -> appendLog(line));
+            return;
+        }
         logBuf.append(line).append('\n');
         if (logBuf.length() > 8000) logBuf.delete(0, logBuf.length() - 8000);
         logView.setText(logBuf.toString());
     }
 
     private void toast(String s) {
+        // Same reason: a toast from a background thread is a no-op on newer
+        // Android versions and hides the message the user needs.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread(() -> toast(s));
+            return;
+        }
         android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show();
     }
 
