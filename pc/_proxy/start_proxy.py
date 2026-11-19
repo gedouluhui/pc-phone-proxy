@@ -197,7 +197,7 @@ def ensure_steam():
 
 
 # ------------------------------------------------------------------ display
-def _gai_ok(timeout=12):
+def _gai_ok(timeout=8):
     """Google AI Studio is region-gated by exit IP.
 
     Some free nodes are refused outright: notebooklm answers
@@ -291,11 +291,11 @@ def ensure_gai():
             if r.get("uri") and r.get("github_ok") and (r.get("ul_kbps") or 0) > 0]
     rows.sort(key=lambda r: -(r.get("score") or 0))
     good = []
-    for r in rows[:6]:
+    for r in rows[:3]:
         if _start_gai([r["uri"]]) and _gai_ok():
             good.append(r["uri"])
             log("  Google AI 候选通过: %s %s" % (r.get("loc"), r.get("server")))
-            if len(good) >= 3:
+            if len(good) >= 2:
                 break
         else:
             log("  [warn] %s 被 Google 判为不支持或连不上，换下一颗" % (r.get("server"),))

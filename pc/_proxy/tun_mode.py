@@ -389,7 +389,13 @@ def main(argv):
         return 0
 
     if not admin:
-        rc, msg = elevate([cmd])
+        # TUN start also picks a Google-AI-capable node before building the
+        # tunnel, so the elevated child legitimately needs more than 90s; a
+        # short wait made the parent declare failure while the child was still
+        # working (and the old tunnel kept running, which looked like "TUN 用不了").
+        if cmd == "start":
+            log("提权后正在挑选 Google AI 节点并创建网卡，最长约 2 分钟，请不要关闭窗口 …")
+        rc, msg = elevate([cmd], wait=240 if cmd == "start" else 150)
         print(("[OK] " if rc == 0 else "[失败] ") + msg)
         return rc
 
