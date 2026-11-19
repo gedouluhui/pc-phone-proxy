@@ -21,6 +21,7 @@ CLI:
   python pacroute.py off
   python pacroute.py serve             # foreground server (used with pythonw)
 """
+import hashlib
 import io
 import json
 import os
@@ -692,6 +693,16 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
         return {"ok": False, "err": "PAC server 未起来（端口 %d-%d 均被占用？）"
                 % (port, port + 9)}
     url = "http://127.0.0.1:%d/proxy.pac" % actual
+    # Cache-buster.  Browsers keep a PAC until its URL changes, and the URL was
+    # a constant, so a rule fix (e.g. adding aistudio.google.com) never reached
+    # a browser that had already loaded the old table -- the site stayed broken
+    # while every CLI probe returned 200.  A content hash makes the URL change
+    # exactly when the rules change.
+    try:
+        h = hashlib.sha1(io.open(PAC_PATH, "rb").read()).hexdigest()[:8]
+        url += "?v=" + h
+    except OSError:
+        pass
     try:
         with io.open(PAC_URL_PATH, "w", encoding="utf-8", newline="\n") as f:
             f.write(url + "\n")
