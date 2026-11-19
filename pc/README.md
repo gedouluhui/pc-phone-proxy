@@ -96,11 +96,20 @@ stop-proxy.bat
 | 2101 http / 2100 socks | `general`：ChatGPT / Claude / OpenAI，只放能过地区闸门的节点 |
 | 2103 http / 2102 socks | `fast`：Google / GitHub / HuggingFace / 普通网页 |
 | 2090 mixed | 命令行（git/pip/curl/npm）与静态代理兜底：按域名再分流到上面两组 |
+| 2086 | 香港单节点（Reddit；深测池没有 HK 时不存在） |
 | 2096 | Steam 专用（可选；拿不到可用美国出口时回落到 2103） |
-| 8891（或 8892-8900） | 本地 PAC 服务 |
-| 9090 | sing-box Clash API（仅本机，供看门狗切换/观测） |
+| 2098 | Google AI 专用出口：只放 Google 不拒的节点，urltest 自动切换 |
+| 8891（或 8892-8900） | 本地 PAC 服务，地址带内容哈希 `?v=<sha1前8位>` |
+| 19090 / 19091 | sing-box Clash API（分流 / TUN，仅本机，供看门狗切换/观测） |
 
-分流规则在 `pacroute.py` 里维护：`general` 域名走 2101，`fast` 域名走 2103，`Kaggle`/国内站点/局域网直连。
+**直连优先**（2026-11-20 起）：内置 `rulesets/geoip-cn.srs`，目标 IP 在中国境内
+一律直连，域名列表只负责需要提前分流的站点。`DRIVER_DIRECT`（NVIDIA/AMD/Intel/
+HP/Canon/Epson/Brother/Dell、Windows Update、微软下载 CDN）强制直连——厂商按出口
+IP 分配 CDN，走节点会拿到境外源，大文件必断。Steam 商店与壁纸引擎创意工坊在直连
+判定之前显式走代理，`steamcontent` 等下载 CDN 仍直连。
+
+分流规则在 `pacroute.py` 里维护：Google AI 域名优先走 2098，`general` 域名走
+2101，`fast` 域名走 2103，其余按 `geoip-cn` 判定后决定直连或走 2103。
 
 ## 看门狗与自愈
 
