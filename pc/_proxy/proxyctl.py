@@ -24,6 +24,9 @@ import subprocess
 import sys
 import time
 import winreg
+from html import escape
+
+import diagnostics as D
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KAGGLE = os.path.dirname(HERE)
@@ -751,9 +754,15 @@ def render_report():
             act = json.load(open(ACTIVE, encoding="utf-8"))
         except Exception:
             act = None
+    # Project legacy inputs too: old ACTIVE/trials may still contain raw credentials.
+    hist = D.history(hist)
+    act = D.state(act) or None
     last = hist[-1] if hist else {"rows": [], "at": "", "secs": 0}
-    rows = (act.get("rows") if act and act.get("rows") else last["rows"])
+    rows = (act.get("rows") if act and act.get("rows") else last.get("rows", []))
     rows = sorted(rows, key=lambda r: (-r.get("score", -9e9)))
+
+    def e(value):
+        return escape(str(value), quote=True)
 
     def fmt_speed(k):
         return f"{k:,.0f} kB/s · {k*8/1024:.2f} Mbps" if k else "—"
@@ -767,23 +776,22 @@ def render_report():
         cls = "ok" if ok else "bad"
         chosen = act and act.get("chosen", {}).get("id") == r["id"]
         tr += (f"<tr class='{cls}{' chosen' if chosen else ''}'>"
-               f"<td>{i}</td><td>{'★ ' if chosen else ''}{r['label']}</td>"
-               f"<td>{r['proto']}</td>"
-               f"<td>{fmt_ms(r.get('ttfb_ms'))}</td>"
-               f"<td>{fmt_speed(r.get('speed_kbps', 0)) if ok else '失败'}</td>"
-               f"<td>{'通过' if ok else (r.get('err') or '失败')[:40]}</td></tr>")
+               f"<td>{i}</td><td>{'选用 ' if chosen else ''}{e(r['label'])}</td>"
+               f"<td>{e(r['proto'])}</td>"
+               f"<td>{e(fmt_ms(r.get('ttfb_ms')))}</td>"
+               f"<td>{e(fmt_speed(r.get('speed_kbps', 0))) if ok else '失败'}</td>"
+               f"<td>{'通过' if ok else e((r.get('err') or '失败')[:40])}</td></tr>")
     hist_rows = ""
     for h in reversed(hist[-8:]):
-        good = sum(1 for r in h["rows"] if r.get("ok_both"))
-        hist_rows += (f"<tr><td>{h['at']}</td><td>{len(h['rows'])}</td><td>{good}</td>"
-                      f"<td>{h['secs']}s</td></tr>")
+        good = sum(1 for r in h.get("rows", []) if r.get("ok_both"))
+        hist_rows += (f"<tr><td>{e(h.get('at', ''))}</td><td>{len(h.get('rows', []))}</td><td>{good}</td>"
+                      f"<td>{e(h.get('secs', 0))}s</td></tr>")
     pool_n = 0
     try:
         pool_n = len(json.load(open(os.path.join(HERE, "pool.json"), encoding="utf-8")).get("kept", []))
     except Exception:
         pass
-    cur = current_proxy()
-    winner = act["chosen"] if act else None
+    winner = act.get("chosen") if act else None
     speed = winner.get("speed_kbps", 0) if winner else 0
     prev = (act or {}).get("baseline") or (act or {}).get("previous") or {}
     prev_txt = (f"系统代理开启 → {prev.get('sys_server')}" if prev.get("sys_enabled")
@@ -817,9 +825,9 @@ def render_report():
             s = (g.get("sites") or {}).get(n) or {}
             v = s.get("verdict", "?")
             cls = {"ok": "g-ok", "cf": "g-cf", "region": "g-cf", "redirect": "g-cf"}.get(v, "g-bad")
-            cells += f"<td class='{cls}'>{v}<span class='c'>{s.get('code','')}</span></td>"
+            cells += f"<td class='{cls}'>{e(v)}<span class='c'>{e(s.get('code',''))}</span></td>"
         tag = ("通用" if g.get("general") else "") + ("/快速" if g.get("fast") else "")
-        gate_tbl += f"<tr><td>{g['endpoint']}</td><td>{tag or '—'}</td>{cells}</tr>"
+        gate_tbl += f"<tr><td>{e(g.get('endpoint', '—'))}</td><td>{tag or '—'}</td>{cells}</tr>"
     if not gate_tbl:
         gate_tbl = "<tr><td colspan='9' class='note'>本次未跑站点闸门</td></tr>"
 
@@ -830,6 +838,7 @@ def render_report():
             bc = json.load(open(bpath, encoding="utf-8"))
         except Exception:
             bc = {}
+    bc = D.browser(bc)
     brows = bc.get("rows") or {}
     b_ok = sum(1 for r in brows.values() if r.get("status") == 200)
     browser_tbl = ""
@@ -840,10 +849,10 @@ def render_report():
            "wikipedia": "Wikipedia", "kaggle": "Kaggle"}
     for k, r in brows.items():
         ok = r.get("status") == 200
-        browser_tbl += (f"<tr><td>{LAB.get(k, k)}</td>"
-                        f"<td class='{'g-ok' if ok else 'g-bad'}'>{r.get('status') or '—'}</td>"
-                        f"<td>{r.get('secs')}s</td>"
-                        f"<td>{(r.get('title') or r.get('text') or r.get('err') or '')[:60]}</td></tr>")
+        browser_tbl += (f"<tr><td>{e(LAB.get(k, k))}</td>"
+                        f"<td class='{'g-ok' if ok else 'g-bad'}'>{e(r.get('status') or '—')}</td>"
+                        f"<td>{e(r.get('secs'))}s</td>"
+                        f"<td>{e((r.get('title') or r.get('err') or '')[:60])}</td></tr>")
     if not browser_tbl:
         browser_tbl = "<tr><td colspan='4' class='note'>未跑真机浏览器实测</td></tr>"
     mode_txt = ("分流 PAC（按站点选出口）" if mode == "pac" else
@@ -853,15 +862,18 @@ def render_report():
         if g.get("endpoint") == gen_ep:
             cg = (g.get("sites") or {}).get("chatgpt")
     if cg and cg.get("verdict") == "ok":
-        cg_txt = "✅ 通过"
+        cg_txt = "通过"
         cg_note = f"HTTP {cg.get('code')} · {int(cg.get('size') or 0)//1024} KB · {cg.get('secs')}s"
     elif cg:
-        cg_txt = "❌ " + str(cg.get("verdict"))
+        cg_txt = "失败 " + str(cg.get("verdict"))
         cg_note = f"HTTP {cg.get('code')} · {','.join(cg.get('markers') or [])}"
     else:
         cg_txt, cg_note = "未测", "本次未跑闸门"
 
-    html = f"""<!doctype html><meta charset="utf-8">
+    html = f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>代理实测与选用报告</title>
 <style>
 :root{{--bg:#0b0f14;--card:#121924;--line:#1f2b3a;--tx:#e6edf6;--dim:#8aa0b8;--ok:#3ddc97;--bad:#ff6b6b;--acc:#5aa9ff}}
@@ -883,22 +895,22 @@ td.g-ok{{color:#3ddc97;font-weight:600}} td.g-bad{{color:#ff6b6b}}
 td.g-cf{{color:#e8c268}} td .c{{color:#6f849c;font-size:11px;margin-left:4px}}
 .note{{color:var(--dim);font-size:12px;margin-top:10px}}
 .badge{{display:inline-block;padding:1px 8px;border-radius:99px;background:#16324a;color:#8fc6ff;font-size:12px;margin-left:6px}}
-</style>
+</style></head><body>
 <div class="wrap">
 <h1>代理实测与选用报告</h1>
-<div class="note">生成时间 {act['at'] if act else last['at']} · 测试目标 gstatic/generate_204 + speed.cloudflare.com 1&nbsp;MB ·
-一轮 {last['secs']}s · 公开池存活 {pool_n}</div>
+<div class="note">生成时间 {e(act.get('at', '') if act else last.get('at', ''))} · 测试目标 gstatic/generate_204 + speed.cloudflare.com 1&nbsp;MB ·
+一轮 {e(last.get('secs', 0))}s · 公开池存活 {pool_n}</div>
 <div class="hero">
   <div class="card win"><div class="k">当前模式</div><div class="v">{mode_txt}</div>
-    <div class="note">ChatGPT / Claude → {gen_ep}<br>Google / GitHub / HF → {fast_ep}<br>Reddit → 香港线 2086<br>Kaggle → 直连</div></div>
-  <div class="card"><div class="k">ChatGPT 闸门</div><div class="v">{cg_txt}</div>
-    <div class="note">{cg_note}</div></div>
+    <div class="note">ChatGPT / Claude → {e(gen_ep)}<br>Google / GitHub / HF → {e(fast_ep)}<br>Reddit → 香港线 2086<br>Kaggle → 直连</div></div>
+  <div class="card"><div class="k">ChatGPT 闸门</div><div class="v">{e(cg_txt)}</div>
+    <div class="note">{e(cg_note)}</div></div>
   <div class="card"><div class="k">最快下载</div><div class="v">{fmt_speed(speed)}</div>
     <div class="note">{fmt_ms(winner.get('ttfb_ms') if winner else None)} 首字节 · 上传 {up_txt}</div></div>
   <div class="card"><div class="k">真机浏览器</div><div class="v">{b_ok}/{len(brows) if brows else 0} 站点 200</div>
-    <div class="note">{bc.get('browser','') or '未测'} · {bc.get('at','') or '—'}</div></div>
+    <div class="note">{e(bc.get('browser','') or '未测')} · {e(bc.get('at','') or '—')}</div></div>
 </div>
-<div class="note" style="margin-top:14px">改造前：{prev_txt}。{geph_txt}{ratio_txt}。启用后复验：{ver_txt}（{ver_note}）。</div>
+<div class="note" style="margin-top:14px">改造前：{e(prev_txt)}。{e(geph_txt)}{e(ratio_txt)}。启用后复验：{e(ver_txt)}（{e(ver_note)}）。</div>
 <h2>站点闸门：同一个代理逐站实测</h2>
 <table><tr><th>代理出口</th><th>判定</th><th>ChatGPT</th><th>会话API</th><th>Claude</th><th>Kaggle</th><th>Google</th><th>GitHub</th><th>HF</th></tr>{gate_tbl}</table>
 <div class="note">要当"通用出口"必须 ChatGPT 返回 200 且页面 &gt;50KB；要当"快速出口"必须 Google/GitHub/HF 全可达（Kaggle 走直连，不参与判定）。
@@ -911,7 +923,7 @@ region = 地区被封，cf = Cloudflare 人机挑战（浏览器通常能过）�
 <table><tr><th>时间(UTC)</th><th>候选数</th><th>可用</th><th>耗时</th></tr>{hist_rows}</table>
 <div class="note">判据：同一轮里必须通过 204 检查且 1&nbsp;MB 下载成功；按 速度×本地加成 − 延迟惩罚 排序，取第一。
 公开池来自 GitHub 公开列表（TheSpeedX / monosans / vakhov / proxifly / jetkai 等），每轮重测，失效即淘汰。</div>
-</div>"""
+</div></body></html>"""
     with io.open(REPORT, "w", encoding="utf-8", newline="\n") as f:
         f.write(html)
     return REPORT

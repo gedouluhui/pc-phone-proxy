@@ -24,6 +24,7 @@ CLI:
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -190,64 +191,107 @@ HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
       "gvt1.com", "ggpht.com", "withgoogle.com"]
 
 
+def _identifier(name):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+        raise ValueError("PAC rule identifier must be ASCII")
+    # Include legacy/future reserved words for the older JavaScript PAC interpreters.
+    reserved = set(("break case catch continue debugger default delete do else finally for "
+                    "function if in instanceof new return switch this throw try typeof var void "
+                    "while with false null true class const enum export extends import super "
+                    "implements interface let package private protected public static yield await "
+                    "abstract boolean byte char double final float goto int long native short "
+                    "synchronized throws transient volatile eval arguments").split())
+    if name in reserved:
+        raise ValueError("reserved PAC rule identifier")
+    return name
+
+
 def _js_list(name, domains):
-    arr = ", ".join('"%s"' % d for d in domains)
-    return "var %s = [%s];" % (name, arr)
+    _identifier(name)
+    if not isinstance(domains, (list, tuple)):
+        raise ValueError("PAC domains must be a list")
+    normalized = []
+    for domain in domains:
+        if not isinstance(domain, str) or not domain.isascii():
+            raise ValueError("PAC domains require ASCII (use IDNA A-labels, not Unicode)")
+        domain = domain.lower().removesuffix(".")
+        if (not domain or len(domain) > 253 or
+                any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                    for label in domain.split("."))):
+            raise ValueError("invalid PAC domain; wildcards and empty labels are not supported")
+        if domain not in normalized:
+            normalized.append(domain)
+    return "var %s = %s;" % (name, json.dumps(normalized, ensure_ascii=True))
+
+
+def _endpoint(ep):
+    if not isinstance(ep, str) or not re.fullmatch(r"(?:127\.0\.0\.1|\[::1\]):[0-9]{1,5}", ep):
+        raise ValueError("PAC endpoint must be loopback host:port")
+    host, port = ep.rsplit(":", 1)
+    if not 1 <= int(port) <= 65535:
+        raise ValueError("PAC endpoint port out of range")
+    return "%s:%d" % (host, int(port))
 
 
 def _chain(eps, direct=True):
-    """把出口列表渲染成 PAC 回落链，去掉重复端口。
-
-    动态路由里 proxy 常常就等于 fast。不去重会渲染成
-    "PROXY 2103; PROXY 2103; PROXY 2101" —— 浏览器会对着同一个死端口
-    多等一轮超时（默认 20s），页面看起来像卡死。
-    """
+    """Validate and deduplicate local exits; an empty protected chain is an error."""
     seen = []
-    for e in eps:
-        if e and e not in seen:
-            seen.append(e)
-    parts = ["PROXY " + e for e in seen]
-    if direct:
-        parts.append("DIRECT")
-    return "; ".join(parts)
+    for ep in eps:
+        if ep is None or ep == "":
+            continue
+        ep = _endpoint(ep)
+        if ep not in seen:
+            seen.append(ep)
+    if not seen and not direct:
+        raise ValueError("no local exit for protected PAC route")
+    return "; ".join(["PROXY " + ep for ep in seen] + (["DIRECT"] if direct else []))
 
 
 def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, steam=None,
                dyn=None):
+    # Base exits are required, as in apply_pac's preflight. Rendering never probes them.
+    general, fast = _endpoint(general), _endpoint(fast)
+    hk = None if hk is None or hk == "" else _endpoint(hk)
+    steam = None if steam is None or steam == "" else _endpoint(steam)
     stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    # 动态路由：autoroute.py 定期实测各出口延迟后写 route_map.json，
-    # 这里把「当前最快的出口」渲染成 PAC 规则，排在静态规则前面。
-    dyn_vars = ""
-    dyn_rules = ""
-    for name, g in (dyn or {}).items():
-        proxy = (g or {}).get("proxy")
-        domains = (g or {}).get("domains")
-        if not proxy or not domains:
-            continue
-        var = "DYN_" + "".join(ch if ch.isalnum() else "_" for ch in name.upper())
-        dyn_vars += _js_list(var, domains) + "\n"
-        dyn_rules += ('  if (inList(host, %s)) return "%s";\n'
-                      % (var, _chain([proxy, fast, general])))
-    gh, gp = general.rsplit(":", 1)
-    fh, fp = fast.rsplit(":", 1)
-    steam_rule = ""
-    steam_vars = "var STEAM = [];"
+    if not isinstance(stamp, str):
+        raise ValueError("PAC stamp must be text")
+
+    def rule(name, eps, direct):
+        return "  if (inList(host, %s)) return %s;\n" % (
+            name, json.dumps(_chain(eps, direct), ensure_ascii=True))
+
+    # Preserve Google > Steam > HK > dynamic > FAST outlet priority in both paths.
+    routes = [("GOOGLE_APP", ["127.0.0.1:2103", "127.0.0.1:2101", "127.0.0.1:2096"])]
     if steam:
-        steam_vars = _js_list("STEAM", STEAM)
-        steam_rule = ('  if (inList(host, STEAM))     return "PROXY %(steam)s; PROXY %(fast)s; '
-                      'PROXY %(general)s; DIRECT";\n' % {"steam": steam, "fast": fast,
-                                                        "general": general})
-    hk_rule = ""
-    hk_vars = "var HK = [];"
+        routes.append(("STEAM", [steam, fast, general]))
     if hk:
-        hh, hp = hk.rsplit(":", 1)
-        hk_vars = _js_list("HK", HK)
-        hk_rule = ('  if (inList(host, HK))       return "PROXY %(hk)s; PROXY %(fast)s; '
-                   'PROXY %(general)s; DIRECT";\n' % {"hk": hk, "fast": fast,
-                                                     "general": general})
-    return """// split-routing PAC · generated %(stamp)s
-// general(OpenAI/Claude) -> %(general)s   fast(Google/GitHub/HF) -> %(fast)s
-// hk(reddit 专用) -> %(hk)s
+        routes.append(("HK", [hk, fast, general]))
+    dyn_vars = ""
+    if dyn is not None and not isinstance(dyn, dict):
+        raise ValueError("PAC dynamic routes must be a mapping")
+    for name, group in (dyn or {}).items():
+        _identifier(name)
+        if group is None:
+            continue
+        if not isinstance(group, dict):
+            raise ValueError("PAC dynamic group must be a mapping")
+        proxy = group.get("proxy")
+        domains = group.get("domains", [])
+        # Preserve case: uppercasing used to alias distinct route groups.
+        var = "DYN_" + name
+        declaration = _js_list(var, domains)
+        if proxy is not None and proxy != "":
+            proxy = _endpoint(proxy)
+        if proxy is None or proxy == "" or not domains:
+            continue
+        dyn_vars += declaration + "\n"
+        routes.append((var, [proxy, fast, general]))
+    routes.append(("FAST", [fast, general]))
+    protected_rules = "".join(rule(name, eps, False) for name, eps in routes)
+    normal_rules = "".join(rule(name, eps, True) for name, eps in routes)
+    return r"""// split-routing PAC; metadata is encoded data, never a comment interpolation.
+var GENERATED_AT = %(stamp)s;
 %(dom)s
 %(sens_d)s
 %(fast_d)s
@@ -267,6 +311,13 @@ function inList(h, list) {
 
 function FindProxyForURL(url, host) {
   host = host.toLowerCase();
+  if (host.charAt(host.length - 1) === ".") host = host.slice(0, -1);
+  // GENERAL is the protected set; SENSITIVE below is the domestic direct-only set.
+  // Protection outranks even direct/private list intersections, without losing exit choice.
+  var protectedHost = inList(host, GENERAL);
+  if (protectedHost) {
+%(protected_rules)s  }
+  if (inList(host, GENERAL)) return %(general_chain)s;
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" ||
       host === "[::1]" || isPlainHostName(host) || shExpMatch(host, "127.*") ||
       shExpMatch(host, "192.168.*") || shExpMatch(host, "10.*") ||
@@ -293,34 +344,24 @@ function FindProxyForURL(url, host) {
   if (inList(host, DOMESTIC)) return "DIRECT";
   if (inList(host, SENSITIVE)) return "DIRECT";
   if (inList(host, DIRECT))   return "DIRECT";
-  // Google 服务主体（AI Studio / Gemini）优先级最高：香港 IP 会被地区限制拦截。
-  // 端口写死成「支持地区」的三个出口，不跟随 fast/general 参数——静态回退模式下
-  // fast 会变成 127.0.0.1:2086（香港），跟随它就会又跳回 Available regions 文档页。
-  if (inList(host, GOOGLE_APP)) return "PROXY 127.0.0.1:2103; PROXY 127.0.0.1:2101; PROXY 127.0.0.1:2096; DIRECT";
-%(steam_rule)s%(hk_rule)s%(dyn_rule)s  if (inList(host, FAST))     return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
-  // GENERAL（AI/敏感外站）严格 fail-closed：不写 "; DIRECT"，
-  // 否则 bestroute 切线重建的几秒空窗里浏览器会回落直连，把真实 IP 裸发给运营商。
-  if (inList(host, GENERAL))  return "PROXY %(general)s; PROXY %(fast)s";
-  // 未收录域名默认走快出口、再退通用出口：开代理就要能打开所有国外站点，
-  // 国内/内网已经在上面的 DOMESTIC / SENSITIVE / DIRECT / 私网规则里直连掉了。
-  return "PROXY %(fast)s; PROXY %(general)s; DIRECT";
+  // Google retains its fixed support-region exits, ahead of Steam/HK/dynamic routes.
+%(normal_rules)s  // Unlisted domains retain the product's proxy-first, direct-last policy.
+  return %(default_chain)s;
 }
 """ % {
-        "stamp": stamp,
-        "general": general,
-        "fast": fast,
-        "hk": hk or "",
-        "hk_rule": hk_rule,
+        "stamp": json.dumps(stamp, ensure_ascii=True),
+        "protected_rules": protected_rules,
+        "normal_rules": normal_rules,
+        "general_chain": json.dumps(_chain([general, fast], False)),
+        "default_chain": json.dumps(_chain([fast, general])),
         "dom": _js_list("DOMESTIC", DOMESTIC),
         "sens_d": _js_list("SENSITIVE", SENSITIVE),
         "fast_d": _js_list("FAST", FAST),
         "gen_d": _js_list("GENERAL", GENERAL),
         "gapp_d": _js_list("GOOGLE_APP", GOOGLE_APP),
-        "hk_d": hk_vars,
-        "steam_d": steam_vars,
-        "steam_rule": steam_rule,
+        "hk_d": _js_list("HK", HK if hk else []),
+        "steam_d": _js_list("STEAM", STEAM if steam else []),
         "dyn_d": dyn_vars,
-        "dyn_rule": dyn_rules,
         "direct_d": _js_list("DIRECT", DIRECT),
     }
 

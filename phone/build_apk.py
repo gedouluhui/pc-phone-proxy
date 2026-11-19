@@ -1,254 +1,253 @@
 # -*- coding: utf-8 -*-
-"""Build the PhoneProxy APK without Gradle.
+"""Build PhoneProxy without Gradle: javac -> d8 -> aapt2 -> zipalign -> apksigner.
 
-Pipeline: javac -> d8 -> aapt2 -> zip -> zipalign -> apksigner
+Requires JDK 17, Android SDK build-tools/platform and phone/libs/libv2ray.aar
+(or an existing phone/libs/xray extraction). No work is performed on import.
 
-Requirements
-  * JDK 17 (JAVA_HOME, or edit JDK below)
-  * Android SDK build-tools + platform android-35
-    (ANDROID_HOME / ANDROID_SDK_ROOT, or the default per-user SDK folder)
-  * AndroidLibXrayLite: put libv2ray.aar at phone/libs/libv2ray.aar.
-    The script extracts it into phone/libs/xray automatically.
-    Download: https://github.com/2dust/AndroidLibXrayLite/releases
-
-Configuration (environment variables, all optional)
-  PROXY_KEYSTORE   signing keystore path (auto-generated on first build)
-  PROXY_APK_OUT    output APK path
-  PROXY_NODES_JSON node list to embed (default assets/nodes.json)
-
-Command line
-  python build_apk.py --public   build the credential-free variant (nodes.json = [])
-
-  **发布公开版必须带 --public**。assets/nodes.json 是本地私用池（被 .gitignore 忽略），
-  build_apk.py 会无条件把它打进 APK；忘一次就把几十个节点的凭据传到公开 Release 上了。
-  2026-11-18 真踩过一次（v2.5 首个资产），所以现在 --public 会强制空表，并且打包后
-  会重新读一遍 APK 里的 assets/nodes.json 断言它是 []。
-
-Node list format: [{"tag":"p0","name":"...","outbound":{...}}, ...]
-Use gen_nodes.py to convert share links (pinned.json) into this format.
-An empty [] builds an app with no bundled nodes; users then import their own
-share links or subscription inside the app.
+--public requires the selected node input to be exactly an empty JSON array.
+PROXY_NODES_JSON selects an input; otherwise prefer assets/nodes.json, then
+assets/nodes.sample.json. Relative configured paths are relative to phone/.
+PROXY_RELEASE (legacy alias PROXY_RELEASE_BUILD) also enforces public checks
+and requires an existing PROXY_KEYSTORE and a non-demo PROXY_KS_PASS.
+PROXY_KS_ALIAS defaults to phoneproxy. Passwords use the signers' env channels.
+PROXY_APK_OUT selects the final path (default phone/手机代理.apk).
 """
+import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
-import glob
+from pathlib import Path
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+from release_guard import ReleaseCheckError, nodes_in_apk, read_nodes
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = Path(__file__).resolve().parent
+
+
+class BuildError(ValueError):
+    """A build could not complete; the previous final APK is retained."""
 
 
 def _first_dir(*paths):
-    for p in paths:
-        if p and os.path.isdir(p):
-            return p
+    for path in paths:
+        if path and os.path.isdir(path):
+            return path
     return None
 
 
 def find_jdk():
-    home = os.environ.get("JAVA_HOME")
     jdk = _first_dir(
-        home,
+        os.environ.get("JAVA_HOME"),
         r"C:\Program Files\Java\jdk-17",
         r"C:\Program Files\Java\jdk-17.0.13",
         r"C:\Program Files\Eclipse Adoptium\jdk-17",
         "/usr/lib/jvm/java-17-openjdk-amd64",
         "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home",
     )
-    if not jdk or not os.path.exists(os.path.join(jdk, "bin", "javac.exe" if os.name == "nt" else "javac")):
-        sys.exit("JDK 17 not found. Set JAVA_HOME.")
-    return os.path.join(jdk, "bin")
+    if not jdk or not Path(jdk, "bin", "javac.exe" if os.name == "nt" else "javac").is_file():
+        raise BuildError("JDK 17 not found. Set JAVA_HOME.")
+    return Path(jdk) / "bin"
 
 
 def find_sdk():
     sdk = _first_dir(
-        os.environ.get("ANDROID_HOME"),
-        os.environ.get("ANDROID_SDK_ROOT"),
+        os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk"),
         os.path.expanduser("~/Android/Sdk"),
         os.path.expanduser("~/Library/Android/sdk"),
     )
     if not sdk:
-        sys.exit("Android SDK not found. Set ANDROID_HOME.")
-    return sdk
+        raise BuildError("Android SDK not found. Set ANDROID_HOME.")
+    return Path(sdk)
 
 
 def latest_dir(parent, prefix):
-    if not os.path.isdir(parent):
+    if not parent.is_dir():
         return None
-    names = [n for n in os.listdir(parent) if n.startswith(prefix)]
-    if not names:
-        return None
-    return os.path.join(parent, sorted(names)[-1])
+    names = sorted(path for path in parent.iterdir()
+                   if path.is_dir() and path.name.startswith(prefix))
+    return names[-1] if names else None
 
 
-def exe(bt, name):
-    p = os.path.join(bt, name + (".exe" if os.name == "nt" else ""))
-    return p if os.path.exists(p) else os.path.join(bt, name)
+def exe(directory, name):
+    suffix = ".bat" if name in ("d8", "apksigner") else ".exe"
+    return directory / (name + suffix if os.name == "nt" else name)
 
 
-JDK = find_jdk()
-SDK = find_sdk()
-BT = latest_dir(os.path.join(SDK, "build-tools"), "")
-if not BT:
-    sys.exit("Android build-tools not found under " + SDK)
-PLATFORM = latest_dir(os.path.join(SDK, "platforms"), "android-")
-if not PLATFORM:
-    sys.exit("Android platform not found under " + SDK)
-ANDROID_JAR = os.path.join(PLATFORM, "android.jar")
-
-LIBDIR = os.path.join(ROOT, "libs")
-AAR = os.path.join(LIBDIR, "libv2ray.aar")
-AAR_DIR = os.path.join(LIBDIR, "xray")
-AAR_CLASSES = os.path.join(AAR_DIR, "classes.jar")
-
-KEYSTORE = os.environ.get("PROXY_KEYSTORE") or os.path.join(ROOT, "phoneproxy.keystore")
-OUT_APK = os.environ.get("PROXY_APK_OUT") or os.path.join(ROOT, "手机代理.apk")
-# Prefer a node list you generated (assets/nodes.json, git-ignored); otherwise
-# the committed empty sample, which builds an app with no bundled nodes.
-PUBLIC = "--public" in sys.argv
-NODES_JSON = (os.environ.get("PROXY_NODES_JSON")
-              or (os.path.join(ROOT, "assets", "nodes.json")
-                  if os.path.exists(os.path.join(ROOT, "assets", "nodes.json"))
-                  else os.path.join(ROOT, "assets", "nodes.sample.json")))
-if PUBLIC:
-    # 公开版：不看本地私用池，直接用一个只有 [] 的临时文件，避免「忘了加参数」
-    # 或者「sample 被改坏」两种翻车方式。
-    NODES_JSON = os.path.join(tempfile.gettempdir(), "phoneproxy_public_nodes.json")
-    with open(NODES_JSON, "w", encoding="utf-8") as f:
-        f.write("[]\n")
-
-env = dict(os.environ, JAVA_HOME=os.path.dirname(JDK), PYTHONIOENCODING="utf-8")
+def configured_path(value, default):
+    path = Path(value) if value else default
+    return path if path.is_absolute() else ROOT / path
 
 
-def run(args, **kw):
-    print("+", " ".join(str(a) for a in args)[:200], flush=True)
-    r = subprocess.run([str(a) for a in args], cwd=ROOT, env=env,
-                       capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", **kw)
-    if r.stdout.strip():
-        print(r.stdout[-3000:])
-    if r.returncode != 0:
-        print(r.stderr[-4000:])
-        sys.exit("FAILED rc=%d" % r.returncode)
-    if r.stderr.strip():
-        print("[stderr]", r.stderr[-1500:])
-    return r
+def signing_config(release):
+    keystore = configured_path(os.environ.get("PROXY_KEYSTORE"), ROOT / "phoneproxy.keystore")
+    alias = os.environ.get("PROXY_KS_ALIAS", "phoneproxy")
+    password = os.environ.get("PROXY_KS_PASS", "android")
+    if not alias or not password:
+        raise BuildError("signing preflight: PROXY_KS_ALIAS and PROXY_KS_PASS must not be empty")
+    if release:
+        if password == "android" or not os.environ.get("PROXY_KEYSTORE"):
+            raise BuildError("signing preflight: release requires PROXY_KEYSTORE and non-demo PROXY_KS_PASS")
+        if not keystore.is_file():
+            raise BuildError("signing preflight: release keystore must already exist")
+    return keystore, alias, password
 
 
-# 0. unpack AndroidLibXrayLite if needed
-if not os.path.exists(AAR_CLASSES):
-    if not os.path.exists(AAR):
-        sys.exit("Missing %s\nDownload libv2ray.aar from "
-                 "https://github.com/2dust/AndroidLibXrayLite/releases "
-                 "and put it in phone/libs/." % AAR)
-    os.makedirs(AAR_DIR, exist_ok=True)
-    with zipfile.ZipFile(AAR) as z:
-        # ZipSlip：条目名里的 ../ 会把文件写到 AAR_DIR 之外
-        base = os.path.realpath(AAR_DIR)
-        for name in z.namelist():
-            dest = os.path.realpath(os.path.join(AAR_DIR, name))
-            if not (dest == base or dest.startswith(base + os.sep)):
-                sys.exit("ZipSlip: %r escapes %s" % (name, AAR_DIR))
-        z.extractall(AAR_DIR)
-if not os.path.exists(NODES_JSON):
-    sys.exit("Node list not found: " + NODES_JSON)
+def run(args, env, cwd):
+    # Print env references rather than signing config values. Never print tool
+    # diagnostics for signing: a failing tool can echo secrets or key metadata.
+    args = [str(arg) for arg in args]
+    sensitive = Path(args[0]).stem.lower() in ("keytool", "apksigner")
+    display = list(args)
+    for option, reference in (("--ks", "$PROXY_KEYSTORE"), ("-keystore", "$PROXY_KEYSTORE"),
+                              ("--ks-key-alias", "$PROXY_KS_ALIAS"), ("-alias", "$PROXY_KS_ALIAS")):
+        if option in display:
+            display[display.index(option) + 1] = reference
+    password = env["PROXY_KS_PASS"]
 
-# 1. signing keystore
-# 本地自测可以用演示口令，公开 Release 必须换成自己的库与口令，
-# 否则任何人都能用 "android" 重新签名一个同包名 APK 覆盖安装。
-KS_ALIAS = os.environ.get("PROXY_KS_ALIAS", "phoneproxy")
-KS_PASS = os.environ.get("PROXY_KS_PASS", "android")
-RELEASE = bool(os.environ.get("PROXY_RELEASE"))
-if RELEASE and KS_PASS == "android":
-    sys.exit("发布构建请设置 PROXY_KS_PASS（不能沿用演示口令 android），"
-             "并用 PROXY_KEYSTORE 指向正式密钥库")
-if not os.path.exists(KEYSTORE):
-    if RELEASE:
-        sys.exit("发布构建必须提供已存在的正式密钥库：" + KEYSTORE)
-    print("[warn] 使用演示口令生成自测 keystore；发布前请改用 PROXY_KS_PASS")
-    run([os.path.join(JDK, "keytool.exe" if os.name == "nt" else "keytool"),
-         "-genkeypair", "-keystore", KEYSTORE, "-alias", KS_ALIAS,
-         "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
-         "-storepass", KS_PASS, "-keypass", KS_PASS,
-         "-dname", "CN=PhoneProxy, OU=Dev, O=OpenSource, C=CN"])
+    def redacted(text):
+        return text.replace(password, "<redacted>") if password else text
 
-# 2. javac
-obj = os.path.join(ROOT, "obj")
-shutil.rmtree(obj, ignore_errors=True)
-os.makedirs(obj)
-srcs = glob.glob(os.path.join(ROOT, "src", "com", "luhui", "phoneproxy", "*.java"))
-run([os.path.join(JDK, "javac.exe" if os.name == "nt" else "javac"),
-     "-encoding", "UTF-8", "-source", "8", "-target", "8",
-     "-classpath", ANDROID_JAR + os.pathsep + AAR_CLASSES, "-d", obj] + srcs)
-
-# 3. d8 (app classes + go/libv2ray classes)
-dexout = os.path.join(ROOT, "dexout")
-shutil.rmtree(dexout, ignore_errors=True)
-os.makedirs(dexout)
-classes = glob.glob(os.path.join(obj, "com", "luhui", "phoneproxy", "*.class"))
-run([exe(BT, "d8.bat" if os.name == "nt" else "d8"), "--release", "--lib", ANDROID_JAR,
-     "--min-api", "24", "--output", dexout, AAR_CLASSES] + classes)
-dexfiles = sorted(glob.glob(os.path.join(dexout, "classes*.dex")))
-assert dexfiles, "no dex produced"
-
-# 4. aapt2 resources + manifest
-reszip = os.path.join(ROOT, "res.zip")
-run([exe(BT, "aapt2.exe" if os.name == "nt" else "aapt2"), "compile",
-     "--dir", os.path.join(ROOT, "res"), "-o", reszip])
-base = os.path.join(ROOT, "base.apk")
-run([exe(BT, "aapt2.exe" if os.name == "nt" else "aapt2"), "link", "-o", base,
-     "-I", ANDROID_JAR, "--manifest", os.path.join(ROOT, "AndroidManifest.xml"), reszip])
-
-# 5. package dex + assets + native libs
-unsigned = os.path.join(ROOT, "unsigned.apk")
-with zipfile.ZipFile(base, "r") as zin, zipfile.ZipFile(unsigned, "w", zipfile.ZIP_DEFLATED) as zout:
-    for item in zin.infolist():
-        zout.writestr(item, zin.read(item.filename))
-    for d in dexfiles:
-        zout.write(d, os.path.basename(d))
-    zout.write(NODES_JSON, "assets/nodes.json")
-    for name in ("geoip.dat", "geosite.dat"):
-        zout.write(os.path.join(AAR_DIR, "assets", name), "assets/" + name)
-    for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
-        so = os.path.join(AAR_DIR, "jni", abi, "libgojni.so")
-        zout.write(so, "lib/" + abi + "/libgojni.so")
-
-# 6. zipalign + sign
-aligned = os.path.join(ROOT, "aligned.apk")
-run([exe(BT, "zipalign.exe" if os.name == "nt" else "zipalign"), "-f", "4", unsigned, aligned])
-run([exe(BT, "apksigner.bat" if os.name == "nt" else "apksigner"), "sign",
-     "--ks", KEYSTORE, "--ks-pass", "pass:android", "--key-pass", "pass:android",
-     "--out", OUT_APK, aligned])
-run([exe(BT, "apksigner.bat" if os.name == "nt" else "apksigner"),
-     "verify", "--print-certs", OUT_APK])
-
-# 7. 打包后自检：读回 APK 里的 assets/nodes.json，确认里面到底装了什么
-with zipfile.ZipFile(OUT_APK) as z:
+    print("+", redacted(subprocess.list2cmdline(display)), flush=True)
     try:
-        embedded = z.read("assets/nodes.json").decode("utf-8", "replace")
-    except KeyError:
-        embedded = "[]"
-try:
-    count = len(json.loads(embedded))
-except Exception:
-    count = -1
-if PUBLIC or os.environ.get("PROXY_RELEASE_BUILD"):
-    if count != 0:
-        sys.exit("FATAL: --public 构建里竟然有 %d 个节点（assets/nodes.json）。"
-                 "这会泄露节点凭据，拒绝产出。" % count)
-    print("public build: assets/nodes.json = [] (0 nodes)")
-else:
-    print("WARNING: 这个 APK 内嵌了 %d 个节点凭据（私用版）。"
-          "**不要**上传到公开 Release；公开版请用 python build_apk.py --public。"
-          % count)
-print("APK OK:", OUT_APK, os.path.getsize(OUT_APK), "bytes")
+        result = subprocess.run(args, cwd=str(cwd), env=env, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        raise BuildError("cannot execute build tool: " + Path(args[0]).name) from None
+    if not sensitive:
+        if result.stdout.strip():
+            print(redacted(result.stdout)[-3000:])
+        if result.stderr.strip():
+            print("[stderr]", redacted(result.stderr)[-4000:])
+    if result.returncode != 0:
+        raise BuildError("%s failed (rc=%d)" % (Path(args[0]).name, result.returncode))
+    return result
+
+
+def unpack_aar(stage):
+    existing = ROOT / "libs" / "xray"
+    if (existing / "classes.jar").is_file():
+        return existing
+    aar = ROOT / "libs" / "libv2ray.aar"
+    if not aar.is_file():
+        raise BuildError("Missing phone/libs/libv2ray.aar (or extracted libs/xray/classes.jar)")
+    dest = stage / "xray"
+    dest.mkdir()
+    with zipfile.ZipFile(aar) as archive:
+        for item in archive.infolist():
+            path = (dest / item.filename).resolve()
+            if os.path.commonpath((str(dest), str(path))) != str(dest):
+                raise BuildError("unsafe path in AAR archive")
+        archive.extractall(dest)
+    return dest
+
+
+def build(stage, nodes, public, keystore, alias, env, jdk, bt, android_jar, release):
+    """Produce and verify a staged APK; never write the final output path."""
+    aar_dir = unpack_aar(stage)
+    aar_classes = aar_dir / "classes.jar"
+    if not keystore.exists():
+        if release:
+            raise BuildError("release keystore is no longer available; refusing key generation")
+        print("WARNING: generating a local test keystore; not for public releases")
+        run([exe(jdk, "keytool"), "-genkeypair", "-keystore", keystore, "-alias", alias,
+             "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+             "-storepass:env", "PROXY_KS_PASS", "-keypass:env", "PROXY_KS_PASS",
+             "-dname", "CN=PhoneProxy, OU=Dev, O=OpenSource, C=CN"], env, stage)
+
+    obj, dexout = stage / "obj", stage / "dexout"
+    obj.mkdir()
+    dexout.mkdir()
+    srcs = sorted((ROOT / "src" / "com" / "luhui" / "phoneproxy").glob("*.java"))
+    run([exe(jdk, "javac"), "-encoding", "UTF-8", "-source", "8", "-target", "8",
+         "-classpath", str(android_jar) + os.pathsep + str(aar_classes), "-d", obj] + srcs,
+        env, stage)
+    classes = sorted((obj / "com" / "luhui" / "phoneproxy").glob("*.class"))
+    run([exe(bt, "d8"), "--release", "--lib", android_jar, "--min-api", "24",
+         "--output", dexout, aar_classes] + classes, env, stage)
+    dexfiles = sorted(dexout.glob("classes*.dex"))
+    if not dexfiles:
+        raise BuildError("no dex produced")
+
+    reszip, base = stage / "res.zip", stage / "base.apk"
+    run([exe(bt, "aapt2"), "compile", "--dir", ROOT / "res", "-o", reszip], env, stage)
+    run([exe(bt, "aapt2"), "link", "-o", base, "-I", android_jar,
+         "--manifest", ROOT / "AndroidManifest.xml", reszip], env, stage)
+    unsigned = stage / "unsigned.apk"
+    with zipfile.ZipFile(base) as zin, zipfile.ZipFile(unsigned, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            zout.writestr(item, zin.read(item))
+        for dex in dexfiles:
+            zout.write(dex, dex.name)
+        # Use the validated in-memory snapshot, never re-open a mutable node input.
+        zout.writestr("assets/nodes.json", json.dumps(nodes, ensure_ascii=False).encode("utf-8"))
+        for name in ("geoip.dat", "geosite.dat"):
+            zout.write(aar_dir / "assets" / name, "assets/" + name)
+        for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
+            zout.write(aar_dir / "jni" / abi / "libgojni.so", "lib/" + abi + "/libgojni.so")
+
+    aligned, signed = stage / "aligned.apk", stage / "signed.apk"
+    run([exe(bt, "zipalign"), "-f", "4", unsigned, aligned], env, stage)
+    run([exe(bt, "apksigner"), "sign", "--ks", keystore, "--ks-key-alias", alias,
+         "--ks-pass", "env:PROXY_KS_PASS", "--key-pass", "env:PROXY_KS_PASS",
+         "--out", signed, aligned], env, stage)
+    run([exe(bt, "apksigner"), "verify", "--print-certs", signed], env, stage)
+    nodes_in_apk(signed, require_empty=public)
+    return signed
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--public", action="store_true", help="require an empty selected node input")
+    args = parser.parse_args(argv)
+    # Preserve legacy truthiness: any nonempty value enables release protections.
+    release = bool(os.environ.get("PROXY_RELEASE") or os.environ.get("PROXY_RELEASE_BUILD"))
+    public = args.public or release
+    local_nodes = ROOT / "assets" / "nodes.json"
+    selected = configured_path(os.environ.get("PROXY_NODES_JSON"),
+                               local_nodes if local_nodes.exists() else ROOT / "assets" / "nodes.sample.json")
+    try:
+        nodes = read_nodes(selected, require_empty=public)
+    except ReleaseCheckError as exc:
+        print("FAIL: node preflight:", exc)
+        return 1
+
+    committed = False
+    try:
+        keystore, alias, password = signing_config(release)
+        jdk, sdk = find_jdk(), find_sdk()
+        bt = latest_dir(sdk / "build-tools", "")
+        platform = latest_dir(sdk / "platforms", "android-")
+        if not bt or not platform:
+            raise BuildError("Android build-tools/platform not found")
+        env = dict(os.environ, JAVA_HOME=str(jdk.parent), PROXY_KS_PASS=password,
+                   PYTHONIOENCODING="utf-8")
+        output = configured_path(os.environ.get("PROXY_APK_OUT"), ROOT / "手机代理.apk")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Same filesystem as final output, so promotion is atomic (including on Windows).
+        with tempfile.TemporaryDirectory(prefix=".phoneproxy-build-", dir=str(output.parent)) as temp:
+            signed = build(Path(temp), nodes, public, keystore, alias, env, jdk, bt,
+                           platform / "android.jar", release=release)
+            os.replace(signed, output)
+            committed = True  # Commit point: later cleanup cannot undo promotion.
+    except (BuildError, ReleaseCheckError) as exc:
+        print("FAIL:", exc)
+        return 1
+    except (OSError, zipfile.BadZipFile, ValueError):
+        # No raw exception text: filenames/tool errors may contain sensitive input.
+        if not committed:
+            print("FAIL: build filesystem/archive operation failed; final APK was not promoted")
+            return 1
+        print("WARNING: 产物已验证并晋升，但暂存清理失败")
+    if public:
+        print("public build: assets/nodes.json = [] (0 nodes)")
+    else:
+        print("WARNING: private APK; do not publish (embedded nodes: %d)" % len(nodes))
+    print("APK OK: verified output atomically promoted")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

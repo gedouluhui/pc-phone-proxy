@@ -19,6 +19,7 @@ import socket
 import subprocess
 import time
 
+import diagnostics as D
 import nodes as N
 import pacroute
 import proxyctl as P
@@ -355,9 +356,7 @@ def main():
                     "speed_kbps": vf.get("speed_kbps"), "ok": vf.get("ok")}}
     rows_out = []
     for r in rows:
-        safe = dict(r)
-        if safe.get("uri"):
-            safe["uri"] = N.redact_uri(safe["uri"])
+        safe = D.row(r)
         rows_out.append(dict(safe, id=r["tag"],
                              label=f"{r.get('loc','??')} {r['proto']} {r['server']}:{r['port']}",
                              kind="node", ttfb_ms=r.get("cg_ttfb_ms"),
@@ -365,7 +364,7 @@ def main():
                              ok_both=bool(r.get("chatgpt_ok") and (r.get("dl_kbps") or 0) > 0),
                              score=round(score(r), 1),
                              err=(r.get("chatgpt_verdict") or "") if not r.get("chatgpt_ok") else ""))
-    best_row = dict(gen[0], id="pinned-general", kind="local",
+    best_row = dict(D.row(gen[0]), id="pinned-general", kind="local",
                     label=f"固定出口组 general（首选 {gen[0]['server']}:{gen[0]['port']} {gen[0].get('loc','')}）",
                     ttfb_ms=gen[0].get("cg_ttfb_ms"), speed_kbps=gen[0].get("dl_kbps"),
                     ok_both=True, score=round(score(gen[0]), 1))
@@ -375,7 +374,7 @@ def main():
     except Exception:
         pass
     with open(P.ACTIVE, "w", encoding="utf-8", newline="\n") as fp:
-        json.dump({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        json.dump(D.state({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    "chosen": best_row, "rows": rows_out[:150], "applied": "PAC " + pac_info["url"],
                    "dead_summary": {}, "previous": act_old.get("previous", {}),
                    "baseline": act_old.get("baseline", {}),
@@ -383,7 +382,7 @@ def main():
                    "pac": pac_info, "general": general_ep, "fast": fast_ep,
                    "gates": gates, "pinned": True,
                    "groups": {"general": gtags, "fast": ftags},
-                   "cli": f"127.0.0.1:{CLI_MIXED}"},
+                   "cli": f"127.0.0.1:{CLI_MIXED}"}),
                   fp, indent=1, ensure_ascii=False)
     with open(PINNED, "w", encoding="utf-8", newline="\n") as fp:
         json.dump({"general": general_ep, "fast": fast_ep, "cli": f"127.0.0.1:{CLI_MIXED}",

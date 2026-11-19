@@ -46,7 +46,7 @@ AI 打不开」。
 
 `libv2ray.aar` 下载地址：<https://github.com/2dust/AndroidLibXrayLite/releases>
 （选与 Xray-core v26.x 对应的版本；本项目验证过 v26.10.31 / Lib v40。）
-脚本会自动解压 AAR 到 `phone/libs/xray/`，里面已包含四个 ABI 的 `libgojni.so` 以及 `geoip.dat` / `geosite.dat`。
+脚本优先使用已有的 `phone/libs/xray/classes.jar` 及同目录资源，否则把 AAR 解压到本次构建的独立临时目录；构建需要四个 ABI 的 `libgojni.so` 以及 `geoip.dat` / `geosite.dat`。
 
 ## 构建
 
@@ -55,8 +55,18 @@ cd phone
 python build_apk.py
 ```
 
-构建使用 `phone/phoneproxy.keystore`（口令 `android`，仅用于本地安装，不是任何账号凭据）；
-文件不存在时脚本会自动生成。产物默认是 `phone/手机代理.apk`，可用 `PROXY_APK_OUT` 改输出路径。
+非正式构建默认使用 `phone/phoneproxy.keystore`（演示口令 `android`，别名 `phoneproxy`，仅用于本地测试）；
+文件不存在时才自动生成。可用 `PROXY_KEYSTORE`、`PROXY_KS_ALIAS`、`PROXY_KS_PASS` 指定签名配置；
+keytool 与 apksigner 共用别名和口令，口令通过工具的环境变量通道传递，不写入命令参数。
+
+正式构建设置 `PROXY_RELEASE=1`（兼容旧别名 `PROXY_RELEASE_BUILD=1`；任一变量非空即启用，`0` 也不表示关闭）。
+此模式自动启用公开输入检查，并要求显式配置已存在的 `PROXY_KEYSTORE` 和非空、非演示口令的 `PROXY_KS_PASS`，
+绝不自动生成密钥。`--public` 本身仅启用公开节点检查，不等同于正式签名模式。
+
+产物默认是 `phone/手机代理.apk`，可用 `PROXY_APK_OUT` 改输出路径；各路径变量的相对路径均相对于 `phone/`。
+每次构建使用独立临时目录，签名验证和节点资源检查均通过后才原子替换最终 APK；替换成功是提交点，提交前失败不覆盖已有产物。
+提交后若暂存清理失败（例如 Windows 文件占用），仍返回成功码，并提示“产物已验证并晋升，但暂存清理失败”；不回滚或再次覆盖最终 APK，解除占用后需自行清理残留暂存目录。
+节点 ZIP 条目仅接受本构建使用的普通 STORED/DEFLATED 格式，校验局部头/中央目录一致、真实展开长度、CRC 和压缩流完整性，展开最多读取 1 MiB + 1 字节并拒绝超过 1 MiB 的资源；加密、数据描述符及 ZIP64 节点条目不支持并拒绝。
 
 > 只要沿用同一个 keystore，本地构建的私用版与 Release 公版**签名一致**，可直接覆盖安装。
 > 若首次构建自动生成了新 keystore，签名就不同，覆盖安装会报“应用未安装”，需先卸载旧版。
@@ -72,10 +82,13 @@ App 支持三种节点来源：
 2. **用户导入**：粘贴分享链接或订阅地址。
 3. **安装包内置**（`assets/nodes.json`）：只用于自用版。公共版不内置任何节点；要做一个只给自己用的版本：
 
-> **构建公开版一律 `python build_apk.py --public`**。不带这个参数时脚本会把本地
-> `assets/nodes.json`（真实凭据）打进 APK——2026-11-18 的 v2.5 首个 Release 资产就是这么
-> 把 24 个节点传上去的（十分钟后删除并替换）。现在 `--public` 会强制空表、打包后读回 APK
-> 断言节点数为 0；`python check_release.py` 也会检查 `dist/` 与本地产物的节点数。
+> **公开构建使用 `--public`，正式发布还需启用 `PROXY_RELEASE=1` 并配置正式签名。**
+> `--public` 不再静默替换为强制空表：所选输入必须恰为 JSON 空数组 `[]`，非空或无效输入
+> 会在工具发现、编译和签名前被拒绝。默认优先选本地 `assets/nodes.json`，仅当它不存在时
+> 才回退到 `assets/nodes.sample.json`；本地池非空时应显式设置
+> `PROXY_NODES_JSON=assets/nodes.sample.json`，不必修改或删除本地池。
+> 显式指定的文件缺失也会失败，不再回退。最终公开 APK 必须含唯一的 `assets/nodes.json=[]`。
+> 未启用公开或正式模式时，所选非空节点会打进私用 APK，禁止公开发布。
 
 ```bash
 # 方式 A：从电脑端 pinned.json（分享链接 -> outbound）
@@ -91,20 +104,26 @@ python build_apk.py
 
 ### ⚠️ 打包前检查清单（v2.1 踩过的坑）
 
-`build_apk.py` 会无条件把 `assets/nodes.json` 打进 APK。仓库里提交的是空的
-`assets/nodes.sample.json`，而 `assets/nodes.json` 是本地生成、被忽略的文件：
-**如果它是 `[]`，打出来的就是「去凭据公版」：装到手机上会先提示「还没有节点」，
+`build_apk.py` 把预检后的所选节点快照打入 APK，不会在打包时重新读取可能变化的输入。
+仓库提交的是空的 `assets/nodes.sample.json`；本地生成的 `assets/nodes.json` 被忽略。
+**公开 APK 的节点资源必须为 `[]`：装到手机上会先提示「还没有节点」，
 用户点「导入节点 / 订阅 → 从公开源导入」即可（v2.4 起），或粘贴自己的订阅。**
+
+以下是 Bash 命令（在 `phone/` 下执行）。上传 Release 前须已通过环境变量配置既有正式 keystore 和口令；
+私用构建则须取消 `PROXY_RELEASE` 和 `PROXY_RELEASE_BUILD`，并确认没有遗留的 `PROXY_NODES_JSON` 覆盖本地池。
 
 | 要产出的东西 | 命令 | 检查 |
 |---|---|---|
-| 公版（上传 Release） | `PROXY_NODES_JSON=assets/nodes.sample.json python build_apk.py` | APK 内 `assets/nodes.json` = `[]` |
-| 私用版（自己装） | `python gen_pool.py` 后再 `python build_apk.py` | APK 内 `assets/nodes.json` 有 24 条 |
+| 空节点本地测试版 | `PROXY_NODES_JSON=assets/nodes.sample.json python build_apk.py --public` | 非正式模式；不得代替正式签名 |
+| 公版（上传 Release） | `PROXY_RELEASE=1 PROXY_NODES_JSON=assets/nodes.sample.json python build_apk.py --public` | 正式签名；APK 内唯一 `assets/nodes.json` = `[]` |
+| 私用版（自己装） | `python gen_pool.py` 后再 `python build_apk.py` | APK 内节点与所选本地池一致，禁止公开发布 |
 
 > v2.4 的公版即使节点池为空也能用：用户在 App 里点「从公开源导入」即可，不必再自建私用版。
 
-打包后用 `unzip -p <apk> assets/nodes.json` 或 Python `zipfile` 读一次确认节点数，
-再往外发。**不要把含节点的 APK 传上 Release**；空节点公版现在是可用的（用户点公开源导入），
+打包后对实际待发布文件运行 `python check_release.py <apk>`，确认检查通过后再发布。
+显式指定的 APK 必须存在且有效，缺失、重复、超大或无效节点资源以及非空数组都会返回非零；
+无参数时检查 git 清单及存在的默认产物，不存在的默认产物会跳过。
+**不要把含节点的 APK 传上 Release**；空节点公版现在是可用的（用户点公开源导入），
 但想让家里人"装完什么都不用点"，仍然要给他们内置节点的私用版。
 
 自动化检查（审查 C10）：

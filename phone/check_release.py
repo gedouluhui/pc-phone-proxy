@@ -1,88 +1,75 @@
 # -*- coding: utf-8 -*-
-"""Pre-release guard for the phone APK.
+"""Check git and public APK node assets, failing closed on inspection errors.
 
-Checks the two mistakes that actually happened:
-  1. a credential file (nodes.json / pinned.json / keystore / apk) is tracked by git;
-  2. the APK you are about to publish embeds real nodes instead of the empty sample.
-
-Usage:
-    python check_release.py                     # git check + inspect built artifacts
-    python check_release.py ../dist/手机代理-公版.apk   # also inspect that APK
+Usage: python phone/check_release.py [APK ...]
+With no arguments, inspect existing default artifacts. Explicit APKs are required.
 """
-import json
 import subprocess
 import sys
-import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from release_guard import ReleaseCheckError, nodes_in_apk
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-FORBIDDEN = (
-    "phone/assets/nodes.json",
-    "phone/pc_test_config.json",
-    "pinned.json",
-    "pinned_health.json",
-    "node_deep.json",
-    "pool.json",
-)
+FORBIDDEN = frozenset((
+    "nodes.json", "pc_test_config.json", "pinned.json", "pinned_health.json",
+    "node_deep.json", "pool.json",
+))
 SUFFIXES = (".keystore", ".jks", ".apk")
 
 
 def git_tracked():
     try:
-        out = subprocess.run(["git", "-C", str(ROOT), "ls-files"],
-                             capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", timeout=30).stdout
-    except Exception as exc:  # noqa: BLE001
-        print("WARN: cannot run git ls-files:", exc)
-        return []
-    return [l.strip() for l in out.splitlines() if l.strip()]
+        result = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
+                                capture_output=True, text=True, encoding="utf-8",
+                                errors="strict", timeout=30)
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        raise ReleaseCheckError("cannot inspect git tracked files") from None
+    if result.returncode != 0:
+        raise ReleaseCheckError("git ls-files failed (rc=%d)" % result.returncode)
+    return [path for path in result.stdout.split("\0") if path]
 
 
-def nodes_in(apk: Path) -> int:
-    try:
-        with zipfile.ZipFile(apk) as z:
-            nodes = json.loads(z.read("assets/nodes.json").decode("utf-8"))
-        return len(nodes) if isinstance(nodes, list) else -1
-    except Exception:  # noqa: BLE001
-        return -1
+def sensitive_path(path):
+    parts = PurePosixPath(path.replace("\\", "/").lower()).parts
+    return any(part in FORBIDDEN or part.endswith(SUFFIXES) for part in parts)
 
 
-def main() -> int:
+def nodes_in(apk):
+    return nodes_in_apk(apk)
+
+
+def main(argv=None):
     bad = []
-    for path in git_tracked():
-        low = path.lower()
-        if low in FORBIDDEN or low.endswith(SUFFIXES):
-            bad.append(path)
-    if bad:
-        print("FAIL: credential/binary files are tracked by git:")
-        for b in bad:
-            print("  " + b)
-        print("Remove them with: git rm --cached <path>  (keep the local copy)")
+    try:
+        tracked = [path for path in git_tracked() if sensitive_path(path)]
+    except ReleaseCheckError as exc:
+        bad.append("git")
+        print("FAIL:", exc)
     else:
-        print("OK: git tracks no node credentials, keystores or APKs")
+        if tracked:
+            bad.extend(tracked)
+            print("FAIL: credential/binary files are tracked by git:")
+            for path in tracked:
+                print("  " + repr(path))
+            print("Remove them with: git rm --cached <path> (keep the local copy)")
+        else:
+            print("OK: git tracks no node credentials, keystores or APKs")
 
-    # 发布物（dist/ 与本地构建产物）必须内置空节点表。
-    # 2026-11-18：v2.5 的第一个 Release 资产就是这样把 24 个节点凭据带上去的——
-    # git 里干净不等于 APK 里干净，两者必须分开查。
-    targets = [Path(a) for a in sys.argv[1:]]
+    targets = [Path(arg) for arg in (sys.argv[1:] if argv is None else argv)]
     if not targets:
-        for cand in (ROOT / "dist" / "手机代理-公版.apk",
-                     HERE / "手机代理.apk"):
-            if cand.is_file():
-                targets.append(cand)
+        targets = [path for path in (ROOT / "dist" / "手机代理-公版.apk",
+                                     HERE / "手机代理.apk") if path.exists()]
     for apk in targets:
-        if not apk.is_file():
-            print("SKIP: APK not found:", apk)
-            continue
-        n = nodes_in(apk)
-        print("APK %s embeds %s node(s)" % (apk.name, n))
-        if n > 0:
+        try:
+            nodes_in(apk)
+        except ReleaseCheckError as exc:
             bad.append(str(apk))
-            print("FAIL: 这是私用版，不能作为公开发布物（重新用 --public 构建）。")
-        elif n == 0:
-            print("OK: empty node pool (safe for public release).")
+            print("FAIL: APK %s: %s" % (apk.name, exc))
+        else:
+            print("OK: APK %s: assets/nodes.json = []" % apk.name)
     return 1 if bad else 0
 
 
