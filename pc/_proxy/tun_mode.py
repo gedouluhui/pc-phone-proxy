@@ -33,6 +33,7 @@ CFG = os.path.join(HERE, "singbox_tun.json")
 PID = os.path.join(HERE, "tun.pid")
 ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
 RESULT = os.path.join(HERE, "tun_result.json")
+STARTED = os.path.join(HERE, "tun_started.txt")
 LOG = os.path.join(HERE, "logs", "tun.log")
 SB_LOG = os.path.join(HERE, "logs", "tun_singbox.log")
 IFACE = "pcproxy"
@@ -46,12 +47,18 @@ CREATE_NO_WINDOW = 0x08000000
 
 def log(*a):
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + " ".join(str(x) for x in a)
-    print(line, flush=True)
+    # Write the file FIRST: an elevated child may inherit a console handle it
+    # cannot print to, and a failing print() used to abort log() before the
+    # line ever reached the file, leaving the parent with nothing to show.
     try:
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with io.open(LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
+        pass
+    try:
+        print(line, flush=True)
+    except Exception:
         pass
 
 
@@ -83,6 +90,10 @@ def elevate(args, wait=90):
         os.remove(RESULT)
     except OSError:
         pass
+    try:
+        os.remove(STARTED)
+    except OSError:
+        pass
     exe = sys.executable
     params = subprocess.list2cmdline([os.path.join(HERE, "tun_mode.py")]
                                      + list(args) + ["--admin",
@@ -96,6 +107,17 @@ def elevate(args, wait=90):
                                              HERE, 0)
     if rc <= 32:
         return 1, "UAC 被取消或无法提权 (ShellExecute=%d)" % rc
+
+    # ShellExecuteW also returns >32 when the user cancels UAC (1223), so the
+    # return code alone cannot tell "running" from "never started".  The child
+    # drops a marker as its first action; no marker in 12s means UAC was not
+    # confirmed, and waiting the full timeout would just hide the real problem.
+    t_start = time.time()
+    while time.time() - t_start < 12 and not os.path.isfile(STARTED):
+        time.sleep(0.3)
+    if not os.path.isfile(STARTED):
+        return 1, ("UAC 未确认：12 秒内没有提权进程启动。若没看到弹窗，"
+                   "请看任务栏闪烁的盾牌图标并点「是」，然后重试。")
 
     def pump():
         nonlocal pos
@@ -410,6 +432,14 @@ def main(argv):
     except Exception:
         pass
     admin = "--admin" in argv
+    if admin:
+        # First action of the elevated child: let the waiting parent know that
+        # elevation actually succeeded (see elevate()).
+        try:
+            with io.open(STARTED, "w", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        except OSError:
+            pass
     ev = "--result" in argv
     cmd = next((a for a in argv if a in ("start", "stop", "status")), "status")
     if ev:
