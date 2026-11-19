@@ -278,36 +278,67 @@ def _start_gai(uris):
     return False
 
 
-def ensure_gai():
-    """Dedicated exit for Google AI sites: collect the nodes Google accepts.
+def _google_bad():
+    """Servers Google itself refused (notebooklm -> location=unsupported)."""
+    try:
+        with io.open(os.path.join(HERE, "google_bad.json"), encoding="utf-8") as f:
+            return {str(x).lower() for x in (json.load(f) or [])}
+    except Exception:
+        return set()
 
-    The fast group's quickest node is often one Google refuses, so AI traffic
-    gets its own instance instead of dragging the whole group.  Collect up to
-    three survivors so the group can fail over.
+
+def _remember_google_bad(server):
+    bad = _google_bad()
+    if server and server.lower() not in bad:
+        bad.add(server.lower())
+        try:
+            with io.open(os.path.join(HERE, "google_bad.json"), "w",
+                         encoding="utf-8", newline="\n") as f:
+                json.dump(sorted(bad), f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
+
+
+def ensure_gai():
+    """Dedicated exit for Google AI sites, built from the nodes actually in use.
+
+    Two lessons from the field:
+    * the stale deep pool is full of placeholder rows and public HTTP proxies
+      that refuse connections within minutes -- building the AI path from it
+      produced a one-member group that was already dead;
+    * probing every candidate at startup costs a minute and still picks a node
+      that dies by the time the tunnel is up.
+    So: take the live pinned members, drop the ones Google refused, and let
+    urltest fail over between the rest.
     """
     if up(GAI) and _gai_ok():
         return True
-    rows = [r for r in node_rows()
-            if r.get("uri") and r.get("github_ok") and (r.get("ul_kbps") or 0) > 0]
-    rows.sort(key=lambda r: -(r.get("score") or 0))
-    good = []
-    for r in rows[:3]:
-        if _start_gai([r["uri"]]) and _gai_ok():
-            good.append(r["uri"])
-            log("  Google AI 候选通过: %s %s" % (r.get("loc"), r.get("server")))
-            if len(good) >= 2:
+    bad = _google_bad()
+    import nodes as N
+    uris = []
+    try:
+        with io.open(os.path.join(HERE, "pinned.json"), encoding="utf-8") as f:
+            p = json.load(f)
+        for u in (p.get("members") or {}):
+            ob, _ = N.parse_uri(u)
+            if not ob:
+                continue
+            if (ob.get("server") or "").lower() in bad:
+                continue
+            uris.append(u)
+            if len(uris) >= 10:
                 break
-        else:
-            log("  [warn] %s 被 Google 判为不支持或连不上，换下一颗" % (r.get("server"),))
-    if not good:
-        log("  [warn] 没有节点能过 Google 地区闸门；AI 站点回退到快速出口")
-        P.kill_port(GAI, expect=("sing-box.exe",), expect_cmd="singbox_gai.json",
-                    log=lambda *a: None)
+    except Exception as e:
+        log("  [warn] 读 pinned.json 失败: %r" % (e,))
+    if not uris:
+        rows = [r for r in node_rows() if r.get("uri")]
+        rows.sort(key=lambda r: -(r.get("score") or 0))
+        uris = [r["uri"] for r in rows[:3]]
+    if not uris or not _start_gai(uris):
+        log("  [warn] Google AI 专用出口没起来；AI 站点回退到快速出口")
         return False
-    if len(good) > 1 and not _start_gai(good):
-        _start_gai([good[0]])
-    log("  Google AI 专用出口: %d 颗节点自动切换 (2098)" % len(good))
-    return _gai_ok()
+    log("  Google AI 专用出口: %d 颗节点自动切换 (2098)" % len(uris))
+    return _gai_ok(timeout=6)
 
 
 def node_rows():
@@ -661,5 +692,25 @@ def main():
         release_lock()
 
 
+def gai_only():
+    """只重建 Google AI 专用出口（2098），不动隧道和其余出口。
+
+    TUN 里的 AI 域名是通过 127.0.0.1:2098 转发的，所以换掉 2098 就等于给正在
+    运行的隧道换了一条 AI 线路，不需要重启网卡、不打断其它流量。
+    """
+    log("=" * 68)
+    log("  只重建 Google AI 专用出口（2098）")
+    log("=" * 68)
+    ok = ensure_gai()
+    log("")
+    if ok:
+        log("[OK] AI 出口已就绪。浏览器刷新即可，不需要重开代理。")
+        return 0
+    log("[失败] 没找到可用节点。可先跑 重新扫描节点.bat，或用分流模式。")
+    return 1
+
+
 if __name__ == "__main__":
+    if "--gai-only" in sys.argv[1:]:
+        raise SystemExit(gai_only())
     raise SystemExit(main())

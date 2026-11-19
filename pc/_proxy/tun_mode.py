@@ -180,6 +180,28 @@ def build_config():
     except Exception:
         gai_tag = None
 
+    # Never make the AI path a single outbound: a free node dies within minutes
+    # and a direct rule would leave the browser spinning forever (no fallback
+    # inside TUN, unlike the PAC chain).  urltest measures every member and
+    # skips the ones that stop answering.
+    google_bad = set()
+    try:
+        with io.open(os.path.join(HERE, "google_bad.json"), encoding="utf-8") as f:
+            google_bad = {str(x).lower() for x in (json.load(f) or [])}
+    except Exception:
+        pass
+    gmembers = [gai_tag] if gai_tag else []
+    for o in outbounds:
+        tag = o.get("tag") or ""
+        if (tag.startswith("g") and o.get("type") not in ("urltest", "direct")
+                and (o.get("server") or "").lower() not in google_bad):
+            gmembers.append(tag)
+    if gmembers:
+        outbounds = outbounds + [{"type": "urltest", "tag": "grp-google",
+                                  "outbounds": gmembers[:10],
+                                  "url": "https://www.gstatic.com/generate_204",
+                                  "interval": "60s", "tolerance": 300}]
+
     cfg = {
         "log": {"level": "warn", "timestamp": True},
         "experimental": {"clash_api": {"external_controller": "127.0.0.1:19091"}},
@@ -214,7 +236,7 @@ def build_config():
                 {"domain_suffix": pacroute.STEAM_DIRECT, "outbound": "direct"},
                 # AI 站必须走合格出口；其余默认走合并组
                 {"domain_suffix": pacroute.GOOGLE_APP,
-                 "outbound": gai_tag or "grp-general"},
+                 "outbound": "grp-google" if gmembers else "grp-general"},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},
             ],
         },
@@ -456,10 +478,21 @@ def main(argv):
         except OSError:
             pass
     ev = "--result" in argv
-    cmd = next((a for a in argv if a in ("start", "stop", "status")), "status")
+    cmd = next((a for a in argv if a in ("start", "stop", "status", "gai")), "status")
     if ev:
         i = argv.index("--result")
         globals()["RESULT"] = argv[i + 1]
+
+    if cmd == "gai":
+        if not admin:
+            log("正在重建 Google AI 出口（会弹一次 UAC，约 10 秒）…")
+            rc, msg = elevate([cmd], wait=180)
+            print(("[OK] " if rc == 0 else "[失败] ") + msg)
+            return rc
+        import start_proxy as S
+        rc = S.gai_only()
+        write_result(rc, "AI 出口已重建" if rc == 0 else "AI 出口重建失败")
+        return rc
 
     if cmd == "status":
         pid = read_pid()

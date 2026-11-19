@@ -152,7 +152,13 @@ def kill_port(port, expect=("sing-box.exe",), expect_cmd=None, log=print):
             continue
         if expect_cmd:
             cmd = pid_cmdline(pid).lower()
-            if expect_cmd.lower() not in cmd:
+            if not cmd.strip():
+                # An elevated process hides its command line from a non-admin
+                # caller.  Refusing here left the port owned by a zombie we
+                # started ourselves (TUN's 2098), and every later start failed
+                # with "command line is not ours".
+                pass
+            elif expect_cmd.lower() not in cmd:
                 try:
                     log("  skip pid=%d %s on %d (command line is not ours)" % (pid, img, port))
                 except Exception:
