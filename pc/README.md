@@ -6,7 +6,9 @@
 - 选出 `general`（ChatGPT/Claude）与 `fast`（Google/GitHub/HF/网页）两组出口；
 - 用 sing-box 在 `127.0.0.1` 上开端口，浏览器通过本地 PAC 自动分流，命令行通过环境变量分流；
 - 看门狗在后台自愈：端口掉线、站点打不开、PAC 被别的软件改掉，都会自动修复；
-- 提供一键关闭，撤掉 PAC/环境变量，恢复直连。
+- 默认免管理员分流；可选 TUN 全局模式（wintun 虚拟网卡，UAC 一次），覆盖不认系统代理的程序；
+- 除 PAC 外同时写静态代理 `127.0.0.1:2090`，NVIDIA/打印机等只读 ProxyServer 的下载器也能走代理；
+- 一键关闭：撤 PAC/静态代理、杀全部自家进程、还原环境变量，并逐项验证直连。
 
 ## 目录与依赖
 
@@ -18,13 +20,15 @@ pc/
 │  ├─ deep_test.py         初筛 + 延迟 + 下载/上传/ChatGPT 深测
 │  ├─ bestroute.py         打分选出口，--apply 写 pinned.json + PAC + 启进程
 │  ├─ start_proxy.py       日常启动：复用/重建 -> 装 PAC -> 复验 -> 看门狗
-│  ├─ stop_proxy.py        一键关闭并逐项验证
+│  ├─ stop_proxy.py        完整关闭并逐项验证（TUN/看门狗/进程/注册表/环境变量）
+│  ├─ tun_mode.py          可选 TUN 全局模式（自提权，wintun 虚拟网卡）
 │  ├─ watchdog.py          后台自愈
 │  ├─ pacroute.py          本地 PAC HTTP 服务（默认 8891，被占用自动换 8892-8900）
-│  ├─ sysstate.py          备份/恢复 WinINET 与环境变量
+│  ├─ sysstate.py          备份/恢复 WinINET、静态代理与环境变量
 │  ├─ proxyctl.py          进程/PID/端口小工具
-│  └─ ...                  站点探针、报告、便携包构建等
+│  └─ ...                  站点探针、报告等
 ├─ start-proxy.bat
+├─ tun-mode.bat
 └─ stop-proxy.bat
 ```
 
@@ -38,6 +42,8 @@ pip install -r _proxy\requirements.txt
 旧文档漏写会导致 `ModuleNotFoundError`。）
 
 `sing-box.exe`：<https://github.com/SagerNet/sing-box/releases> 下载 `sing-box-*-windows-amd64.zip`，把 `sing-box.exe` 放到 `pc/_proxy/bin/`。
+
+TUN 模式还需要 `<https://www.wintun.net/>` 的 `wintun.dll`（0.14.1，WireGuard LLC 签名），同样放进 `pc/_proxy/bin/`；只做分流可以不装。
 
 ## 首次建立节点池
 
@@ -69,13 +75,19 @@ start-proxy.bat
 3. 逐个站点复验（ChatGPT / Google / GitHub / Kaggle / HuggingFace 等），失败时先原地重试，再按深测库重建；
 4. 拉起 `watchdog.py`（单实例守护），后台每 60 秒检查端口、每 5 分钟检查关键站点。
 
+TUN 全局模式（可选，需管理员）：
+
+```bat
+tun-mode.bat
+```
+
 关闭：
 
 ```bat
 stop-proxy.bat
 ```
 
-停止看门狗、sing-box、PAC 服务，恢复系统代理设置与命令行环境变量，并逐项验证。
+先删 `ENABLED` 权限标志，再按「TUN → 看门狗 → PAC/守卫 → 全部自家 sing-box → 还原注册表与环境变量」停止，最后逐项验证端口、进程、注册表和直连。TUN 运行时会再请求一次 UAC。
 
 ## 端口与分流
 
@@ -83,9 +95,8 @@ stop-proxy.bat
 |---|---|
 | 2101 http / 2100 socks | `general`：ChatGPT / Claude / OpenAI，只放能过地区闸门的节点 |
 | 2103 http / 2102 socks | `fast`：Google / GitHub / HuggingFace / 普通网页 |
-| 2090 mixed | 命令行（git/pip/curl/npm）：按域名再分流到上面两组 |
-| 2086 | Reddit 专用（可选） |
-| 2096 | Steam 专用（可选） |
+| 2090 mixed | 命令行（git/pip/curl/npm）与静态代理兜底：按域名再分流到上面两组 |
+| 2096 | Steam 专用（可选；拿不到可用美国出口时回落到 2103） |
 | 8891（或 8892-8900） | 本地 PAC 服务 |
 | 9090 | sing-box Clash API（仅本机，供看门狗切换/观测） |
 
@@ -94,9 +105,9 @@ stop-proxy.bat
 ## 看门狗与自愈
 
 - **单实例**：启动时读 `watchdog.pid`，若同 PID 文件指向另一个存活的 Python 进程，直接退出，避免双看门狗互相覆盖。
-- **端口检查**：60 秒一次；连续失败才触发重建（有 600 秒冷却）。
-- **站点闸门**：300 秒一次 ChatGPT / gstatic；连续失败触发重建。
-- **PAC 检查**：120 秒一次，对比 `pac_url.txt` 里记录的实际地址，并确认本地 PAC 服务返回的内容与磁盘 `proxy.pac` **逐字节一致**；不一致会重装。
+- **端口检查**：60 秒一次；连续失败才触发重建（有 900 秒冷却）。
+- **站点闸门**：300 秒一次 ChatGPT / gstatic；连续 3 次失败才重建；检测到 Clash API 上有 >20 MB 活动下载时延后 10 分钟，不打断驱动安装包。
+- **PAC 检查**：120 秒一次，对比 `pac_url.txt` 里记录的实际地址，并确认本地 PAC 服务返回的内容与磁盘 `proxy.pac` **逐字节一致**；不一致会重装。静态代理被改掉也会写回。
 - **整池失效**：最多 12 小时重扫一次公开源（`harvest.py` + `deep_test.py`）。
 - **降级优先**：任何“检测失败就重建”的路径都不会先拆掉唯一存活的栈；`bestroute.py --apply` 在 fast 组检测不过时会把 fast 角色降级到 general 门，而不是拒绝应用导致全断。
 

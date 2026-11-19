@@ -132,6 +132,30 @@ def pick(rows, need_cg, min_dl, min_ul, k, max_per_prefix=2):
     return out
 
 
+def pinned_fallback_rows():
+    """Reuse the last applied URIs when the deep pool has too few survivors.
+
+    node_deep.json is a one-shot measurement; when nearly every free node died
+    it can end up with 1-2 rows and rebuild refuses to apply, leaving a dead
+    machine.  The previously pinned nodes are a legitimate second candidate
+    set -- urltest health-checks them anyway, and a dead one is just skipped.
+    """
+    try:
+        p = json.load(open(PINNED, encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for uri in (p.get("members") or {}):
+        ob, _ = N.parse_uri(uri)
+        if not ob:
+            continue
+        out.append({"server": ob.get("server"), "port": ob.get("server_port"),
+                    "proto": ob.get("type") or "?", "uri": uri,
+                    "dl_kbps": 400, "ul_kbps": 120, "github_ok": True,
+                    "chatgpt_ok": True, "loc": "旧", "cg_ttfb_ms": 1500})
+    return out
+
+
 def build_config(gen, fast):
     outbounds, used = [], {}
     parse_fail = []
@@ -171,7 +195,7 @@ def build_config(gen, fast):
         "experimental": {
             # read-only local API: lets 启动/看门狗 read which member urltest is
             # using right now, plus its live delay history.
-            "clash_api": {"external_controller": "127.0.0.1:9090"}
+            "clash_api": {"external_controller": "127.0.0.1:19090"}
         },
         "inbounds": [
             {"type": "http", "tag": "in-h-g", "listen": "127.0.0.1", "listen_port": GENERAL_HTTP},
@@ -180,14 +204,18 @@ def build_config(gen, fast):
             {"type": "socks", "tag": "in-s-f", "listen": "127.0.0.1", "listen_port": FAST_SOCKS},
             {"type": "mixed", "tag": "in-cli", "listen": "127.0.0.1", "listen_port": CLI_MIXED},
         ],
-        "outbounds": ([{"type": "urltest", "tag": "grp-general", "outbounds": gtags,
-                        "url": HEALTH_URL, "interval": "60s", "tolerance": 150},
+        # tolerance 必须大于节点间正常的延迟抖动：免费节点延迟常在 300~1500ms
+    # 之间抖动，150ms 的容差会让 urltest 每分钟都换节点，换的瞬间正在进行的
+    # 下载/TLS 连接全部断掉（用户看到的就是「用着用着网断了」）。400ms 仍然
+    # 能在一颗节点明显变慢时切走，但不会因为抖动来回横跳。
+    "outbounds": ([{"type": "urltest", "tag": "grp-general", "outbounds": gtags,
+                        "url": HEALTH_URL, "interval": "60s", "tolerance": 400},
                        {"type": "urltest", "tag": "grp-fast", "outbounds": ftags,
-                        "url": HEALTH_URL, "interval": "60s", "tolerance": 150},
+                        "url": HEALTH_URL, "interval": "60s", "tolerance": 400},
                        # 2026-11-11 WorkBuddy privacy: 合并组兜底——当某一组挑到坏节点时，
                        # 命令行/快速门仍能挑到两组里当前可用的最快成员（避免整路超时）。
                        {"type": "urltest", "tag": "grp-any", "outbounds": anytags,
-                        "url": HEALTH_URL, "interval": "60s", "tolerance": 150}]
+                        "url": HEALTH_URL, "interval": "60s", "tolerance": 400}]
                       + outbounds + [{"type": "direct", "tag": "direct"}]),
         "route": {"rules": [
             # 2026-11-11 WorkBuddy hotfix: 国内域名在所有门强制直连（含米哈游全家桶）。
@@ -199,7 +227,7 @@ def build_config(gen, fast):
             # 明文 HTTP(80) 与 DNS(53) 不经节点：HTTP 内容对节点明文可见，DNS 可被节点篡改。
             {"port": 80, "outbound": "direct"},
             {"port": 53, "outbound": "direct"},
-            # UDP(QUIC/WebRTC) 经代理会被节点看到且绕过 TLS 保护 ⇒ 拒绝；浏览器自动回落 TCP。
+            # UDP(QUIC/WebRTC) 经代理会被节点看到且绕过 TLS 保护 => 拒绝；浏览器自动回落 TCP。
             {"network": "udp", "action": "reject"},
             {"inbound": ["in-h-g", "in-s-g"], "outbound": "grp-general"},
             {"inbound": ["in-h-f", "in-s-f"], "outbound": "grp-any"},
@@ -269,13 +297,31 @@ def main():
     args = ap.parse_args()
 
     rows = json.load(open(DEEP, encoding="utf-8"))["rows"]
-    gen = pick(rows, True, args.min_dl, args.min_ul, args.top)
+    fallback = pinned_fallback_rows()
+    seen = {(str(r.get("server", "")).lower(), str(r.get("port"))) for r in rows}
+    fallback = [r for r in fallback
+                if (str(r.get("server", "")).lower(), str(r.get("port"))) not in seen]
+    if fallback:
+        log(f"deep pool thin; %d previously pinned URI(s) join the candidates"
+            % len(fallback))
+    pool = rows + fallback
+    gen = pick(pool, True, args.min_dl, args.min_ul, args.top)
     if not gen:
         log("no ChatGPT-capable node above thresholds; lowering to 80/20")
-        gen = pick(rows, True, 80, 20, args.top)
-    fast = pick(rows, False, max(args.min_dl, 600), args.min_ul, args.top) or \
-        pick(rows, False, args.min_dl, args.min_ul, args.top)
-    log(f"deep rows {len(rows)}, chatgpt-ok {sum(1 for r in rows if r.get('chatgpt_ok'))}")
+        gen = pick(pool, True, 80, 20, args.top)
+    fast = pick(pool, False, max(args.min_dl, 600), args.min_ul, args.top)
+    if len(fast) < 3:
+        # A one-member group is the most fragile part of the stack: when that
+        # single node blips, 2103 dies outright and the browser/CLI lose the
+        # internet until the keeper notices.  urltest health-checks every
+        # member and simply skips the dead ones, so widening the list is free.
+        for r in pick(pool, False, args.min_dl, args.min_ul, args.top):
+            if all(r["uri"] != f["uri"] for f in fast):
+                fast.append(r)
+            if len(fast) >= 3:
+                break
+    log(f"deep rows {len(rows)} (+{len(fallback)} pinned), "
+        f"chatgpt-ok {sum(1 for r in rows if r.get('chatgpt_ok'))}")
     log("\n== general group (ChatGPT) ==")
     for r in gen:
         log(f"  {r.get('loc','??'):2s} {r['proto']:6s} {r['server']}:{r['port']} "

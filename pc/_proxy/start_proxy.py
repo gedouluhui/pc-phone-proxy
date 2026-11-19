@@ -66,7 +66,7 @@ def http_json(url, timeout=2.5):
 
 def clash_ok():
     try:
-        j = http_json("http://127.0.0.1:9090/proxies/grp-general")
+        j = http_json("http://127.0.0.1:19090/proxies/grp-general")
         return bool(j.get("now") is not None)
     except Exception:
         return False
@@ -215,12 +215,13 @@ def exit_ip(port, timeout=8):
     ep = "http://127.0.0.1:%d" % int(port)
     op = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": ep, "https": ep}))
+    # HTTPS only: the pinned route sends port 80 straight out, so an http
+    # lookup would always report the local ISP address.
     try:
-        with op.open("http://ip-api.com/json/?fields=status,country,countryCode,query",
-                     timeout=timeout) as r:
-            j = json.loads(r.read().decode("utf-8", "replace"))
-        if j.get("status") == "success":
-            return "%s (%s %s)" % (j.get("query"), j.get("country"), j.get("countryCode"))
+        with op.open("https://ipinfo.io/json", timeout=timeout) as r:
+            j = json.loads(r.read(4000).decode("utf-8", "replace"))
+        if j.get("ip"):
+            return "%s (%s)" % (j.get("ip"), j.get("country") or "?")
     except Exception:
         pass
     return "-"
@@ -238,7 +239,7 @@ def collect_groups():
     for role, grp in (("general", "grp-general"), ("fast", "grp-fast")):
         info = {"now": None, "delay": None, "all": []}
         try:
-            g = http_json("http://127.0.0.1:9090/proxies/" + grp)
+            g = http_json("http://127.0.0.1:19090/proxies/" + grp)
             info["now"] = g.get("now")
             h = g.get("history") or []
             if h:
@@ -246,7 +247,7 @@ def collect_groups():
             for tag in (g.get("all") or []):
                 d = None
                 try:
-                    pj = http_json("http://127.0.0.1:9090/proxies/" + tag, timeout=1.5)
+                    pj = http_json("http://127.0.0.1:19090/proxies/" + tag, timeout=1.5)
                     ph = pj.get("history") or []
                     if ph:
                         d = ph[-1].get("delay")
@@ -338,16 +339,40 @@ def fallback():
     log("[!] 深测出口组没起来，回退到通用选路（可能要几分钟）...")
     rc = run("proxyctl.py", "enable")
     if rc == 0:
+        # proxyctl 的候选里混着公网 HTTP 代理。把系统代理指向陌生人的服务器
+        # 既慢又不可信（还能看到明文流量），所以只接受本机端口。
+        try:
+            srv = (sysstate.current().get("proxy_server") or "")
+        except Exception:
+            srv = ""
+        if srv and "127.0.0.1" not in srv and "localhost" not in srv:
+            log("[失败] 兜底选到了公网代理 %s —— 不可信且不稳，已撤销，保持直连。" % srv)
+            try:
+                sysstate.restore_all()
+            except Exception:
+                pass
+            log("       请双击 重新扫描节点.bat 重扫节点（10-40 分钟）。")
+            return 1
         port = 2087 if up(2087) else (9910 if up(9910) else HK)
         try:
             sysstate.backup_once()
             sysstate.apply_env(port)
         except Exception as e:
             log("  [警告] 命令行代理变量没写进去: %r" % (e,))
+        v = P.verify_applied("127.0.0.1:%d" % port)
+        if not v.get("ok"):
+            # 静态代理已指向这个端口；不留一个“看起来已开、实际断网”的状态。
+            log("[失败] 兜底出口 %d 实测打不开外网: %s" % (port, v.get("err") or "超时"))
+            log("       已撤销代理设置恢复直连。请双击 重新扫描节点.bat 重扫节点。")
+            try:
+                sysstate.restore_all()
+            except Exception:
+                pass
+            return 1
         log("[OK] 已用通用选路启用，命令行指向 127.0.0.1:%d" % port)
         log("     报告: " + os.path.join(HERE, "report.html"))
-    else:
-        log("[失败] 没有任何可用出口。确认本机联网后重试；日志在 _proxy\\logs\\")
+        return 0
+    log("[失败] 没有任何可用出口。确认本机联网后重试；日志在 _proxy\\logs\\")
     return rc
 
 
@@ -365,6 +390,31 @@ def main():
     if rc:
         return rc
     try:
+        # A second copy (old backup folder, a copy dragged to another disk)
+        # fights us for 2090/2101/2103 and would make us snapshot its dead PAC
+        # as "the state to restore".  Close it first, then snapshot.
+        copies = []
+        try:
+            import stop_proxy as _S
+            copies = _S.kill_foreign_copies()
+        except Exception as e:
+            log("  [警告] 检查其他代理副本失败: %r" % (e,))
+        if copies:
+            log("[0/3] 发现另一份代理副本在运行（多为旧备份目录），已先关闭: "
+                + ", ".join(map(str, copies)))
+            pacroute.clear_pac()
+        # A live TUN owns the default route and the controller port; starting
+        # split mode underneath it makes sing-box exit rc=1 and the launcher
+        # fall back to some random public HTTP proxy.  Close TUN first.
+        try:
+            import tun_mode as _T
+            if _T.adapter_present():
+                log("[0/3] 检测到 TUN 虚拟网卡仍在接管流量，先关闭（需要管理员，"
+                    "可能弹一次 UAC）...")
+                subprocess.run([sys.executable, os.path.join(HERE, "tun_mode.py"),
+                                "stop"], cwd=HERE, timeout=180)
+        except Exception as e:
+            log("  [警告] 关闭 TUN 失败: %r（若随后出口起不来，请手动关 TUN）" % (e,))
         # Capture the pre-existing system state BEFORE touching anything --
         # otherwise the PAC we are about to install would be saved as
         # "the state to restore" and 关闭代理 would restore a dead PAC.
@@ -406,6 +456,14 @@ def main():
             pacroute.apply_pac("127.0.0.1:%d" % GEN, "127.0.0.1:%d" % FAST)
             vg = P.verify_applied("127.0.0.1:%d" % GEN)
 
+        # ---- static fallback for apps that ignore PAC -----------------
+        # NVIDIA / 打印机安装器 / 部分 UWP 只读 ProxyServer。PAC 仍然优先，
+        # 浏览器分流不受影响；这类程序拿静态值走 2090，由 sing-box 再分流。
+        try:
+            sysstate.apply_static(CLI)
+        except Exception as e:
+            log("  [警告] 静态代理写入失败: %r（下载器可能仍会绕过 PAC）" % (e,))
+
         # ---- CLI env ----------------------------------------------
         try:
             sysstate.apply_env(CLI)
@@ -420,6 +478,7 @@ def main():
         log("      ChatGPT/Claude -> %d   网页/Git/HF -> %d   Reddit -> %s"
             % (GEN, FAST, ("%d" % HK) if info.get("hk") else "未启用"))
         log("      Steam store -> %s" % (("127.0.0.1:%d (US)" % STEAM) if info.get("steam") else "normal line"))
+        log("      不认 PAC 的程序(驱动下载器/UWP) -> 静态代理 127.0.0.1:%d" % CLI)
         log("      命令行环境变量: HTTP(S)_PROXY -> 127.0.0.1:%d（新开的终端生效）" % CLI)
         log("")
         groups = collect_groups()
@@ -455,6 +514,15 @@ def main():
             log("  组内候选: " + "  ".join(bits))
 
         # ---- keeper ------------------------------------------------
+        # ENABLED is the keeper's permission slip: no file -> it exits and
+        # never re-installs the PAC.  Written only after the exits and the
+        # system proxy are actually in place.
+        try:
+            with io.open(os.path.join(HERE, "ENABLED"), "w",
+                         encoding="utf-8", newline="\n") as f:
+                f.write("1")
+        except OSError as e:
+            log("  [警告] 无法写入 ENABLED 标志: %r" % (e,))
         pid, fresh = ensure_watchdog()
         log("")
         log("[3/3] 兜底已就位: 看门狗 pid=%d%s" % (pid, "（新启动）" if fresh else "（已在运行）"))

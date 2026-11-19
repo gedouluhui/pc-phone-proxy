@@ -24,13 +24,14 @@
 | 组件 | 用途 | 许可证 | 来源 |
 |---|---|---|---|
 | sing-box | 代理内核（`pc/_proxy/bin/sing-box.exe`，需自行下载） | GPL-3.0-or-later | https://github.com/SagerNet/sing-box |
+| wintun | TUN 模式的 Windows 虚拟网卡驱动（可选 `pc/_proxy/bin/wintun.dll`，0.14.1） | GPL-2.0 | https://www.wintun.net/ ，源码 https://git.zx2c4.com/wintun/ |
 | Python | 运行脚本的解释器（不随仓库分发） | PSF License | https://www.python.org |
 | requests | HTTP 客户端 | Apache-2.0 | https://github.com/psf/requests |
 | websocket-client | Clash API WebSocket | Apache-2.0 | https://github.com/websocket-client/websocket-client |
 
 说明：
 
-- 本仓库**不包含** `sing-box.exe`。使用说明要求用户从官方 release 自行下载；若你分发包含该二进制的便携包，请同时遵守 GPL-3.0 的源码提供义务。
+- 本仓库**不包含** `sing-box.exe` 与 `wintun.dll`。使用说明要求用户从官方 release 自行下载；若你分发包含这些二进制的便携包，请同时遵守 GPL-3.0（sing-box）与 GPL-2.0（wintun）的源码提供义务。官方 wintun 构建带有 WireGuard LLC 的 Authenticode 签名，分发前可用 `Get-AuthenticodeSignature` 校验。
 - 电脑端脚本调用的公开节点列表由各列表维护者提供，节点本身属于第三方，本项目不对其可用性、合法性或安全性作任何担保。
 
 ## 免责声明

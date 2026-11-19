@@ -118,6 +118,16 @@ FAST = [
     "twitch.tv", "spotify.com", "scdn.co", "soundcloud.com",
     "bbc.com", "bbc.co.uk", "cnn.com", "nytimes.com", "reuters.com",
     "translate.googleapis.com",
+    # 2026-11-19 驱动/系统下载：NVIDIA、打印机厂商的下载 CDN 在国内直连常年
+    # 只有几十 KB/s 甚至 0 字节。这些厂商的安装器大多不读 PAC，真正的兜底是
+    # 启动时同时写入的静态代理 127.0.0.1:2090；列在这里让浏览器也走快出口。
+    "nvidia.com", "nvidia.cn", "geforce.com", "geforce.cn",
+    "amd.com", "intel.com", "realtek.com",
+    "hp.com", "hp.com.cn", "hpsmart.com",
+    "canon.com", "canon.com.cn", "epson.com", "epson.com.cn",
+    "brother.com", "brother.com.cn", "dell.com", "dell.com.cn",
+    "download.microsoft.com", "software-download.microsoft.com",
+    "catalog.update.microsoft.com", "windowsupdate.com",
 ]
 # 只有 Geph（LT 出口）能过
 GENERAL = [
@@ -156,7 +166,7 @@ STEAM = [
     "steamuserimages-a.akamaihd.net", "steamusercontent-a.akamaihd.net",
     "wallpaperengine.io",
     # 2026-11-15 实测：ChatGPT 在 2096（美国）200、在 2086 是 403；
-    # Claude 反过来（2086 200、2096 403）⇒ 两家必须分开走不同出口。
+    # Claude 反过来（2086 200、2096 403）=> 两家必须分开走不同出口。
     "chatgpt.com", "openai.com", "chatgpt.livekit.cloud", "sora.chatgpt.com",
     "platform.openai.com", "oaistatic.com", "oaiusercontent.com",
     "auth.openai.com", "auth0.openai.com",
@@ -475,6 +485,9 @@ def _guard_loop():
     while True:
         time.sleep(60)
         try:
+            # ENABLED 不在 = 用户已关闭代理：守夜人也不许再拉起看门狗。
+            if not os.path.isfile(os.path.join(HERE, "ENABLED")):
+                continue
             # STOP_WATCHDOG 存在 = 用户正在关代理，别跟他抢
             if os.path.isfile(WD_STOP) or _wd_alive():
                 continue

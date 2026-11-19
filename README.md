@@ -60,12 +60,16 @@ v2.3 的安全加固（`https://` 节点不再降级成明文、关闭应用备�
 ### 电脑端（Windows 10/11 x64）
 
 - **一条命令建池**：抓取公开节点源 → TCP 初筛 → 下载/上传/ChatGPT 地区闸门深测 → 选出当前最快出口
-- **三通道**：`general 2101`（ChatGPT/Claude）、`fast 2103`（Google/GitHub/HF/网页）、`cli 2090`（git/pip/curl/npm），另有 Reddit 2086、Steam 2096 可选出口
+- **三通道**：`general 2101`（ChatGPT/Claude）、`fast 2103`（Google/GitHub/HF/Reddit/Steam/网页）、`cli 2090`（git/pip/curl/npm）
 - **浏览器走 PAC 自动分流**，国内站点直连；命令行代理变量自动配置
-- **看门狗自愈**：端口掉线、站点打不开、PAC 被改都会自动修复；检测失败时降级而不是拆掉唯一存活的栈
-- **一键体检**：`check-proxy.bat` 按依赖顺序跑「出口端口 → PAC 内容 → 系统代理 → 7 个站点实测 → 出口身份 → 看门狗」，第一个 FAIL 就是根因所在层
-- **定期重扫**：默认每 6 小时自动重抓公开源 → 深测速度/ChatGPT → 重建出口，把更快的节点换上来（`PROXY_REFRESH_HOURS` 可调）
-- 所有监听端口只绑定 `127.0.0.1`；`stop_proxy.py` 一键撤掉 PAC 与环境变量
+- **双模式**：默认免管理员的分流模式；可选 **TUN 全局模式**（UAC 一次），商店/UWP/启动器等不认系统代理的程序也能用
+- **静态代理兜底**：除 PAC 外同时写 `ProxyEnable=1 / ProxyServer=127.0.0.1:2090`。NVIDIA、打印机等驱动下载器只读静态代理，不再「0 字节失败」；浏览器仍按 PAC 分流（WinINET 规定 PAC 优先）
+- **看门狗自愈**：端口掉线、站点打不开、PAC/静态代理被改都会自动修复；检测失败时降级而不是拆掉唯一存活的栈
+- **下载保护**：clash API 检测到 >20 MB 的活动下载时，延后重建 10 分钟，不打断驱动安装包
+- **一键体检**：`check-proxy.bat` 按依赖顺序跑「TUN 模式 → 出口端口 → PAC 内容 → 静态代理 → 7 个站点实测 → 出口身份 → 看门狗」，第一个 FAIL 就是根因所在层
+- **定期重扫**：默认每 12 小时自动重抓公开源 → 深测速度/ChatGPT → 重建出口，把更快的节点换上来（`PROXY_REFRESH_HOURS` 可调）
+- **真关闭**：`stop_proxy.py` 撤 PAC、杀看门狗/TUN/全部自家 sing-box、还原注册表与用户环境变量，并逐项实测直连；`ENABLED` 标志保证关掉后没有任何进程把代理写回来
+- 所有监听端口只绑定 `127.0.0.1`；TUN 模式的虚拟网卡随 sing-box 进程退出而释放
 
 ---
 
@@ -105,14 +109,17 @@ PROXY_APK_OUT=/path/to/手机代理/手机代理.apk python build_apk.py
 pc/
 ├─ _proxy/
 │  ├─ bin/sing-box.exe      ← 自行下载官方 release 放这里
+│  ├─ bin/wintun.dll        ← 仅 TUN 模式需要（官方签名 0.14.1，可从 sing-box release 或 wintun.net 获取）
 │  ├─ harvest.py            ← 抓公开节点源
 │  ├─ deep_test.py          ← 深测下载/上传/ChatGPT 闸门
 │  ├─ bestroute.py          ← 选出出口，写 pinned.json + PAC
-│  ├─ start_proxy.py        ← 启动出口组、装 PAC、复验
-│  ├─ stop_proxy.py         ← 撤掉代理，恢复直连
-│  ├─ watchdog.py           ← 后台自愈
+│  ├─ start_proxy.py        ← 启动出口组、装 PAC + 静态代理、复验
+│  ├─ stop_proxy.py         ← 完整停止：看门狗→TUN→PAC→进程→还原注册表/环境变量→实测
+│  ├─ tun_mode.py           ← 可选 TUN 全局模式（自提权、生成 singbox_tun.json）
+│  ├─ watchdog.py           ← 后台自愈（ENABLED 标志缺失即退出，绝不写回）
+│  ├─ sysstate.py           ← 注册表/环境变量快照、静态代理、原样还原
 │  ├─ pacroute.py           ← 本地 PAC 服务 + 分流名单
-│  ├─ doctor.py             ← 一键体检（端口→PAC→逐站→出口身份→看门狗）
+│  ├─ doctor.py             ← 一键体检（分流/TUN 双模式）
 │  ├─ privacy_check.py      ← 隐私自检（只读）
 │  └─ proxy_diag.py         ← 分流诊断（某域名该直连还是代理、哪条路可达）
 ├─ start-proxy.bat
@@ -136,7 +143,9 @@ python bestroute.py --apply
 python start_proxy.py
 ```
 
-日常使用：双击 `pc/start-proxy.bat` 启动，`pc/stop-proxy.bat` 关闭。
+日常使用：双击 `pc/start-proxy.bat` 启动分流模式；需要 TUN 全局模式时双击
+`pc/tun-mode.bat`（需 UAC，并把官方签名的 `wintun.dll` 放进 `pc/_proxy/bin/`）；
+`pc/stop-proxy.bat` 完整关闭（含 TUN）并实测直连。
 
 > 免费节点寿命有限。看门狗会在整池失效时自动重扫（12 小时最多一次），也可手动重跑 `harvest.py` → `deep_test.py` → `bestroute.py --apply`。
 
@@ -180,7 +189,7 @@ python start_proxy.py
         ▼                                    ▼
   sing-box 出口组 + PAC              assets/nodes.json
   general 2101 / fast 2103           （手机端内置池）
-  cli 2090 / reddit 2086                     │
+  cli 2090                          │
         │                                    ▼
   浏览器 / 命令行自动分流             Android TUN + Xray
 ```
@@ -204,6 +213,52 @@ python start_proxy.py
 - 电脑端只在 Windows 10/11 x64 实测过
 
 ---
+
+## V3 变更（2026-11-19）
+
+针对「关不掉、下载器失败、用着用着断网」这一轮问题：
+
+1. **关闭是真的关闭**。旧实现只撤 PAC，看门狗 120 秒后把 PAC 写回；现在
+   关闭先删 `ENABLED` 权限标志（看门狗与 PAC 守夜人看到即收手），再按
+   「TUN → 看门狗 → PAC/守卫 → 全部自家 sing-box/辅助进程 → 还原注册表与
+   用户环境变量」顺序停止，最后逐项验证端口、进程、注册表、环境变量并实测直连。
+2. **不认 PAC 的程序也能走代理**。启动时同时写 `ProxyEnable=1` 和
+   `ProxyServer=http(s)=127.0.0.1:2090`；WinINET 规定 PAC 优先，所以浏览器
+   分流不变，NVIDIA/打印机安装器、部分 Qt/UWP 程序拿到静态值后由 2090 再分流。
+   关闭时按启动前快照原样还原；无快照时只清「指向死环回端口」的旧值。
+3. **下载域名进 PAC**：NVIDIA/GeForce、AMD、Intel、HP、Canon、Epson、Brother、
+   Dell、微软下载/更新 CDN。
+4. **少折腾**：urltest 容差 150→400ms（防抖动来回换节点）；站点闸门 2→3 次
+   才重建；重建冷却 600→900s；clash API 检测到 >20 MB 活动下载时延后 10 分钟；
+   深测池不足时复用 `pinned.json` 里上一批节点作为候选，不再「没候选就断网」。
+5. **TUN 全局模式**（可选）：`tun_mode.py` 用 wintun 创建 `pcproxy` 虚拟网卡，
+   自请求 UAC；与分流模式互斥（先停分流栈）；关闭时杀验证过镜像名/命令行的
+   sing-box 并删除标记。TUN 配置同样先过 `sing-box check`。
+6. **体检适配 TUN**：TUN 运行时不再误报端口/PAC/环境变量全红，逐站测试改为
+   直连探测；新增「TUN 模式」检查项。
+7. 修复 GBK 控制台遇到 emoji 触发 `UnicodeEncodeError` 导致兜底路径中断的问题。
+
+## V3.1 变更（2026-11-20）
+
+这一轮修的是「开不起来、开起来也不稳、关了还有幽灵」——全部来自实机日志：
+
+1. **幽灵 TUN**。上一版从 A 目录启动过 TUN，之后换到 B 目录，`TUN_ACTIVE`
+   标记留在 A 里，B 的关闭流程看不到它；那个**提权**的 sing-box 一直活着，
+   占着 `pcproxy` 网卡劫持全部流量、占着 clash 控制端口。表现是「所有节点
+   都像死了」。现在按 `pcproxy` 网卡 + 控制端口 + 空命令行（提权进程读不到
+   命令行）三重特征识别，必要时请求一次 UAC 清掉。
+2. **控制端口不再用 9090**。9090 是 Clash 系默认端口，Clash Verge / mihomo /
+   旧副本都可能占着它，我们的出口会 `bind: Only one usage of each socket
+   address` 直接 FATAL 退出，日志看起来却像「节点全挂」。分流用 19090，
+   TUN 用 19091，互不抢。
+3. **多副本互斥**。关闭时按项目签名（`_proxy\watchdog.py` 等）清理**所有**
+   副本，不再只清当前目录；启动时若发现别的副本在跑，先关掉再继续，避免
+   两套栈抢同一批端口。
+4. **fast 组至少 3 个成员**。之前 2103 常常只有 1 个成员，那颗节点一抖，
+   浏览器和 CLI 立刻「没网」。urltest 会跳过死成员，加宽列表没有代价。
+5. **兜底不再接公网代理**。深测组起不来时，旧逻辑会从候选里挑一个公网
+   HTTP 代理写进系统代理（实测写成了 `4.144.146.21:80`，闸门全红），既慢
+   又不可信。现在只接受 `127.0.0.1`，否则撤销并保持直连，提示重扫。
 
 ## 分流自愈（2026-11-18）
 

@@ -137,6 +137,49 @@ def env_ok(cli_port=2090):
     return all(env_get(n) == v for n, v in want.items())
 
 
+# ---------------------------------------------------------------- static proxy
+# PAC 只覆盖「会执行 PAC 的 WinINET 应用」。NVIDIA 驱动下载器 / 打印机安装器 /
+# 部分 Qt、UWP 程序只读 ProxyServer，完全不看 AutoConfigURL —— 这就是「浏览器
+# 能上外网、驱动却 0 字节失败」的根因。两套配置可以共存：WinINET 规定 PAC
+# 优先级高于静态代理，浏览器仍按 PAC 分流；不认 PAC 的程序拿静态值走 2090，
+# 由 sing-box 的路由规则继续做国内直连 / 国外代理。
+def static_server(cli_port=2090):
+    ep = "127.0.0.1:%d" % int(cli_port)
+    return "http=%s;https=%s" % (ep, ep)
+
+
+def apply_static(cli_port=2090):
+    changed = False
+    if inet_get("ProxyServer") != static_server(cli_port):
+        inet_set("ProxyServer", static_server(cli_port))
+        changed = True
+    if int(inet_get("ProxyEnable") or 0) != 1:
+        inet_set("ProxyEnable", 1, winreg.REG_DWORD)
+        changed = True
+    if inet_get("ProxyOverride") != "<local>":
+        inet_set("ProxyOverride", "<local>")
+        changed = True
+    if changed:
+        notify_wininet()
+    return changed
+
+
+def static_ok(cli_port=2090):
+    return (inet_get("ProxyServer") == static_server(cli_port)
+            and int(inet_get("ProxyEnable") or 0) == 1)
+
+
+def clear_static_ours(cli_port=2090):
+    """Remove the static entry only when it is byte-for-byte ours."""
+    if not static_ok(cli_port):
+        return False
+    inet_set("ProxyServer", None)
+    inet_set("ProxyOverride", None)
+    inet_set("ProxyEnable", 0, winreg.REG_DWORD)
+    notify_wininet()
+    return True
+
+
 def clear_env():
     changed = False
     for name in ENV_NAMES:
@@ -238,6 +281,8 @@ def restore_all():
             inet_set("AutoConfigURL", None)
             touched.append("AutoConfigURL")
             notify_wininet()
+        if clear_static_ours():
+            touched.append("static")
     except Exception:
         pass
     if clear_env_ours():

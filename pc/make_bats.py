@@ -42,8 +42,24 @@ echo.
 pause
 """
 
+TUN = r"""@echo off
+setlocal
+title Portable Proxy - TUN global mode (needs admin)
+cd /d "%~dp0"
+set "PY=%~dp0..\runtime\python\python.exe"
+if not exist "%PY%" set "PY=python"
+echo TUN creates a virtual adapter and asks for UAC (Administrator).
+echo Stop it with stop-proxy.bat -- it will ask for UAC again.
+"%PY%" -u "_proxy\tun_mode.py" start
+set "RC=%ERRORLEVEL%"
+echo.
+if "%RC%"=="0" echo [OK] TUN global mode is running.
+if not "%RC%"=="0" echo [FAIL] exit code %RC%, see _proxy\logs\tun.log
+pause
+"""
+
 for name, text in (("start-proxy.bat", START), ("stop-proxy.bat", STOP),
-                   ("check-proxy.bat", CHECK)):
+                   ("check-proxy.bat", CHECK), ("tun-mode.bat", TUN)):
     data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
     with open(os.path.join(HERE, name), "wb") as f:
         f.write(data)

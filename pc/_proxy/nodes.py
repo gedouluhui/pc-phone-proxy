@@ -19,7 +19,7 @@ import urllib.parse as up
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "bin", "sing-box.exe")
 CFG = os.path.join(HERE, "singbox.json")
-API = "http://127.0.0.1:9090"
+API = "http://127.0.0.1:19090"
 
 SS_CIPHERS = {
     "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305",
@@ -229,7 +229,7 @@ def write_config(nodes):
         "outbounds": ([{"type": "selector", "tag": "auto", "outbounds": tags + ["direct"],
                         "default": tags[0] if tags else "direct"}]
                       + [n["outbound"] for n in nodes] + [{"type": "direct", "tag": "direct"}]),
-        "experimental": {"clash_api": {"external_controller": "127.0.0.1:9090"}},
+        "experimental": {"clash_api": {"external_controller": "127.0.0.1:19090"}},
     }
     with open(CFG, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)

@@ -16,6 +16,7 @@ import argparse
 import io
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -28,7 +29,7 @@ sys.path.insert(0, HERE)
 import pacroute            # noqa: E402
 import sysstate            # noqa: E402
 
-GEN, FAST, CLI, STEAM, HK = 2101, 2103, 2090, 2096, 2086
+GEN, FAST, CLI = 2101, 2103, 2090
 OUT = os.path.join(HERE, "logs", "doctor.json")
 STATUS = os.path.join(HERE, "watchdog_status.json")
 
@@ -88,19 +89,43 @@ def port_open(port):
         s.close()
 
 
+TUN_ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
+TUN_PID = os.path.join(HERE, "tun.pid")
+
+
+def tun_on():
+    return os.path.isfile(TUN_ACTIVE)
+
+
+def check_tun():
+    if not tun_on():
+        return "OK", "未启用（当前是分流模式）"
+    try:
+        pid = int(io.open(TUN_PID, encoding="utf-8").read().strip())
+        import proxyctl as P
+        live = P.pid_image(pid).lower().startswith("sing-box")
+    except Exception:
+        pid, live = 0, False
+    if not live:
+        return "FAIL", "TUN_ACTIVE 存在但 sing-box 不在了 -> 重新启动 TUN 模式"
+    return "OK", "TUN 虚拟网卡接管中 (pid=%d)" % pid
+
+
 def check_ports():
-    want = [("general", GEN), ("fast", FAST), ("cli", CLI), ("steam", STEAM)]
+    if tun_on():
+        return "OK", "TUN 模式：全部流量由虚拟网卡接管，无本地代理端口"
+    want = [("general", GEN), ("fast", FAST), ("cli", CLI)]
     rows = [(n, p, port_open(p)) for n, p in want]
     dead = [n for n, p, ok in rows if not ok]
     detail = " ".join("%s:%d%s" % (n, p, "" if ok else "(down)") for n, p, ok in rows)
-    if "general" in dead or "fast" in dead or "cli" in dead:
+    if dead:
         return "FAIL", detail + "  <- 核心出口缺失，浏览器必然断", rows
-    if "steam" in dead:
-        return "WARN", detail + "  <- Steam/壁纸引擎走兜底", rows
     return "OK", detail, rows
 
 
 def check_pac():
+    if tun_on():
+        return "OK", "TUN 模式：不使用 PAC"
     if not pacroute.server_alive():
         return "FAIL", "PAC 服务 :%d 没在监听 -> 系统拿不到 PAC" % pacroute.PORT
     served = pacroute._served_bytes()
@@ -121,6 +146,8 @@ def check_pac():
 
 
 def check_env():
+    if tun_on():
+        return "OK", "TUN 模式：不使用环境变量代理"
     try:
         ok = sysstate.env_ok(CLI)
     except Exception as e:
@@ -144,8 +171,9 @@ SITES = [
 def check_sites():
     rows = []
     worst = "OK"
+    direct = tun_on()
     for name, url, port, need in SITES:
-        r = probe(url, port)
+        r = probe(url, None if direct else port)
         good = (r["code"] in (200, 204, 301, 302, 304)) and not r["challenge"]
         if not good and need == "soft" and r["code"] in (401, 403):
             # 平台页对未登录/爬虫返 401/403 不算链路故障，但也不算绿
@@ -166,6 +194,20 @@ def check_sites():
     return worst, "%d/%d 站点直通" % (ok, len(rows)), rows
 
 
+def cn_ip(timeout=8):
+    """国内可达的 IP 查询，作为 ipinfo 直连被墙时的兜底。"""
+    try:
+        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request("https://myip.ipip.net",
+                                     headers={"User-Agent": UA})
+        with op.open(req, timeout=timeout) as r:
+            txt = r.read(500).decode("utf-8", "replace")
+        m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", txt)
+        return m.group(1) if m else "?"
+    except Exception:
+        return "?"
+
+
 def check_exit_identity():
     """出口 IP 与直连 IP 对比。
 
@@ -181,9 +223,15 @@ def check_exit_identity():
             return "%s %s" % (j.get("ip"), j.get("country")) if j.get("ip") else "?"
         except Exception:
             return "?"
+    if tun_on():
+        cur = ip(None)
+        return ("OK", "TUN 出口 %s" % cur) if cur != "?" else \
+               ("FAIL", "TUN 模式拿不到出口 IP（节点或虚拟网卡有问题）")
     via, direct = ip(GEN), ip(None)
     if via == "?":
         return "FAIL", "经 2101 拿不到出口 IP（出口组上游死了）"
+    if direct == "?":
+        direct = cn_ip()
     if direct == "?":
         return "WARN", "代理出口 %s；直连探测失败（不影响使用）" % via
     if via.split()[0] == direct.split()[0]:
@@ -191,7 +239,25 @@ def check_exit_identity():
     return "OK", "代理出口 %s，直连 %s" % (via, direct)
 
 
+def check_static():
+    """Apps that ignore PAC (NVIDIA/printer installers, some UWP) read this."""
+    if tun_on():
+        return "OK", "TUN 模式：全部程序透明接管，无需静态代理"
+    try:
+        ok = sysstate.static_ok(CLI)
+        srv = sysstate.inet_get("ProxyServer") or ""
+        en = sysstate.inet_get("ProxyEnable")
+    except Exception as e:
+        return "WARN", "静态代理检查异常: %r" % (e,)
+    if ok:
+        return "OK", "ProxyEnable=1 ProxyServer=%s（驱动下载器走这里）" % srv
+    return "WARN", ("静态兜底缺失: ProxyEnable=%s ProxyServer=%r；"
+                    "不认 PAC 的安装器会直连并可能 0 字节失败" % (en, srv))
+
+
 def check_watchdog():
+    if tun_on():
+        return "OK", "TUN 模式无看门狗；节点由 urltest 自动切换"
     try:
         with io.open(STATUS, encoding="utf-8") as f:
             st = json.load(f)
@@ -218,9 +284,11 @@ def check_watchdog():
 
 
 CHECKS = [
+    ("TUN 模式", check_tun),
     ("出口端口", check_ports),
     ("PAC 内容", check_pac),
     ("系统代理", check_env),
+    ("系统静态代理", check_static),
     ("逐站实测", check_sites),
     ("出口身份", check_exit_identity),
     ("看门狗", check_watchdog),

@@ -66,6 +66,9 @@ git push -u origin main
 > `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.5、
 > 用户下到的还是 2.4 且校验值对不上。
 >
+> 电脑端（2026-11-19）：仓库内 PC 脚本为 **V3.1**（真关闭 / 静态代理兜底 /
+> 下载保护 / 可选 TUN 全局模式），以源码形式发布，不随 APK 资产打包。
+>
 > 当前状态（2026-11-18）：已发布 **v2.5**
 > （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.5>），
 > 资产 `PhoneProxy-public.apk` 56,955,831 B，

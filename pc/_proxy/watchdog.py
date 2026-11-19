@@ -51,6 +51,9 @@ GEN, FAST, CLI, HK, STEAM = 2101, 2103, 2090, 2086, 2096
 # 默认改成 12 小时；需要临时调整设环境变量 PROXY_REFRESH_HOURS。
 REFRESH_HOURS = float(os.environ.get("PROXY_REFRESH_HOURS") or 12)
 STOP = os.path.join(HERE, "STOP_WATCHDOG")
+# 用户点了「关闭代理」= 这个文件被删。看门狗一旦看不到它就必须立刻收手，
+# 绝不能再把 PAC / 环境变量写回去（旧版关闭后 2 分钟内被写回就是这个原因）。
+ENABLED = os.path.join(HERE, "ENABLED")
 PID = os.path.join(HERE, "watchdog.pid")
 STATUS = os.path.join(HERE, "watchdog_status.json")
 LOG = os.path.join(HERE, "logs", "watchdog.log")
@@ -95,7 +98,7 @@ def http_json(url, timeout=3.0):
 
 def clash_now(group):
     try:
-        j = http_json("http://127.0.0.1:9090/proxies/" + group)
+        j = http_json("http://127.0.0.1:19090/proxies/" + group)
         h = j.get("history") or []
         return j.get("now"), (h[-1].get("delay") if h else None)
     except Exception:
@@ -117,7 +120,7 @@ def nudge(group):
         # 会绕过代理，节点全死也报绿灯。
         q = urllib.parse.urlencode(
             {"url": "https://www.gstatic.com/generate_204", "timeout": "5000"})
-        j = http_json("http://127.0.0.1:9090/group/%s/delay?%s" % (group, q),
+        j = http_json("http://127.0.0.1:19090/group/%s/delay?%s" % (group, q),
                       timeout=40)
 
         def alive_ms(v):
@@ -233,13 +236,53 @@ def spawn_script(script, logfile):
         return False
 
 
+def enabled():
+    return os.path.isfile(ENABLED)
+
+
 def pac_apply():
+    if not enabled():
+        log("PAC re-apply skipped: ENABLED 已被删除（用户已关闭代理）")
+        return False
     info = pacroute.apply_pac("127.0.0.1:%d" % GEN, "127.0.0.1:%d" % FAST)
     return bool(info.get("ok"))
 
 
+def bulk_active(min_mb=20):
+    """A driver/firmware download in flight?  Return a short description.
+
+    Rebuild stops the whole exit stack; killing a 800MB NVIDIA download
+    halfway is worse than a slow gate.  The clash API tracks each live
+    connection's bytes, so one cumulative-download check is enough.
+    """
+    try:
+        j = http_json("http://127.0.0.1:19090/connections", timeout=3)
+    except Exception:
+        return None
+    best = None
+    for c in (j or {}).get("connections") or []:
+        mb = int(c.get("download") or 0) / 1048576.0
+        chains = [str(x).lower() for x in (c.get("chains") or [])]
+        if mb >= min_mb and any(x != "direct" for x in chains):
+            if best is None or mb > best[1]:
+                best = (chains[0] if chains else "?", mb)
+    return ("%s %.0fMB" % best) if best else None
+
+
 def rebuild(reason, st):
+    if not enabled():
+        log("REBUILD skipped: ENABLED 已被删除（用户已关闭代理）")
+        return False
     now = time.time()
+    if now < float(st.get("defer_rebuild_until") or 0):
+        log("rebuild deferred until %.0fs later: %s"
+            % (float(st["defer_rebuild_until"]) - now, reason))
+        return False
+    busy = bulk_active()
+    if busy:
+        st["defer_rebuild_until"] = now + 600
+        log("rebuild deferred 10min: 大流量传输中 (%s) —— 不能打断下载" % busy)
+        return False
     if now - st["last_rebuild"] < st["rebuild_cooldown"]:
         log("rebuild skipped (cooldown %ds): %s"
             % (st["rebuild_cooldown"] - (now - st["last_rebuild"]), reason))
@@ -399,7 +442,8 @@ def main():
         "now": {}, "gate": {}, "rebuilds": 0, "rebuild_fail": 0,
         "last_rebuild": 0.0, "last_rescan": 0.0, "last_error": "",
         "last_refresh": time.time(), "last_refresh_try": 0.0,
-        "rebuild_cooldown": 600, "rescan_cooldown": 12 * 3600,
+        "defer_rebuild_until": 0.0,
+        "rebuild_cooldown": 900, "rescan_cooldown": 12 * 3600,
     }
     last = {}
     # 冷启动不要立刻跑 autoroute：它最长 7 分钟（5 组 × 4 出口 × 3 次），
@@ -417,6 +461,9 @@ def main():
         while True:
             if os.path.isfile(STOP):
                 log("STOP sentinel -> exit")
+                break
+            if not enabled():
+                log("ENABLED removed -> exit（不再写回任何代理设置）")
                 break
             now = time.time()
 
@@ -445,8 +492,8 @@ def main():
                     """Count one strike; a totally dead group or dead core
                     rebuilds immediately instead of waiting another cycle."""
                     fails[role] += 1
-                    log("%s gate FAIL %d/2 (%s)" % (role, fails[role], reason))
-                    if fails[role] >= 2 or dead:
+                    log("%s gate FAIL %d/3 (%s)" % (role, fails[role], reason))
+                    if fails[role] >= 3 or dead:
                         fails[role] = 0
                         st["rebuilds"] += 1
                         st["last_error"] = "%s gate %s" % (role, reason)
@@ -557,8 +604,11 @@ def main():
                     if not sysstate.env_ok(CLI):
                         log("env proxy vars missing/drifted -> re-apply")
                         sysstate.apply_env(CLI)
+                    if not sysstate.static_ok(CLI):
+                        log("static proxy entry missing/drifted -> re-apply")
+                        sysstate.apply_static(CLI)
                 except Exception as e:
-                    log("env check error: %r" % (e,))
+                    log("env/static check error: %r" % (e,))
 
             # ---- which member is active now ----------------------------
             if now - last.get("switch", 0) >= 300:

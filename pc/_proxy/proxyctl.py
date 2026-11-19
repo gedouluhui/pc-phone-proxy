@@ -921,7 +921,7 @@ region = 地区被封，cf = Cloudflare 人机挑战（浏览器通常能过）�
 <table><tr><th>#</th><th>候选</th><th>协议</th><th>延迟</th><th>下载</th><th>结果</th></tr>{tr}</table>
 <h2>历史试验</h2>
 <table><tr><th>时间(UTC)</th><th>候选数</th><th>可用</th><th>耗时</th></tr>{hist_rows}</table>
-<div class="note">判据：同一轮里必须通过 204 检查且 1&nbsp;MB 下载成功；按 速度×本地加成 − 延迟惩罚 排序，取第一。
+<div class="note">判据：同一轮里必须通过 204 检查且 1&nbsp;MB 下载成功；按 速度×本地加成 - 延迟惩罚 排序，取第一。
 公开池来自 GitHub 公开列表（TheSpeedX / monosans / vakhov / proxifly / jetkai 等），每轮重测，失效即淘汰。</div>
 </div></body></html>"""
     with io.open(REPORT, "w", encoding="utf-8", newline="\n") as f:
@@ -939,7 +939,7 @@ def cmd_status():
     print("  ProxyServer:", cur["server"] or "(空)")
     print("  PAC:", cur["pac"] or "(空)")
     for p, name in ((9910, "Geph HTTP"), (9909, "Geph SOCKS5"), (8086, "warp-plus"),
-                    (2080, "sing-box"), (9090, "sing-box API"),
+                    (2080, "sing-box"), (19090, "sing-box API"),
                     (2101, "固定 general"), (2103, "固定 fast"), (2090, "CLI mixed"),
                     (2086, "香港线 reddit")):
         print(f"  127.0.0.1:{p:<5d} {name:14s}", "LISTEN" if listen_ok(p) else "-")
@@ -1099,9 +1099,9 @@ def cmd_enable(show=False, force_local=False, reuse=False):
     p = render_report()
     print(f"[OK] 已启用（{mode}）")
     print(f"     ChatGPT/Claude 出口  {general_ep}   "
-          f"{'✅ 闸门通过' if g_general else '❌ 闸门未过（全部代理都打不开）'}")
+          f"{'[OK] 闸门通过' if g_general else '[x] 闸门未过（全部代理都打不开）'}")
     print(f"     Google/GitHub/HF 出口 {fast_ep}   "
-          f"{'✅ 闸门通过' if g_fast else '❌ 闸门未过'}")
+          f"{'[OK] 闸门通过' if g_fast else '[x] 闸门未过'}")
     print(f"     Kaggle 走直连（Kaggle 的 WAF 拒绝这些代理出口）")
     print(f"     启用后复验 {'通过' if ver['ok'] else '失败 ' + str(ver.get('err'))[:40]}"
           f" | {ver.get('ttfb_ms')} ms | {ver.get('speed_kbps')} kB/s")
@@ -1116,16 +1116,11 @@ def cmd_enable(show=False, force_local=False, reuse=False):
 
 
 def cmd_disable():
-    disable_proxy()
-    try:
-        import pacroute
-        pacroute.clear_pac()
-    except Exception:
-        pass
-    # 固定出口进程故意不杀：它只监听 127.0.0.1，撤掉 PAC 就等于全直连；
-    # 留着下一次「启动代理」能秒开、且仍然用深测选出来的那批节点。
-    print("[OK] 系统代理已关闭（PAC 已撤，恢复直连；后台固定出口仍在待命）")
-    return 0
+    # 关闭 = 真的关闭。旧实现只撤 PAC、不杀看门狗，120 秒后看门狗把 PAC
+    # 写回来，用户看到的就是「关不掉」。统一走 stop_proxy 的完整停止链路：
+    # 看门狗 → TUN → PAC/守卫 → 全部自家进程 → 还原注册表与环境变量 → 实测。
+    import stop_proxy
+    return stop_proxy.main()
 
 
 def cmd_verify(show=False):
