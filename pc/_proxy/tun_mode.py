@@ -111,6 +111,18 @@ def build_config():
         if need not in tags:
             raise SystemExit("singbox_pinned.json 缺少出口 %s，先跑一次启动代理" % need)
 
+    # Google AI 的地区闸门跟 IP 走：TUN 若只把 AI 域名丢进 grp-general，最快
+    # 那颗节点可能正是 Google 拒绝的。2098 是 启动代理 起的专用出口（已经过
+    # 地区判定），TUN 通过一个本地 http outbound 串上去，规则与分流模式一致。
+    gai_tag = None
+    try:
+        if P.listen_ok(2098):
+            outbounds = outbounds + [{"type": "http", "tag": "gai",
+                                      "server": "127.0.0.1", "server_port": 2098}]
+            gai_tag = "gai"
+    except Exception:
+        gai_tag = None
+
     cfg = {
         "log": {"level": "warn", "timestamp": True},
         "experimental": {"clash_api": {"external_controller": "127.0.0.1:19091"}},
@@ -144,6 +156,8 @@ def build_config():
                 {"domain_suffix": pacroute.DIRECT, "outbound": "direct"},
                 {"domain_suffix": pacroute.STEAM_DIRECT, "outbound": "direct"},
                 # AI 站必须走合格出口；其余默认走合并组
+                {"domain_suffix": pacroute.GOOGLE_APP,
+                 "outbound": gai_tag or "grp-general"},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},
             ],
         },
@@ -247,6 +261,14 @@ def _singbox_procs():
 
 def stop_stack():
     pids = set(tun_pids()) | set(foreign_tun_pids())
+    # The Google-AI exit started for TUN is a plain sing-box on 2098; it has no
+    # TUN marker, so collect it by port or it outlives the tunnel.
+    try:
+        for pid in P.port_pids(2098):
+            if P.pid_image(pid).lower().startswith("sing-box"):
+                pids.add(pid)
+    except Exception:
+        pass
     if alive(read_pid()):
         pids.add(read_pid())
     for pid in pids:
@@ -290,6 +312,14 @@ def start_admin():
         pass
     except Exception as e:
         log("停止分流模式时出错（继续尝试 TUN）: %r" % (e,))
+
+    # 分流模式停止时会把 2098 一起收掉；TUN 需要它来承载 Google AI 域名。
+    try:
+        import start_proxy as S
+        if S.ensure_gai():
+            log("Google AI 专用出口已就绪 (2098)，TUN 内 AI 域名走它")
+    except Exception as e:
+        log("Google AI 专用出口启动失败（AI 域名回退到节点组）: %r" % (e,))
 
     cfg = build_config()
     with io.open(CFG, "w", encoding="utf-8", newline="\n") as f:
