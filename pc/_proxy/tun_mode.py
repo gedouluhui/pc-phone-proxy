@@ -34,6 +34,7 @@ PID = os.path.join(HERE, "tun.pid")
 ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
 RESULT = os.path.join(HERE, "tun_result.json")
 LOG = os.path.join(HERE, "logs", "tun.log")
+SB_LOG = os.path.join(HERE, "logs", "tun_singbox.log")
 IFACE = "pcproxy"
 TUN_ADDR = "172.19.0.1/30"
 # Project-owned controller port.  9090 is the Clash default and is routinely
@@ -71,7 +72,13 @@ def is_admin():
 
 
 def elevate(args, wait=90):
-    """Re-run ourselves elevated; the child writes tun_result.json."""
+    """Re-run ourselves elevated; the child writes tun_result.json.
+
+    The child runs in its own (elevated) console, so without streaming its log
+    the user stares at an empty window for a minute and cannot tell whether it
+    is working or stuck.  Tail logs/tun.log and print it live, the same way
+    split mode shows its progress.
+    """
     try:
         os.remove(RESULT)
     except OSError:
@@ -80,21 +87,49 @@ def elevate(args, wait=90):
     params = subprocess.list2cmdline([os.path.join(HERE, "tun_mode.py")]
                                      + list(args) + ["--admin",
                                                      "--result", RESULT])
+    # Start from the current end of file: only show what this run produces.
+    try:
+        pos = os.path.getsize(LOG)
+    except OSError:
+        pos = 0
     rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params,
                                              HERE, 0)
     if rc <= 32:
         return 1, "UAC 被取消或无法提权 (ShellExecute=%d)" % rc
+
+    def pump():
+        nonlocal pos
+        try:
+            with io.open(LOG, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(pos)
+                chunk = f.read()
+                pos = f.tell()
+        except OSError:
+            return
+        if not chunk:
+            return
+        try:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        except UnicodeEncodeError:
+            enc = sys.stdout.encoding or "gbk"
+            sys.stdout.write(chunk.encode(enc, "replace").decode(enc, "replace"))
+            sys.stdout.flush()
+
     t0 = time.time()
     while time.time() - t0 < wait:
+        pump()
         if os.path.isfile(RESULT):
             time.sleep(0.2)
+            pump()
             try:
                 with io.open(RESULT, encoding="utf-8") as f:
                     j = json.load(f)
                 return int(j.get("rc") or 0), j.get("msg") or ""
             except Exception:
                 break
-        time.sleep(0.5)
+        time.sleep(0.4)
+    pump()
     return 1, "提权后的进程没有回报结果（%.0fs），请看 logs/tun.log" % wait
 
 
@@ -304,7 +339,10 @@ def start_admin():
     if not os.path.isfile(wintun):
         return 1, "缺少 bin\\wintun.dll（TUN 必需）。断开重扫后重新下载，或改用分流模式。"
 
+    log("[1/6] wintun 驱动就绪，准备接管流量")
+
     # 分流模式的栈必须先让路：端口、PAC、静态代理都归零
+    log("[2/6] 停止分流模式的栈（端口 / PAC / 静态代理）…")
     try:
         import stop_proxy
         stop_proxy.main()
@@ -314,6 +352,7 @@ def start_admin():
         log("停止分流模式时出错（继续尝试 TUN）: %r" % (e,))
 
     # 分流模式停止时会把 2098 一起收掉；TUN 需要它来承载 Google AI 域名。
+    log("[3/6] 挑选能过 Google 地区判定的节点（最多试 3 颗）…")
     try:
         import start_proxy as S
         if S.ensure_gai():
@@ -321,6 +360,7 @@ def start_admin():
     except Exception as e:
         log("Google AI 专用出口启动失败（AI 域名回退到节点组）: %r" % (e,))
 
+    log("[4/6] 生成 TUN 配置并做 sing-box check …")
     cfg = build_config()
     with io.open(CFG, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=1)
@@ -328,8 +368,10 @@ def start_admin():
     if rc != 0:
         return 1, "sing-box check 失败: " + out[:500]
 
+    log("[5/6] 启动 sing-box，创建 %s 虚拟网卡 …" % IFACE)
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
-    logf = io.open(LOG, "ab")
+    # sing-box 自己的 ERROR 流单独写文件：混进 tun.log 会淹没进度输出。
+    logf = io.open(SB_LOG, "ab")
     try:
         p = subprocess.Popen([P.SING_EXE, "run", "-c", CFG], cwd=HERE,
                              stdout=logf, stderr=subprocess.STDOUT,
@@ -345,6 +387,7 @@ def start_admin():
     with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as f:
         f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
+    log("[6/6] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
     t0 = time.time()
     while time.time() - t0 < 15 and p.poll() is None and not adapter_present():
         time.sleep(0.5)
@@ -362,6 +405,10 @@ def stop_admin():
 
 # ------------------------------------------------------------------ cli
 def main(argv):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     admin = "--admin" in argv
     ev = "--result" in argv
     cmd = next((a for a in argv if a in ("start", "stop", "status")), "status")
