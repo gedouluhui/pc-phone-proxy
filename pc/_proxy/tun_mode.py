@@ -243,6 +243,15 @@ def ours(pid):
     if not P.pid_image(pid).lower().startswith("sing-box"):
         return False
     cmd = P.pid_cmdline(pid) or ""
+    if not cmd.strip():
+        # An elevated process hides its command line from a non-admin query.
+        # Without this fallback the waiting parent concluded "TUN 没在跑" while
+        # the elevated child (which can read the line) concluded "已在跑" and
+        # returned without writing a result -- the parent then waited forever.
+        try:
+            return pid in P.port_pids(CLASH_PORT)
+        except Exception:
+            return False
     return CFG.lower() in cmd.lower() or "singbox_tun" in cmd.lower()
 
 
@@ -356,7 +365,13 @@ def adapter_present():
 
 def start_admin():
     if alive(read_pid()):
-        return 0, "TUN 已在运行 (pid=%d)" % read_pid()
+        # 启动按钮的语义是"按当前配置生效"，不是"已经在跑就算了"：旧隧道可能
+        # 还挂在死节点上（AI 出口就是这样失效的），所以先拆再建。
+        log("[0/6] 检测到已有 TUN 在运行 (pid=%d)，按新配置重建 …" % read_pid())
+        try:
+            stop_stack()
+        except Exception as e:
+            log("停止旧 TUN 失败: %r" % (e,))
     wintun = os.path.join(HERE, "bin", "wintun.dll")
     if not os.path.isfile(wintun):
         return 1, "缺少 bin\\wintun.dll（TUN 必需）。断开重扫后重新下载，或改用分流模式。"
@@ -460,9 +475,9 @@ def main(argv):
             except OSError:
                 pass
         print("TUN 本来就没在运行")
-        return 0
-    if cmd == "start" and alive(read_pid()):
-        print("TUN 已在运行 (pid=%d)" % read_pid())
+        if admin:
+            # The waiting parent only learns the outcome through this file.
+            write_result(0, "TUN 本来就没在运行")
         return 0
 
     if not admin:
