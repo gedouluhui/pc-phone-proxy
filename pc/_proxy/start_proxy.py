@@ -31,6 +31,9 @@ import sysstate            # noqa: E402
 
 GEN, FAST, CLI, HK = 2101, 2103, 2090, 2086
 STEAM = 2096          # 美国出口：Steam 商店/社区（外区商店）
+GAI = 2098            # Google AI 专用出口（需过 Google 地区闸门）
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 DEEP = os.path.join(HERE, "node_deep.json")
 PINNED = os.path.join(HERE, "pinned.json")
 WATCH_PID = os.path.join(HERE, "watchdog.pid")
@@ -194,6 +197,82 @@ def ensure_steam():
 
 
 # ------------------------------------------------------------------ display
+def _gai_ok(timeout=12):
+    """Google AI Studio is region-gated by exit IP.
+
+    Some free nodes are refused outright: notebooklm answers
+    `notebook.google/?location=unsupported` while the landing page still
+    returns 200, which is why 体检 looked green and the browser still showed
+    "Available regions".  Probe the thing Google actually gates.
+    """
+    try:
+        op = urllib.request.build_opener(urllib.request.ProxyHandler(
+            {"http": "http://127.0.0.1:%d" % GAI, "https": "http://127.0.0.1:%d" % GAI}))
+        req = urllib.request.Request("https://notebooklm.google.com/",
+                                     headers={"User-Agent": UA})
+        with op.open(req, timeout=timeout) as r:
+            return "unsupported" not in r.geturl().lower()
+    except Exception:
+        return False
+
+
+def _start_gai(uri):
+    import nodes as N
+    ob, _ = N.parse_uri(uri)
+    if not ob:
+        return False
+    ob["tag"] = "node"
+    cfg = {"log": {"level": "error"},
+           "inbounds": [{"type": "socks", "tag": "in-s", "listen": "127.0.0.1",
+                         "listen_port": GAI + 1},
+                        {"type": "http", "tag": "in-h", "listen": "127.0.0.1",
+                         "listen_port": GAI}],
+           "outbounds": [ob]}
+    path = os.path.join(HERE, "singbox_gai.json")
+    with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(cfg, f)
+    if not P.wait_port_free([GAI + 1, GAI], timeout=5.0, expect_cmd="singbox_gai.json"):
+        return False
+    logp = os.path.join(HERE, "logs", "singbox_gai.log")
+    with io.open(logp, "ab") as lf:
+        proc = subprocess.Popen([P.SING_EXE, "run", "-c", path], cwd=HERE,
+                                stdout=lf, stderr=subprocess.STDOUT,
+                                creationflags=0x00000008 | 0x08000000)
+    for _ in range(24):
+        if proc.poll() is not None:
+            return False
+        if up(GAI) and up(GAI + 1):
+            with io.open(os.path.join(HERE, "one_%d.pid" % GAI), "w") as f:
+                f.write(str(proc.pid))
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def ensure_gai():
+    """Dedicated exit for Google AI sites, picked by the region probe.
+
+    The fast group's quickest node is often one Google refuses, so AI traffic
+    gets a second, independent instance instead of dragging the whole group.
+    """
+    if up(GAI) and _gai_ok():
+        return True
+    rows = [r for r in node_rows()
+            if r.get("uri") and r.get("github_ok") and (r.get("ul_kbps") or 0) > 0]
+    rows.sort(key=lambda r: -(r.get("score") or 0))
+    for r in rows[:5]:
+        if not _start_gai(r["uri"]):
+            continue
+        if _gai_ok():
+            log("  Google AI 专用出口: %s %s (2098)" % (r.get("loc"), r.get("server")))
+            return True
+        log("  [warn] %s 被 Google 判为不支持，换下一颗" % (r.get("server"),))
+        P.kill_port(GAI, expect=("sing-box.exe",), expect_cmd="singbox_gai.json",
+                    log=lambda *a: None)
+    log("  [warn] 没有节点能过 Google 地区闸门；AI 站点回退到快速出口")
+    return False
+
+
 def node_rows():
     try:
         return json.load(open(DEEP, encoding="utf-8")).get("rows", [])
@@ -437,6 +516,12 @@ def main():
                 return fallback()
 
         # ---- PAC ---------------------------------------------------
+        # Google AI 专用出口要在渲染 PAC 之前就位，否则 GOOGLE_APP 只能落到
+        # 快速组，而快速组最快的那颗节点经常正是 Google 拒绝的那颗。
+        try:
+            ensure_gai()
+        except Exception as e:
+            log("  [警告] Google AI 专用出口启动失败: %r" % (e,))
         info = pacroute.apply_pac("127.0.0.1:%d" % GEN, "127.0.0.1:%d" % FAST)
         if not info.get("ok"):
             log("[失败] PAC 安装失败: %s" % info.get("err"))

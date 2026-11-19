@@ -186,6 +186,7 @@ GOOGLE_APP = ["aistudio.google.com", "makersuite.google.com", "gemini.google.com
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
 DEFAULT_STEAM = "127.0.0.1:2096"      # 美国出口（sing-box，start_proxy 负责拉起）
+DEFAULT_GAI = "127.0.0.1:2098"        # Google AI 专用出口（过了地区闸门的节点）
 # 实测只有香港那条线能过（fast/general/geph 全是 403 "blocked by network security"）
 HK = ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com",
       "redditinc.com", "reddithelp.com",
@@ -259,11 +260,12 @@ def _chain(eps, direct=True):
 
 
 def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, steam=None,
-               dyn=None):
+               dyn=None, gai=None):
     # Base exits are required, as in apply_pac's preflight. Rendering never probes them.
     general, fast = _endpoint(general), _endpoint(fast)
     hk = None if hk is None or hk == "" else _endpoint(hk)
     steam = None if steam is None or steam == "" else _endpoint(steam)
+    gai = None if gai is None or gai == "" else _endpoint(gai)
     stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if not isinstance(stamp, str):
         raise ValueError("PAC stamp must be text")
@@ -273,7 +275,12 @@ def render_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, stamp=None, hk=None, 
             name, json.dumps(_chain(eps, direct), ensure_ascii=True))
 
     # Preserve Google > Steam > HK > dynamic > FAST outlet priority in both paths.
-    routes = [("GOOGLE_APP", ["127.0.0.1:2103", "127.0.0.1:2101", "127.0.0.1:2096"])]
+    # Google AI Studio is region-gated by exit IP: the quickest node can be one
+    # Google refuses (notebooklm answers location=unsupported).  A dedicated
+    # exit that passed the region probe goes first when it is alive.
+    google_chain = ([gai] if gai else []) + \
+        ["127.0.0.1:2103", "127.0.0.1:2101", "127.0.0.1:2096"]
+    routes = [("GOOGLE_APP", google_chain)]
     if steam:
         routes.append(("STEAM", [steam, fast, general]))
     if hk:
@@ -377,8 +384,9 @@ function FindProxyForURL(url, host) {
     }
 
 
-def write_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, hk=None, steam=None, dyn=None):
-    text = render_pac(general, fast, hk=hk, steam=steam, dyn=dyn)
+def write_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, hk=None, steam=None, dyn=None,
+              gai=None):
+    text = render_pac(general, fast, hk=hk, steam=steam, dyn=dyn, gai=gai)
     with io.open(PAC_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     return PAC_PATH
@@ -673,7 +681,8 @@ def load_dyn():
         return {}
 
 
-def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", steam="auto"):
+def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", steam="auto",
+              gai="auto"):
     want_general, want_fast = general, fast
     general = resolve_ep(general, "general")
     fast = resolve_ep(fast, "fast")
@@ -687,7 +696,12 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
         hk = DEFAULT_HK if _port_open(ep_port(DEFAULT_HK)) else None
     if steam == "auto":
         steam = DEFAULT_STEAM if _port_open(ep_port(DEFAULT_STEAM)) else None
-    write_pac(general, fast, hk=hk, steam=steam, dyn=load_dyn())
+    if gai == "auto":
+        # 2098 is the dedicated Google-AI exit started by 启动代理; only route to
+        # it when it is actually listening, otherwise the PAC would send every
+        # AI request into a dead port first.
+        gai = DEFAULT_GAI if _port_open(ep_port(DEFAULT_GAI)) else None
+    write_pac(general, fast, hk=hk, steam=steam, dyn=load_dyn(), gai=gai)
     actual = start_server(port)
     if not actual:
         return {"ok": False, "err": "PAC server 未起来（端口 %d-%d 均被占用？）"
@@ -709,7 +723,20 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
     except OSError:
         pass
     _wset("AutoConfigURL", url)
-    _wset("ProxyEnable", 0, winreg.REG_DWORD)
+    # 静态代理（127.0.0.1:2090）是给不认 PAC 的下载器/UWP 用的，v3.0 起常开。
+    # 这里若强制 ProxyEnable=0，看门狗每 10 分钟就把它写回来（日志里的
+    # "static proxy entry missing/drifted -> re-apply"），两边拉锯。
+    # PAC 存在时 WinINET 本来就优先用 PAC，静态值只是兜底，所以保留它。
+    try:
+        _k = winreg.OpenKey(K, IS, 0, winreg.KEY_READ)
+        try:
+            _srv = winreg.QueryValueEx(_k, "ProxyServer")[0]
+        finally:
+            _k.Close()
+    except OSError:
+        _srv = ""
+    if not _srv:
+        _wset("ProxyEnable", 0, winreg.REG_DWORD)
     notify()
     return {"ok": True, "url": url, "port": actual, "general": general, "fast": fast,
             "hk": hk, "steam": steam, "pac": PAC_PATH,
