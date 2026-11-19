@@ -216,22 +216,51 @@ def _gai_ok(timeout=12):
         return False
 
 
-def _start_gai(uri):
+def _write_gai_config(uris):
+    """2098 serves a urltest group, not a single node.
+
+    A free node passed the Google probe at 06:07 and was dead by 06:15 (SSL
+    EOF) -- exactly the failure users see as "AI Studio 又打不开".  urltest
+    re-probes every member and moves to a live one on its own, so one dead
+    node no longer takes the whole AI path down.
+    """
     import nodes as N
-    ob, _ = N.parse_uri(uri)
-    if not ob:
+    outs = []
+    for uri in uris:
+        ob, _ = N.parse_uri(uri)
+        if not ob:
+            continue
+        ob["tag"] = "n%d" % len(outs)
+        outs.append(ob)
+    if not outs:
+        return None
+    if len(outs) > 1:
+        outs.append({"type": "urltest", "tag": "grp",
+                     "outbounds": [o["tag"] for o in outs],
+                     "url": "https://www.gstatic.com/generate_204",
+                     "interval": "60s", "tolerance": 300})
+        final = "grp"
+    else:
+        final = outs[0]["tag"]
+    return {"log": {"level": "error"},
+            "inbounds": [{"type": "socks", "tag": "in-s", "listen": "127.0.0.1",
+                          "listen_port": GAI + 1},
+                         {"type": "http", "tag": "in-h", "listen": "127.0.0.1",
+                          "listen_port": GAI}],
+            "outbounds": outs,
+            "route": {"final": final}}
+
+
+def _start_gai(uris):
+    if isinstance(uris, str):
+        uris = [uris]
+    cfg = _write_gai_config(uris)
+    if not cfg:
         return False
-    ob["tag"] = "node"
-    cfg = {"log": {"level": "error"},
-           "inbounds": [{"type": "socks", "tag": "in-s", "listen": "127.0.0.1",
-                         "listen_port": GAI + 1},
-                        {"type": "http", "tag": "in-h", "listen": "127.0.0.1",
-                         "listen_port": GAI}],
-           "outbounds": [ob]}
     path = os.path.join(HERE, "singbox_gai.json")
     with io.open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
-    if not P.wait_port_free([GAI + 1, GAI], timeout=5.0, expect_cmd="singbox_gai.json"):
+    if not P.wait_port_free([GAI + 1, GAI], timeout=6.0, expect_cmd="singbox_gai.json"):
         return False
     logp = os.path.join(HERE, "logs", "singbox_gai.log")
     with io.open(logp, "ab") as lf:
@@ -250,27 +279,35 @@ def _start_gai(uri):
 
 
 def ensure_gai():
-    """Dedicated exit for Google AI sites, picked by the region probe.
+    """Dedicated exit for Google AI sites: collect the nodes Google accepts.
 
     The fast group's quickest node is often one Google refuses, so AI traffic
-    gets a second, independent instance instead of dragging the whole group.
+    gets its own instance instead of dragging the whole group.  Collect up to
+    three survivors so the group can fail over.
     """
     if up(GAI) and _gai_ok():
         return True
     rows = [r for r in node_rows()
             if r.get("uri") and r.get("github_ok") and (r.get("ul_kbps") or 0) > 0]
     rows.sort(key=lambda r: -(r.get("score") or 0))
-    for r in rows[:5]:
-        if not _start_gai(r["uri"]):
-            continue
-        if _gai_ok():
-            log("  Google AI 专用出口: %s %s (2098)" % (r.get("loc"), r.get("server")))
-            return True
-        log("  [warn] %s 被 Google 判为不支持，换下一颗" % (r.get("server"),))
+    good = []
+    for r in rows[:6]:
+        if _start_gai([r["uri"]]) and _gai_ok():
+            good.append(r["uri"])
+            log("  Google AI 候选通过: %s %s" % (r.get("loc"), r.get("server")))
+            if len(good) >= 3:
+                break
+        else:
+            log("  [warn] %s 被 Google 判为不支持或连不上，换下一颗" % (r.get("server"),))
+    if not good:
+        log("  [warn] 没有节点能过 Google 地区闸门；AI 站点回退到快速出口")
         P.kill_port(GAI, expect=("sing-box.exe",), expect_cmd="singbox_gai.json",
                     log=lambda *a: None)
-    log("  [warn] 没有节点能过 Google 地区闸门；AI 站点回退到快速出口")
-    return False
+        return False
+    if len(good) > 1 and not _start_gai(good):
+        _start_gai([good[0]])
+    log("  Google AI 专用出口: %d 颗节点自动切换 (2098)" % len(good))
+    return _gai_ok()
 
 
 def node_rows():

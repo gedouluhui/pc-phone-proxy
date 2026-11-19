@@ -53,7 +53,10 @@ def health_bad():
         return _health_bad
     _health_bad = set()
     try:
-        if os.path.getmtime(HEALTH) >= os.path.getmtime(DEEP):
+        # Freshness by age, not by "newer than node_deep.json".  A deep test
+        # writes node_deep *after* the health probe, so comparing the two files
+        # silently disabled the exclusion exactly when it mattered.
+        if time.time() - os.path.getmtime(HEALTH) <= 6 * 3600:
             d = json.load(open(HEALTH, encoding="utf-8"))
             for r in d.get("rows", []):
                 if (r.get("dl_kbps") or 0) <= 50:

@@ -624,6 +624,15 @@ def main():
                                 % (role, prev, name, delay))
                         st["now"][role] = name
 
+            # ---- periodic member health re-probe -----------------------
+            # pinned_health.json feeds bestroute.health_bad(), which drops dead
+            # members on the next rebuild.  Nothing refreshed it, so that half
+            # of "坏的踢掉" never actually ran (the file sat 10 days old).
+            if now - last.get("health", 0) >= 2700:
+                last["health"] = now
+                if spawn_script("pinned_health.py", "pinned_health.log"):
+                    log("member health re-probe started (every 45min)")
+
             # ---- periodic pool refresh (re-harvest + deep test + rebuild) ----
             if REFRESH_HOURS > 0:
                 due = st.get("last_refresh", now) + REFRESH_HOURS * 3600
