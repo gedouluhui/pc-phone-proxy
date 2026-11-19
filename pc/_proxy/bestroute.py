@@ -243,6 +243,10 @@ def build_config(gen, fast):
             # 国内站点直连，别为了 git/pip/Codex 把国内流量也绕出去
             {"inbound": ["in-cli"], "domain_suffix": pacroute.DOMESTIC,
              "outbound": "direct"},
+            # 驱动 / Windows 更新直连：命令行工具（pip、winget、安装器自带的
+            # 下载器）走 2090 时同样不能绕到国外节点，否则大文件必断。
+            {"inbound": ["in-cli"], "domain_suffix": pacroute.DIRECT,
+             "outbound": "direct"},
             {"inbound": ["in-cli"], "ip_is_private": True, "outbound": "direct"},
             {"inbound": ["in-cli"], "outbound": "grp-any"},
         ]},

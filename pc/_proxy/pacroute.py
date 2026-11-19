@@ -119,16 +119,6 @@ FAST = [
     "twitch.tv", "spotify.com", "scdn.co", "soundcloud.com",
     "bbc.com", "bbc.co.uk", "cnn.com", "nytimes.com", "reuters.com",
     "translate.googleapis.com",
-    # 2026-11-19 驱动/系统下载：NVIDIA、打印机厂商的下载 CDN 在国内直连常年
-    # 只有几十 KB/s 甚至 0 字节。这些厂商的安装器大多不读 PAC，真正的兜底是
-    # 启动时同时写入的静态代理 127.0.0.1:2090；列在这里让浏览器也走快出口。
-    "nvidia.com", "nvidia.cn", "geforce.com", "geforce.cn",
-    "amd.com", "intel.com", "realtek.com",
-    "hp.com", "hp.com.cn", "hpsmart.com",
-    "canon.com", "canon.com.cn", "epson.com", "epson.com.cn",
-    "brother.com", "brother.com.cn", "dell.com", "dell.com.cn",
-    "download.microsoft.com", "software-download.microsoft.com",
-    "catalog.update.microsoft.com", "windowsupdate.com",
 ]
 # 只有 Geph（LT 出口）能过
 GENERAL = [
@@ -157,6 +147,23 @@ SENSITIVE = [
 ]
 
 DIRECT = ["kaggle.com", "kaggleusercontent.com", "ipinfo.io"]
+
+# 驱动/系统更新必须直连（2026-11-20 实机回退）：
+# 这些厂商按出口 IP 分配 CDN，走国外节点会拿到几百 MB 的境外源，免费节点
+# 拉一半就断；而国内直连拿的是 cn 节点，速度反而更快。Windows Update 更是
+# 不能过代理（会破坏 BITS/增量更新）。免费节点还有 TLS 中间人，安装器校验
+# 证书时会直接失败。
+DRIVER_DIRECT = [
+    "nvidia.com", "nvidia.cn", "geforce.com", "geforce.cn",
+    "amd.com", "intel.com", "realtek.com",
+    "hp.com", "hp.com.cn", "hpsmart.com", "hpcloud.hp.com",
+    "canon.com", "canon.com.cn", "epson.com", "epson.com.cn",
+    "brother.com", "brother.com.cn", "dell.com", "dell.com.cn",
+    "download.microsoft.com", "software-download.microsoft.com",
+    "catalog.update.microsoft.com", "windowsupdate.com",
+    "update.microsoft.com", "delivery.mp.microsoft.com",
+]
+DIRECT += DRIVER_DIRECT
 # ---- Steam: 商店/社区/登录走美国出口（用户要外区商店），下载 CDN 走直连 ----
 STEAM = [
     "steampowered.com", "steamcommunity.com", "steamstatic.com",
