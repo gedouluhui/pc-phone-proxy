@@ -181,7 +181,14 @@ GOOGLE_APP = ["aistudio.google.com", "makersuite.google.com", "gemini.google.com
               # 它们原来被 DYN_GOOGLE 带去香港，会导致页面能开、请求全挂。
               "generativelanguage.googleapis.com",
               "alkalimakersuite-pa.clients6.google.com",
-              "aida.googleapis.com", "cloudaicompanion.googleapis.com"]
+              "aida.googleapis.com", "cloudaicompanion.googleapis.com",
+              # Google Antigravity（反重力 IDE）。它的登录资格校验走
+              # cloudcode-pa，实测不带凭据返回 401 说明链路通；资格由 Google
+              # 按地区判定，所以这些域名必须和 AI Studio 走同一个合格出口，
+              # 否则落到被 Google 拒的节点上就会得到 ineligible。
+              "antigravity.google", "cloudcode-pa.googleapis.com",
+              "daily-cloudcode-pa.googleapis.com",
+              "jetski-webchannel.googleapis.com"]
 
 STEAM_DIRECT = ["steamcontent.com", "steamcdn-a.akamaihd.net"]
 DIRECT += STEAM_DIRECT
