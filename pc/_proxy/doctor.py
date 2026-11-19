@@ -217,12 +217,26 @@ def check_exit_identity():
     def ip(port):
         # 必须走 HTTPS：bestroute 的 route 规则把 80 端口强制 direct，
         # 用 http://ip-api.com 查出来的永远是本地出口（会误判成「没走代理」）。
-        try:
-            with _open("https://ipinfo.io/json", port, 10) as r:
-                j = json.loads(r.read(4000).decode("utf-8", "replace"))
-            return "%s %s" % (j.get("ip"), j.get("country")) if j.get("ip") else "?"
-        except Exception:
-            return "?"
+        # 单一数据源会撒谎：ipinfo.io 免费额度被限流时返回 429，旧版本就把它
+        # 当成「出口组上游死了」，7/7 站点全通却报红。三源依次回退。
+        for url in ("https://ipinfo.io/json",
+                    "https://www.cloudflare.com/cdn-cgi/trace",
+                    "https://api.ipify.org/?format=json"):
+            try:
+                with _open(url, port, 10) as r:
+                    body = r.read(4000).decode("utf-8", "replace")
+                if "cdn-cgi/trace" in url:
+                    d = dict(ln.split("=", 1) for ln in body.splitlines() if "=" in ln)
+                    if d.get("ip"):
+                        return "%s %s" % (d["ip"], d.get("loc") or "")
+                    continue
+                j = json.loads(body)
+                if j.get("ip"):
+                    return "%s %s" % (j["ip"],
+                                      j.get("country") or j.get("country_code") or "")
+            except Exception:
+                continue
+        return "?"
     if tun_on():
         cur = ip(None)
         return ("OK", "TUN 出口 %s" % cur) if cur != "?" else \
