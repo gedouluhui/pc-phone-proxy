@@ -26,7 +26,7 @@ def load_pac():
     parsed, path = tree("pacroute")
     constants = {"DEFAULT_GENERAL", "DEFAULT_FAST", "DEFAULT_HK", "DEFAULT_STEAM",
                  "DOMESTIC", "SENSITIVE", "DIRECT", "FAST", "GENERAL", "GOOGLE_APP",
-                 "HK", "STEAM", "STEAM_DIRECT"}
+                 "HK", "STEAM", "STEAM_DIRECT", "DRIVER_DIRECT"}
     body = []
     for n in parsed.body:
         if isinstance(n, ast.FunctionDef):
