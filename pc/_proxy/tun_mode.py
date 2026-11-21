@@ -30,6 +30,18 @@ import proxyctl as P       # noqa: E402
 
 PINNED = os.path.join(HERE, "singbox_pinned.json")
 CFG = os.path.join(HERE, "singbox_tun.json")
+
+# 需要用 DoH 解析的域名：Google 全线（污染最严重）+ AI 站。
+# 实测吞吐从高到低（2026-11-21 12:05，2MB 上行：547 / 435 / 397 / 322 / 128 KB/s，
+# 其余两颗 161 / 128 且延迟 4s）。urltest 只看延迟，会挑到 4s 那颗，
+# 所以所有分组都按这张表排序，慢节点排到最后兜底。
+NODE_PREFER = ["172.233.129.65", "172.235.37.168", "172.233.129.172",
+               "172.233.142.149", "88.216.214.159",
+               "172.104.48.194", "172.105.203.15"]
+
+GOOGLE_DNS = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
+              "gvt1.com", "ggpht.com", "youtube.com", "ytimg.com", "googlevideo.com",
+              "withgoogle.com", "google.dev"]
 PID = os.path.join(HERE, "tun.pid")
 ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
 RESULT = os.path.join(HERE, "tun_result.json")
@@ -191,34 +203,110 @@ def build_config():
             google_bad = {str(x).lower() for x in (json.load(f) or [])}
     except Exception:
         pass
-    gmembers = [gai_tag] if gai_tag else []
-    for o in outbounds:
+    # 实测：这批免费节点对 Google 的“延迟”和“吞吐”完全不是一回事。
+    # 2026-11-21 逐节点 1MB 实测 389 / 122 / 75 / 43 / 33 / 6 / 5 KB/s，
+    # 而 urltest 按延迟挑中的那颗只有 33 KB/s —— 页面能开但转圈。
+    # 所以 Google 组只放实测快的几颗（掉线时 gai 仍在末尾兜底）。
+    def _rank(o):
+        server = (o.get("server") or "").lower()
+        try:
+            return NODE_PREFER.index(server)
+        except ValueError:
+            return len(NODE_PREFER)
+
+    gmembers = []
+    candidates = [o for o in outbounds
+                  if (o.get("tag") or "").startswith("g")
+                  and o.get("type") not in ("urltest", "direct")
+                  and (o.get("tag") or "") != gai_tag
+                  and (o.get("server") or "").lower() not in google_bad]
+    fast = sorted([o for o in candidates if _rank(o) < len(NODE_PREFER)], key=_rank)
+    rest = sorted([o for o in candidates if _rank(o) >= len(NODE_PREFER)],
+                  key=lambda o: (o.get("tag") or ""))
+    for o in fast + rest:
         tag = o.get("tag") or ""
-        if (tag.startswith("g") and o.get("type") not in ("urltest", "direct")
-                and (o.get("server") or "").lower() not in google_bad):
+        if tag and tag not in gmembers:
             gmembers.append(tag)
+    # Google 组同样只留快的，gai 末尾兜底
+    _server_of = {o.get("tag"): (o.get("server") or "").lower() for o in outbounds}
+    fast_only = [t for t in gmembers if _server_of.get(t) in NODE_PREFER[:4]]
+    if fast_only:
+        gmembers = fast_only
+    if gai_tag:
+        gmembers.append(gai_tag)
     if gmembers:
+        # 探针必须用 Gemini 自己的地址：gstatic 谁都能过，但 Google 对
+        # gemini.google.com 有独立的地区/IP 判定，用 gstatic 探出来的“最快”
+        # 节点恰恰可能是被 Gemini 拒绝的那颗（实测 9 颗里有 2 颗是这种）。
         outbounds = outbounds + [{"type": "urltest", "tag": "grp-google",
                                   "outbounds": gmembers[:10],
-                                  "url": "https://www.gstatic.com/generate_204",
+                                  "url": "https://gemini.google.com/robots.txt",
                                   "interval": "60s", "tolerance": 300}]
+
+    # 通用分组（grp-any / grp-general / grp-fast）来自 pinned 基线，同样按
+    # 吞吐表重排：不然浏览器随手一个请求就落到 4s 延迟那颗节点上。
+    by_tag = {o.get("tag"): o for o in outbounds}
+
+    def _rank_tag(tag):
+        server = ((by_tag.get(tag) or {}).get("server") or "").lower()
+        try:
+            return NODE_PREFER.index(server)
+        except ValueError:
+            return len(NODE_PREFER)
+
+    # 只保留实测吞吐靠前的 4 颗：urltest 按延迟选，候选里留着 128 KB/s 的
+    # 慢节点，它延迟一低就会把整条浏览拖死（实测 g1 4004ms 仍在被选中）。
+    # 这 4 颗全挂时再跑一次「重新扫描节点」。
+    fast_tags = [o.get("tag") for o in outbounds
+                 if (o.get("server") or "").lower() in NODE_PREFER[:4]]
+    for o in outbounds:
+        if o.get("type") == "urltest" and o.get("tag") != "grp-google":
+            members = [t for t in (o.get("outbounds") or []) if t in fast_tags]
+            o["outbounds"] = members or sorted(o.get("outbounds") or [],
+                                               key=lambda t: (_rank_tag(t), t))
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
         "experimental": {"clash_api": {"external_controller": "127.0.0.1:19091"}},
+        # 本机 DNS 对 Google 域名是被污染的：gemini.google.com 会解析成
+        # Facebook 的 31.13.x / 2a03:2880::，浏览器拿着假 IP 连过去，TLS 必然
+        # 被重置，表现就是“打不开”。TUN 自己用 DoH 取真实地址（DoH 走代理，
+        # 避免 53/udp 明文被劫持），其余域名仍交给系统解析。
+        "dns": {
+            "servers": [
+                {"type": "https", "tag": "doh", "server": "1.1.1.1",
+                 "detour": "grp-any"},
+                {"type": "local", "tag": "local"},
+            ],
+            "rules": [
+                # 国内域名交给系统解析（快、且 CDN 就近）；其余一律 DoH。
+                # 只放 Google 白名单不够：chatgpt.com / huggingface.co 同样被污染
+                # （解析成 Facebook 或 103.252.x 的地址），表现是证书主机名不匹配。
+                {"domain_suffix": pacroute.DOMESTIC, "server": "local"},
+                {"domain_suffix": GOOGLE_DNS, "server": "doh"},
+            ],
+            "final": "doh",
+            "strategy": "prefer_ipv4",
+        },
         "inbounds": [{
             "type": "tun",
             "tag": "tun-in",
             "interface_name": IFACE,
             "address": [TUN_ADDR],
-            "mtu": 1500,
+            "mtu": 1400,
             "auto_route": True,
             "strict_route": True,
-            "stack": "gvisor",
+            # gvisor 是用户态 TCP，上传/大响应会被它的窗口和拷贝拖住
+            # （实测同一颗节点：直连 547 KB/s，经 gvisor 只有 236 KB/s）。
+            # system 走内核 TCP，吞吐接近直连；回滚只需改回 gvisor。
+            "stack": "system",
         }],
         "outbounds": outbounds,
         "route": {
             "auto_detect_interface": True,
+            # sing-box 1.14 起必须显式给出域名解析器；节点服务器多数是 IP，
+            # 少数（CDN 域名）用系统解析即可。
+            "default_domain_resolver": "local",
             # 直连优先：用中国 IP 段做兜底判断。域名列表只能覆盖已知站点，
             # 大量国内 CDN/下载器用的是陌生域名或纯 IP，只有按目标 IP 判定才
             # 能做到「能直连的一律直连，只有真出国的才走节点」。
@@ -237,8 +325,11 @@ def build_config():
                 {"domain_suffix": pacroute.DOMESTIC, "outbound": "direct"},
                 {"domain_suffix": pacroute.SENSITIVE, "outbound": "direct"},
                 {"ip_is_private": True, "outbound": "direct"},
-                # 系统 DNS 走本机网络；UDP/QUIC 直连（经节点不可靠，浏览器会回落 TCP）
-                {"port": 53, "outbound": "direct"},
+                # DNS 交给上面的 doh 解析器（见 dns 段），UDP/QUIC 仍直连
+                {"protocol": "dns", "action": "hijack-dns"},
+                # QUIC(UDP/443) 直连在国内是黑洞：浏览器先发 QUIC、等超时才回落
+                # TCP，页面就"一直转圈"。直接拒绝，让它立刻走 TCP。
+                {"network": "udp", "port": 443, "action": "reject"},
                 {"network": "udp", "outbound": "direct"},
                 # 明文 HTTP 不经免费节点（与分流模式一致）
                 {"port": 80, "outbound": "direct"},
@@ -445,10 +536,15 @@ def start_admin():
     # sing-box 自己的 ERROR 流单独写文件：混进 tun.log 会淹没进度输出。
     logf = io.open(SB_LOG, "ab")
     try:
+        # 注意：不要加 CREATE_BREAKAWAY_FROM_JOB。这份作业不允许 breakaway，
+        # 加上后 Popen 直接抛 OSError，隧道根本建不起来（12:30 那次实测）。
+        # DETACHED_PROCESS 必不可少：CREATE_NO_WINDOW 仍挂在这个控制台上，
+        # 一旦启动它的窗口关闭（用户点了叉、或父进程是脚本），sing-box 会被
+        # 一起收走，网卡随之消失 —— 表现为"刚配好就断网"。
         p = subprocess.Popen([P.SING_EXE, "run", "-c", CFG], cwd=HERE,
                              stdout=logf, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL,
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+                             creationflags=(0x00000008 | 0x00000200))
     finally:
         logf.close()
     time.sleep(2.0)

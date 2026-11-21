@@ -226,7 +226,13 @@ def stop_tun():
         log("      检测到别的副本留下的 TUN（pcproxy 网卡还在），需要管理员权限清理；")
         log("      马上会弹一次 UAC，请点「是」。")
     try:
-        r = subprocess.run([sys.executable, tun_py, "stop"], cwd=HERE, timeout=180)
+        # 这里常常是 start 流程内部调过来的（"先停旧隧道再建"）。直接跑
+        # tun_mode.py stop 会让它写 tun_result.json，把 start 的等待方提前
+        # 唤醒成"TUN 已停止"，真正的建隧道过程反而没人等。给它一个独立的
+        # 结果文件，两边互不覆盖。
+        r = subprocess.run([sys.executable, tun_py, "stop", "--admin",
+                            "--result", os.path.join(HERE, "logs", "tun_stop_result.json")],
+                           cwd=HERE, timeout=180)
         return ("已停止" if r.returncode == 0 else "停止失败 rc=%d" % r.returncode)
     except Exception as e:
         return "停止失败 %r" % (e,)
