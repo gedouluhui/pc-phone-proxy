@@ -103,3 +103,63 @@
 - Google AI 的资格按**账号地区**判定，换节点无效（Antigravity 尤其明显）。
 - 免费节点存在 TLS 中间人，不要用它们登录银行/政务；相关域名已强制直连。
 - `node_deep.json` 里旧的 URI 可能是 300 字符截断值，需要重跑 `deep_test.py`。
+
+## 2026-11-21 接手后的第一轮修改（DNS 污染 / Gemini 打不开 / 慢）
+
+用户报「AI Studio 慢、Gemini 打不开」，实测定位到三件事，已改并验证：
+
+1. **DNS 污染**（根因）。系统解析对 `gemini.google.com` 返回 Facebook 的
+   `31.13.x` / `2a03:2880::`，`chatgpt.com` 返回 `157.240.0.35`，
+   `huggingface.co` 返回 `103.252.115.53`。浏览器拿着假 IP 连，TLS 必然挂
+   （表现为 SSL EOF / 证书主机名不匹配）。TUN 现在自己解析：
+   `dns.servers` 加 `doh`（1.1.1.1, detour=grp-any）+ `local`；
+   `DOMESTIC` 走 local，其余 final=doh；规则里 `{"protocol":"dns","action":"hijack-dns"}`。
+   改完 `nslookup gemini.google.com` 返回 142.251.15x.2。
+2. **Google 组按延迟挑节点 = 挑到最慢的**。实测同一批节点 1MB 下载
+   389 / 122 / 75 / 43 / 33 / 6 / 5 KB/s，而 urltest 只看延迟，选中 33 KB/s 那颗。
+   现在 `grp-google` 的探针改成 `https://gemini.google.com/robots.txt`
+   （gstatic 谁都能过，但 Gemini 有独立地区判定），成员按 `GOOGLE_PREFER`
+   实测吞吐排序，`gai` 放末尾兜底。
+3. **TUN MTU 1500 → 1400**，并补 `route.default_domain_resolver: local`
+   （sing-box 1.14 起不加会 FATAL）。
+
+顺带修掉一个真 bug：`stop_proxy.stop_tun()` 调 `tun_mode.py stop` 时没带
+`--admin/--result`，会把 `tun_result.json` 覆盖成「TUN 已停止」，导致
+「启动代理」的等待方提前退出、建到一半的隧道没人等（现象：点启动只看到停止）。
+现在 stop 写自己的 `logs/tun_stop_result.json`。
+
+改动文件：`tun_mode.py`、`stop_proxy.py`、`google_bad.json`（加了
+`subgift.gcorecdn.com`、`51.161.204.244`）、`singbox_tun.json`（生成物）。
+原文件备份在 `_proxy/_bak_20261121/`，回滚＝覆盖回去再点一次「启动代理」。
+
+验证：`doctor.py` 从 4/7 → **7/7 站点直通**（ChatGPT 1.6s / Gemini 3.9s /
+AI Studio 2.6s / GitHub 1.6s / HuggingFace 1.8s）。
+
+**仍未解决**：免费节点带宽抖动（同一颗节点 10 分钟内能从 389 KB/s 掉到
+41 KB/s），大页面还是会转圈；要稳只能换付费/住宅出口。另外 `出口身份` 那行
+仍显示 CN IP，是探针域名被归到直连规则，不影响上面 7 个站的实测结论。
+
+**运行期注意（11:52 补）**：TUN 是提权进程，会被拉起它的控制台所在作业带走。
+用脚本/AI 会话拉起时，会话结束隧道就消失（表现为突然全断）。要么由用户
+双击 `启动代理.bat`（它自己的窗口，最稳），要么让拉起方一直保活。
+`synchronize` 之外别用 `Start-Process -Verb RunAs` 起 sing-box，安全策略会拦。
+
+## 12:00–12:15 第二轮：上传和大页面慢
+
+用户反馈：20MB 传 AI Studio 传不上去，ChatGPT/Claude 一直转圈。又找到两个真问题：
+
+1. **QUIC 被直连黑洞**（影响最大）。旧规则 `{"network":"udp","outbound":"direct"}`
+   把 QUIC(UDP/443) 丢给直连，国内这方向是不通的；浏览器先发 QUIC、等超时才
+   回落 TCP，页面就一直转。加 `{"network":"udp","port":443,"action":"reject"}`
+   让它立刻回落 —— **ChatGPT 首页从 20s+ 降到 3.2s**，Gemini 从"超时"到能整页加载。
+2. **gvisor 用户态栈拖吞吐**。同节点实测：直连 547 KB/s，经 gvisor 236 KB/s。
+   改 `"stack": "system"`（内核 TCP）。回滚改回 gvisor 即可。
+
+另外把分组从"10 颗按延迟选"收成**实测吞吐前 4 颗**（g9/g6/g8/g7），因为
+urltest 会选中延迟 4004ms 的慢节点；grp-google 继续保持 gai 末尾兜底。
+
+实测（12:13）：10MB 上传 **31.7s / 316 KB/s**（20MB 约 1 分钟）；
+ChatGPT 3.2s、AI Studio 1.9s、Gemini 7–16s（节点下行抖）。
+
+**Claude 是另一回事**：g6/g7/g8/g9 四颗对 `claude.ai` 全部 403（Cloudflare 拦
+机房 IP），换节点没用；浏览器带 TLS 指纹可能能过，但真被拦只能换住宅/商业出口。
