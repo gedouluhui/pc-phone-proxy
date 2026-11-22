@@ -74,10 +74,11 @@ git push -u origin main
 > 电脑端（2026-11-23）：仓库内 PC 脚本为 **V3.2**（真关闭 / 静态代理兜底 /
 > 下载保护 / 低速假死流放行 / TUN 单实例），以源码形式发布，不随 APK 资产打包。
 >
-> 当前状态（2026-11-23）：源码 **v2.6**，公版 APK 已构建完成，**待上传为 v2.6 Release**。
+> 当前状态（2026-11-23）：已发布 **v2.6**
+> （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.6>），
 > 资产 `PhoneProxy-public.apk` 56,964,102 B，
 > SHA256 `0890349b80f591932847054b1f45c0b61bb8eb3ec8e0225a2a229192ac8651ff`，
-> 与 `dist/手机代理-公版.apk` 字节一致。上传完成后把本行改成「已发布 **v2.6**」。
+> 与 `dist/手机代理-公版.apk` 字节一致。下次发版按上面第 5 步重新上传并改这一行。
 >
 > **公开版必须 `python build_apk.py --public`**。不带参数时脚本会把本地
 > `assets/nodes.json`（真实节点凭据）打进 APK；2026-11-18 第一次发的 v2.5 资产就是这样
