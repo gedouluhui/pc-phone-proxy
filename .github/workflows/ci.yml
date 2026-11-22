@@ -41,12 +41,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      - name: 安装 platform / build-tools
+      # 不用 android-actions/setup-android：它内部会执行 `sdkmanager tools`，
+      # 而新版 SDK 布局里已经没有这个包，v3 会直接失败。runner 自带 SDK，
+      # 缺 platform 时用 sdkmanager 单独补。
+      - name: 安装 platform（缺才装）
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platforms;android-35" "build-tools;34.0.0"
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          if [ ! -f "$SDK/platforms/android-35/android.jar" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35"
+          fi
 
       - name: 取 libv2ray.aar（二进制不入库，用上游固定版本）
         run: |
