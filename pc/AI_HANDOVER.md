@@ -186,3 +186,8 @@ ChatGPT 3.2s、AI Studio 1.9s、Gemini 7–16s（节点下行抖）。
 
 验证（09:02）：`nslookup gemini` 返回 142.251.15x.2；Gemini 3.9s、AI Studio
 3.4s、ChatGPT 3.6s；10MB 上行 41s（244 KB/s）、1MB 下行 3.5s（287 KB/s）。
+
+**09:06 收尾**：用户双击 `启动代理.bat` 重新接管隧道（pid 44292），AI 会话里的
+保活任务已全部撤掉，隧道继续由用户窗口托管。此时 `grp-google` 落到 `gai`(2098)：
+免费 vless 节点这一刻都没过 `gemini.google.com/robots.txt` 探针，兜底按设计生效——
+Gemini 3.5s、AI Studio 2.1s、ChatGPT 3.5s，`nslookup gemini` 正常返回 142.251.155.2。
