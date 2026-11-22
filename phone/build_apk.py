@@ -198,6 +198,20 @@ def build(stage, nodes, public, keystore, alias, env, jdk, bt, android_jar, rele
     return signed
 
 
+def preflight_nodes():
+    """用真 Xray 内核校验 nodes.json。没有 xray 二进制就跳过（本地无网也能打包）。"""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "check_nodes.py")
+    if not os.path.isfile(script):
+        return
+    r = subprocess.run([sys.executable, script], capture_output=True, text=True, errors="replace")
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0:
+        sys.stderr.write(out + "\n")
+        raise BuildError("nodes.json 有节点过不了 Xray 配置校验（见上）")
+    line = out.strip().splitlines()[-1] if out.strip() else "nodes preflight skipped"
+    print(line)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--public", action="store_true", help="require an empty selected node input")
@@ -216,6 +230,8 @@ def main(argv=None):
 
     committed = False
     try:
+        if not public:
+            preflight_nodes()
         keystore, alias, password = signing_config(release)
         jdk, sdk = find_jdk(), find_sdk()
         bt = latest_dir(sdk / "build-tools", "")

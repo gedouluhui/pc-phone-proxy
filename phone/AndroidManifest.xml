@@ -34,9 +34,18 @@
             </intent-filter>
         </activity>
 
+        <!-- stopWithTask=false：从多任务卡片划掉时不要把正在跑的隧道一起杀掉。
+             foregroundServiceType=specialUse：Android 14+ 起 targetSdk>=34 必须声明，
+             否则 startForeground() 直接抛异常；这里先声明好，升级 target 时不用再改。 -->
         <service
             android:name=".ProxyVpnService"
             android:exported="false"
-            android:permission="android.permission.BIND_VPN_SERVICE" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
     </application>
 </manifest>

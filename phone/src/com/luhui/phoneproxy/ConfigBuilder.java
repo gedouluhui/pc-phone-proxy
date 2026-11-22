@@ -569,13 +569,13 @@ public final class ConfigBuilder {
             // 量到的只有握手延迟，跟吞吐无关。PC 端实测同一批节点上行
             // 547 / 435 / 128 KB/s，握手延迟却差不多，于是 leastPing 一直
             // 选中较慢那颗 —— 页面能开，传大文件传不动。
-            // 换成 32KB 固定负载、5 分钟一轮：32KB 在 128 KB/s 上要 250ms，
-            // 在 547 KB/s 上 58ms，延迟里就带上了吞吐差异。24 颗节点一轮
-            // 约 0.75MB，5 分钟一次，移动网络下可接受。
+            // 用带负载的探针而不是 0 字节的 generate_204。16KB/10 分钟是权衡：
+            // 8 节点一天约 18MB（32KB/5 分钟是 73MB），仍然能把 128 KB/s 和
+            // 547 KB/s 的节点区分开（125ms vs 29ms 的差）。
             cfg.put("observatory", new JSONObject()
                     .put("subjectSelector", subjects)
-                    .put("probeUrl", "https://speed.cloudflare.com/__down?bytes=32768")
-                    .put("probeInterval", "300s")
+                    .put("probeUrl", "https://speed.cloudflare.com/__down?bytes=16384")
+                    .put("probeInterval", "600s")
                     .put("probeTimeout", "10s")
                     .put("enableConcurrency", true));
             routing.put("balancers", balancers);

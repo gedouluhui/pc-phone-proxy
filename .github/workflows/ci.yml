@@ -30,3 +30,32 @@ jobs:
 
       - name: 发布前防泄漏自检
         run: python phone/check_release.py
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 安装 platform / build-tools
+        run: sdkmanager --install "platforms;android-35" "build-tools;34.0.0" > /dev/null
+
+      - name: 取 libv2ray.aar（二进制不入库，用上游固定版本）
+        run: |
+          mkdir -p /tmp/lv /tmp/classes
+          curl -sSL -o /tmp/libv2ray.aar \
+            https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.11.9/libv2ray.aar
+          unzip -o -q /tmp/libv2ray.aar classes.jar -d /tmp/lv
+
+      - name: Java 编译检查（javac）
+        run: |
+          javac -encoding UTF-8 -source 8 -target 8 -Xlint:-options \
+            -classpath "$ANDROID_HOME/platforms/android-35/android.jar:/tmp/lv/classes.jar" \
+            -d /tmp/classes $(find phone/src -name '*.java')
+          echo "javac OK: $(find /tmp/classes -name '*.class' | wc -l) classes"

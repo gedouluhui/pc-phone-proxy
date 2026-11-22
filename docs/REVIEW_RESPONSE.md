@@ -38,3 +38,16 @@
 - `sing-box check` 通过（15 条路由规则，双栈地址，`grp-dns` 探针为 IP 字面量）
 - `build_apk.py` 通过（内嵌 8 节点）
 - **PC 端配置需要重启一次「启动代理」才生效**（TUN 需要管理员重建网卡）
+
+## 第二轮（02:00–02:30）：把"便宜且有用"的继续做掉
+
+| # | 意见 | 处理 |
+|---|---|---|
+| 13 | AI 闸门缓存 7 天 → 应缩到 6~24h | `GATE_TTL_DAYS = 1`（`ConfigBuilder`） |
+| 14 | `allowBackup=false` 挡不住 D2D 迁移 | 新增 `res/xml/data_extraction_rules.xml`，cloud-backup 与 device-transfer 两条通道逐 domain exclude；Manifest 补 `dataExtractionRules` + `fullBackupContent="false"` |
+| 15 | VpnService 生命周期缺口 | `setUnderlyingNetworks` + `registerNetworkCallback`（过滤 `NET_CAPABILITY_NOT_VPN`，避免把自己当底层网络）；`onDestroy` 注销；`onRevoke` 明确在 worker 线程拆除；Manifest 补 `stopWithTask="false"`、`foregroundServiceType="specialUse"` + `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` |
+| 16 | 32KB × 5 分钟探针流量过高 | 改为 16KB / 600s：8 节点约 18 MB/天（原 73 MB/天），仍能区分 128 与 547 KB/s（125ms vs 29ms） |
+| 17 | 用真内核校验配置 | 新增 `phone/tools/check_nodes.py`：把 `nodes.json` 每条 outbound 拼成最小配置跑 `xray run -test -c`；已接进 `build_apk.py` 作为打包前预检（无二进制自动跳过），CI 可设 `XRAY_BIN` 强制执行 |
+| 18 | Java 侧零自动化 | CI 新增 `android` job：JDK 17 + Android SDK，取上游 `libv2ray.aar` 的 classes.jar 后 `javac` 全量编译 |
+
+仍未做：`TestXray`/AAR 导出（要改 Go）、投毒语料 + 真内核闭环（需要把 `parseUri` 抽成纯 JVM 模块）、`2098` 合并进主实例、PC 端"低速假死流"放行。

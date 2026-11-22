@@ -6,6 +6,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -73,6 +77,7 @@ public class ProxyVpnService extends VpnService {
     private CoreController controller;
     private ParcelFileDescriptor tunFd;
     private volatile boolean starting = false;
+    private ConnectivityManager.NetworkCallback netCallback;
     private volatile boolean trafficPolling = false;
     private Thread trafficThread;
 
@@ -194,6 +199,7 @@ public class ProxyVpnService extends VpnService {
             }
             runningNode = sel != null ? sel.name
                     : ("自动选线（" + nodes.size() + " 节点池）");
+            registerUnderlyingNetwork();
             setState(STATE_RUNNING, "已连接 · " + runningNode);
             log("VPN 已启动，国内外自动分流"
                     + ("auto".equals(selection) ? "，自动选线已启用" : "，固定节点 " + runningNode));
@@ -510,6 +516,7 @@ public class ProxyVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
+        unregisterUnderlyingNetwork();
         stopTrafficPoll();
         worker.submit(() -> {
             try { if (controller != null) controller.stopLoop(); } catch (Throwable ignored) {}
@@ -522,9 +529,51 @@ public class ProxyVpnService extends VpnService {
         super.onDestroy();
     }
 
+    /**
+     * 把真实的物理网络告诉系统。不做这件事时，Android 9+ 无法判断 VPN 下面
+     * 是 Wi-Fi 还是计费网络，切换网络（Wi-Fi ↔ 蜂窝）后也容易把连接挂在旧网卡上。
+     * 过滤器里排除 VPN 自身，否则会把自己的网卡当成底层网络。
+     */
+    private void registerUnderlyingNetwork() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .build();
+            netCallback = new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network network) { applyUnderlying(network); }
+                @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                    applyUnderlying(network);
+                }
+            };
+            cm.registerNetworkCallback(request, netCallback);
+        } catch (Throwable e) {
+            Log.w(TAG, "registerNetworkCallback failed", e);
+        }
+    }
+
+    private void applyUnderlying(Network network) {
+        if (network == null) return;
+        try {
+            setUnderlyingNetworks(new Network[]{network});
+        } catch (Throwable ignored) {}
+    }
+
+    private void unregisterUnderlyingNetwork() {
+        if (netCallback == null) return;
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm != null) cm.unregisterNetworkCallback(netCallback);
+        } catch (Throwable ignored) {}
+        netCallback = null;
+    }
+
     @Override
     public void onRevoke() {
-        log("VPN 授权被系统收回");
+        log("VPN 授权被系统收回，正在清理内核与网卡");
+        // onRevoke 不保证在主线程；拆除工作统一丢给 worker，避免与启动流程并发。
         worker.submit(this::stopVpn);
     }
 }
