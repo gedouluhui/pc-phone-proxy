@@ -40,7 +40,7 @@ ORG_JSON_VERSION = "20240303"
 ORG_JSON_SHA = "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"
 XRAY_SHA = {
     "Windows": "1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d",
-    "Linux": "b651f7e1d9966ee2b1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+    "Linux": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
 }
 XRAY_URL = {
     "Windows": f"https://github.com/XTLS/Xray-core/releases/download/{XRAY_VERSION}/Xray-windows-64.zip",
