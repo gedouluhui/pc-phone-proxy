@@ -17,10 +17,12 @@ What it does (all state goes to watchdog_status.json + logs/watchdog.log):
 
 Everything is PID-targeted and image-checked; this never kills by name.
 """
+import datetime
 import io
 import tempfile
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -46,6 +48,8 @@ import proxyctl as P      # noqa: E402
 import sysstate           # noqa: E402
 
 GEN, FAST, CLI, HK, STEAM = 2101, 2103, 2090, 2086, 2096
+DEEP = os.path.join(HERE, "node_deep.json")
+PINNED_CFG = os.path.join(HERE, "singbox_pinned.json")
 # 2026-11-12: 定期重扫——每 N 小时重新抓源+深测+重建出口；0=关闭。
 # 全量重扫会跑 re-harvest + deep test + rebuild（10~40 分钟，CPU 能吃满一个核），
 # 默认改成 12 小时；需要临时调整设环境变量 PROXY_REFRESH_HOURS。
@@ -248,25 +252,155 @@ def pac_apply():
     return bool(info.get("ok"))
 
 
-def bulk_active(min_mb=20):
-    """A driver/firmware download in flight?  Return a short description.
+def _conn_age(start, now=None):
+    """Seconds since a Clash API `start` timestamp, or None if unparseable."""
+    if not start:
+        return None
+    s = re.sub(r"(\.\d{6})\d+", r"\1", str(start).strip().replace("Z", "+00:00"))
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (now - dt).total_seconds())
 
-    Rebuild stops the whole exit stack; killing a 800MB NVIDIA download
-    halfway is worse than a slow gate.  The clash API tracks each live
-    connection's bytes, so one cumulative-download check is enough.
-    """
+
+def connections_snapshot():
+    """{id: {download, chains, age}} from the local clash API, or None."""
     try:
         j = http_json("http://127.0.0.1:19090/connections", timeout=3)
     except Exception:
         return None
-    best = None
+    out = {}
     for c in (j or {}).get("connections") or []:
-        mb = int(c.get("download") or 0) / 1048576.0
+        try:
+            dl = int(c.get("download") or 0)
+        except (TypeError, ValueError):
+            continue
+        md = c.get("metadata") or {}
         chains = [str(x).lower() for x in (c.get("chains") or [])]
-        if mb >= min_mb and any(x != "direct" for x in chains):
-            if best is None or mb > best[1]:
-                best = (chains[0] if chains else "?", mb)
-    return ("%s %.0fMB" % best) if best else None
+        cid = str(c.get("id") or "") or "%s:%s|%s" % (
+            md.get("host") or md.get("destinationIP") or "",
+            md.get("destinationPort") or "", ",".join(chains))
+        out[cid] = {"download": dl, "chains": chains,
+                    "age": _conn_age(c.get("start"))}
+    return out
+
+
+def classify_bulk(first, second, seconds, min_mb=20, min_age=60,
+                  min_rate_kbps=30):
+    """Split big proxied flows into active downloads and stalled zombies.
+
+    A cumulative >20MB check alone protects a 500MB installer; it also
+    protects a stream that fell to 10KB/s and would take ten hours.  Only a
+    recent per-connection rate can tell those apart.  Young flows are kept
+    active: their rate is not yet meaningful.
+    """
+    active, zombie = [], []
+    if not seconds or seconds <= 0:
+        return {"active": active, "zombie": zombie}
+    floor = min_mb * 1048576
+    for key, cur in second.items():
+        dl = cur.get("download") or 0
+        if dl < floor:
+            continue
+        chains = cur.get("chains") or []
+        if not any(x and x != "direct" for x in chains):
+            continue
+        prev = first.get(key)
+        if prev is None:
+            age = cur.get("age")
+            rate = (dl / age / 1024.0) if age and age > 0 else None
+        else:
+            rate = max(0.0, dl - (prev.get("download") or 0)) / seconds / 1024.0
+        flow = {"id": key, "chains": chains, "mb": dl / 1048576.0,
+                "rate": rate, "age": cur.get("age")}
+        if rate is None or rate >= min_rate_kbps:
+            active.append(flow)
+        elif flow["age"] is not None and flow["age"] < min_age:
+            active.append(flow)
+        else:
+            zombie.append(flow)
+    return {"active": active, "zombie": zombie}
+
+
+def deep_speeds():
+    try:
+        with io.open(DEEP, encoding="utf-8") as f:
+            rows = (json.load(f) or {}).get("rows") or []
+    except Exception:
+        return {}
+    out = {}
+    for row in rows:
+        try:
+            kbps = float(row.get("dl_kbps") or 0)
+        except (TypeError, ValueError):
+            continue
+        server = str(row.get("server") or "").lower()
+        if server and kbps > 0:
+            out[server] = max(out.get(server, 0.0), kbps)
+    return out
+
+
+def pinned_servers():
+    try:
+        with io.open(PINNED_CFG, encoding="utf-8") as f:
+            cfg = json.load(f) or {}
+    except Exception:
+        return {}
+    return {str(o.get("tag") or "").lower(): str(o.get("server") or "").lower()
+            for o in cfg.get("outbounds") or [] if o.get("tag") and o.get("server")}
+
+
+def better_candidate(chains, measured_kbps, deep, tag_servers):
+    """A deep-tested exit at least 3x faster than a stalled stream, if any."""
+    current = {tag_servers.get(str(t).lower()) for t in chains or []}
+    best = [(s, v) for s, v in (deep or {}).items()
+            if v > 0 and s.lower() not in current]
+    if not best:
+        return None
+    server, kbps = max(best, key=lambda item: item[1])
+    floor = max(100.0, float(measured_kbps or 0) * 3.0)
+    return (server, kbps) if kbps >= floor else None
+
+
+def _flow_desc(flow):
+    chain = (flow.get("chains") or ["?"])[0]
+    rate = flow.get("rate")
+    return "%s %.0fMB %s" % (chain, flow.get("mb") or 0,
+                             "待测" if rate is None else "%.0fKB/s" % rate)
+
+
+def bulk_active(min_mb=20):
+    """A genuine big transfer must not be killed by a rebuild.
+
+    Two samples a few seconds apart give a live rate; a stalled "zombie"
+    stream is released only when deep-test data shows a clearly better exit.
+    Otherwise the 10-minute defer would lock a dead path forever.
+    """
+    first = connections_snapshot()
+    if first is None:
+        return None
+    time.sleep(4.0)
+    second = connections_snapshot()
+    if second is None:
+        return None
+    report = classify_bulk(first, second, 4.0, min_mb=min_mb)
+    if report["active"]:
+        return " / ".join(_flow_desc(f) for f in report["active"][:3])
+    if not report["zombie"]:
+        return None
+    deep = deep_speeds()
+    tags = pinned_servers()
+    for flow in report["zombie"]:
+        better = better_candidate(flow["chains"], flow["rate"], deep, tags)
+        if better:
+            log("低速假死流放行: %s；深测备选 %s %.0fKB/s"
+                % (_flow_desc(flow), better[0], better[1]))
+            return None
+    return " / ".join("低速 " + _flow_desc(f) for f in report["zombie"][:3])
 
 
 def rebuild(reason, st):
@@ -281,7 +415,7 @@ def rebuild(reason, st):
     busy = bulk_active()
     if busy:
         st["defer_rebuild_until"] = now + 600
-        log("rebuild deferred 10min: 大流量传输中 (%s) —— 不能打断下载" % busy)
+        log("rebuild deferred 10min: 传输中 (%s) —— 不能打断下载" % busy)
         return False
     if now - st["last_rebuild"] < st["rebuild_cooldown"]:
         log("rebuild skipped (cooldown %ds): %s"

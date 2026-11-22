@@ -10,15 +10,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLDecoder;
 import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
+
+import libv2ray.Libv2ray;
 
 /**
  * v2：内置节点（随 APK 打包）+ 用户导入节点（剪贴板 / 订阅链接）合并成一份 Xray 配置。
@@ -182,6 +182,7 @@ public final class ConfigBuilder {
             // 内置节点坏了也要让导入节点能用
         }
         List<String> uris = loadImportedUris(ctx);
+        Set<String> kernelBad = loadKernelBad(ctx);
         int idx = 0;
         for (String uri : uris) {
             JSONObject ob;
@@ -202,6 +203,11 @@ public final class ConfigBuilder {
                 // 中间人可以随便截。导入节点一律不信这个字段，只信内置节点自带的配置。
                 stripAllowInsecure(ob);
             } catch (Exception e) {
+                continue;
+            }
+            String fp = outboundFingerprint(ob);
+            if (fp != null && kernelBad.contains(fp)) {
+                lastSkips.add(tag + " 未通过内核预检");
                 continue;
             }
             out.add(new Node(tag, tag + " · " + displayName(ob), true, false, ob));
@@ -235,6 +241,161 @@ public final class ConfigBuilder {
             }
         } catch (Exception ignored) {}
         return out;
+    }
+
+    // ---------------------------------------------------------- 内核预检
+
+    /**
+     * 内核预检缓存：只记「配置非法」的 outbound 指纹，不记可用性结果。
+     *
+     * 内核是整份配置要么全用、要么全不用，导入一条内核不认的节点（旧版加密、
+     * REALITY 参数错、未知传输…）会让整个节点池起不来。这里用
+     * {@code Libv2ray.measureOutboundDelay} 做单节点 Dry-Run：配置加载/实例创建/
+     * 启动任一步失败都算非法；之后故意传一个 parse 不了的 URL，让内核在
+     * {@code http.NewRequest} 阶段停住，不产生任何网络请求。
+     */
+    private static final String KEY_BAD = "kernel_bad_v1";
+    /** 这个 URL 在 http.NewRequest 就会失败，Dry-Run 不会发出流量。 */
+    private static final String DRY_RUN_URL = "http://[::1";
+    private static final int MAX_BAD_CACHE = 400;
+
+    /** 配置类错误前缀来自 libv2ray_utils.go；其它异常（含 URL 解析失败）视为配置可用。 */
+    static boolean isConfigError(String message) {
+        String m = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        return m.contains("config load error")
+                || m.contains("instance creation failed")
+                || m.contains("startup failed");
+    }
+
+    /** true = 内核拒绝这条出站的配置本身。不联网，可在任意后台线程调用。 */
+    public static boolean kernelRejects(JSONObject outbound) {
+        try {
+            JSONObject probe = new JSONObject(outbound.toString());
+            probe.put("tag", "proxy-probe");
+            Libv2ray.measureOutboundDelay(measureConfigOf(probe), DRY_RUN_URL);
+            return false;
+        } catch (Throwable t) {
+            return isConfigError(String.valueOf(t.getMessage()));
+        }
+    }
+
+    /** 节点指纹：去掉 tag 后的 outbound JSON 的 SHA-1。解析/字段顺序稳定。 */
+    public static String outboundFingerprint(JSONObject outbound) {
+        try {
+            JSONObject copy = new JSONObject(outbound.toString());
+            copy.remove("tag");
+            return sha1hex(copy.toString());
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Set<String> loadKernelBad(Context ctx) {
+        Set<String> out = new HashSet<>();
+        try {
+            Set<String> raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getStringSet(KEY_BAD, null);
+            if (raw != null) {
+                for (String e : raw) {
+                    if (e.startsWith("v1:")) out.add(e.substring(3));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private static void markKernelBad(Context ctx, List<String> fingerprints) {
+        if (fingerprints == null || fingerprints.isEmpty()) return;
+        Set<String> set = new HashSet<>();
+        for (String fp : loadKernelBad(ctx)) set.add("v1:" + fp);
+        for (String fp : fingerprints) {
+            if (fp != null && !fp.isEmpty()) set.add("v1:" + fp);
+        }
+        if (set.size() > MAX_BAD_CACHE) set.clear(); // 异常膨胀时重建，别让 prefs 无限长
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putStringSet(KEY_BAD, set).apply();
+    }
+
+    public static void clearKernelBad(Context ctx) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().remove(KEY_BAD).apply();
+    }
+
+    /**
+     * 导入前筛一遍：能解析 + 内核 Dry-Run 通过才进池。重复 URI 直接保留，不重复测。
+     * 必须在后台线程调用；返回的列表交给 {@link #addImportedUris}。
+     */
+    public static List<String> screenImports(Context ctx, List<String> uris, List<String> log) {
+        List<String> keep = new ArrayList<>();
+        if (uris == null || uris.isEmpty()) return keep;
+        Set<String> existing = new HashSet<>(loadImportedUris(ctx));
+        Set<String> cachedBad = loadKernelBad(ctx);
+        List<String> newBad = new ArrayList<>();
+        int parseRejected = 0;
+        int kernelRejected = 0;
+        try {
+            Libv2ray.initCoreEnv(ctx.getFilesDir().getAbsolutePath(), "");
+        } catch (Throwable ignored) {
+        }
+        for (String raw : uris) {
+            String uri = raw == null ? "" : raw.trim();
+            if (uri.isEmpty()) continue;
+            if (existing.contains(uri)) {
+                keep.add(uri);
+                continue;
+            }
+            JSONObject ob = parseUri(uri);
+            if (ob == null) {
+                parseRejected++;
+                continue;
+            }
+            String fp = outboundFingerprint(ob);
+            if (fp != null && cachedBad.contains(fp)) {
+                kernelRejected++;
+                continue;
+            }
+            if (kernelRejects(ob)) {
+                kernelRejected++;
+                if (fp != null) newBad.add(fp);
+                continue;
+            }
+            keep.add(uri);
+        }
+        // 整批全部被内核拒绝时先不写缓存：可能是内核环境异常而不是节点全坏。
+        if (!keep.isEmpty()) markKernelBad(ctx, newBad);
+        if (log != null && (parseRejected + kernelRejected) > 0) {
+            log.add("预检剔除 " + (parseRejected + kernelRejected)
+                    + " 条（无法解析 " + parseRejected + "，内核拒绝 " + kernelRejected + "）");
+        }
+        return keep;
+    }
+
+    /**
+     * VPN 启动被内核拒绝后的补救：找出导入节点里配置非法的那些并拉黑，
+     * 下次启动就不再带它们。返回新拉黑数量。
+     */
+    public static int quarantineInvalidImports(Context ctx) {
+        Set<String> cachedBad = loadKernelBad(ctx);
+        List<String> newBad = new ArrayList<>();
+        int ok = 0;
+        try {
+            Libv2ray.initCoreEnv(ctx.getFilesDir().getAbsolutePath(), "");
+        } catch (Throwable ignored) {
+        }
+        for (String uri : loadImportedUris(ctx)) {
+            JSONObject ob = parseUri(uri);
+            if (ob == null) continue;
+            String fp = outboundFingerprint(ob);
+            if (fp != null && cachedBad.contains(fp)) continue;
+            if (kernelRejects(ob)) {
+                if (fp != null) newBad.add(fp);
+            } else {
+                ok++;
+            }
+        }
+        if (ok > 0) markKernelBad(ctx, newBad);
+        return newBad.size();
     }
 
     public static void saveImportedUris(Context ctx, List<String> uris) {
@@ -457,364 +618,43 @@ public final class ConfigBuilder {
         return cfg.toString();
     }
 
+    /** 单个 outbound 的最小测量配置（给measureOutboundDelay用，等于一次单节点 Dry-Run）。 */
+    public static String measureConfigOf(JSONObject outbound) throws Exception {
+        return NodeConfigCodec.measureConfigOf(outbound);
+    }
+
     /**
      * 完整运行配置：TUN 入站 + 全部节点 + 直连 + DNS 出站。
      * selected = "auto" 走 observatory+balancer（leastPing），否则固定到该节点。
      */
     public static String fullConfig(List<Node> nodes, String selected) throws Exception {
-        if (nodes.isEmpty()) throw new IllegalStateException("没有可用节点");
-
-        JSONObject cfg = new JSONObject();
-        cfg.put("log", new JSONObject().put("loglevel", "warning"));
-
-        // DNS：国内域名走阿里 DNS（直连），其余走 Cloudflare DoH（经代理，防污染）
-        // 敏感域（银行/支付/政务）也必须走国内 DNS：只写 geosite:cn 会让这些
-        // 域名落到 Cloudflare DoH，等于把查询目标暴露给节点。
-        JSONArray cnDomains = new JSONArray().put("geosite:cn");
-        for (String d : SENSITIVE_DOMAINS) cnDomains.put("domain:" + d);
-        JSONArray servers = new JSONArray();
-        servers.put(new JSONObject()
-                .put("address", "223.5.5.5")
-                .put("domains", cnDomains)
-                .put("skipFallback", true));
-        servers.put("https://1.1.1.1/dns-query");
-        cfg.put("dns", new JSONObject()
-                .put("servers", servers)
-                .put("queryStrategy", "UseIPv4"));
-
-        // TUN 入站：fd 由 startLoop(config, tunFd) 经环境变量传入
-        JSONObject tun = new JSONObject()
-                .put("tag", "tun-in")
-                .put("protocol", "tun")
-                .put("settings", new JSONObject().put("name", "xray0").put("mtu", 1500))
-                .put("sniffing", new JSONObject()
-                        .put("enabled", true)
-                        // 不嗅探 quic 的话，走 UDP/443 的流量拿不到域名，
-                        // 分流规则失效并可能绕过代理。
-                        .put("destOverride", new JSONArray()
-                                .put("http").put("tls").put("quic")));
-        cfg.put("inbounds", new JSONArray().put(tun));
-
-        JSONArray outbounds = new JSONArray();
-        for (Node n : nodes) outbounds.put(n.outbound);
-        outbounds.put(new JSONObject()
-                .put("tag", "direct")
-                .put("protocol", "freedom")
-                .put("settings", new JSONObject().put("domainStrategy", "UseIPv4")));
-        outbounds.put(new JSONObject().put("tag", "dns-out").put("protocol", "dns"));
-        // QUIC(udp/443) 与 Private DNS(853/tcp) 一律丢弃：QUIC 会绕过基于域名的
-        // 分流，DoT 会让 DNS 查询逃出 VPN 的 dns-out 规则。
-        outbounds.put(new JSONObject().put("tag", "block").put("protocol", "blackhole"));
-        cfg.put("outbounds", outbounds);
-        // 出站流量统计：不加这两个块，queryAllOutboundTrafficStats 永远返回空，
-        // 界面上的 ↓/↑ 就一直是 0 B/s。
-        cfg.put("stats", new JSONObject());
-        cfg.put("policy", new JSONObject().put("system", new JSONObject()
-                .put("statsInboundUplink", true)
-                .put("statsInboundDownlink", true)
-                .put("statsOutboundUplink", true)
-                .put("statsOutboundDownlink", true)));
-
-        JSONArray rules = new JSONArray();
-        rules.put(rule().put("inboundTag", new JSONArray().put("tun-in"))
-                .put("port", 53).put("outboundTag", "dns-out"));
-        // 阻断 QUIC：UDP/443 没有可靠的域名嗅探，会让分流规则失效并可能直连泄漏
-        rules.put(rule().put("network", "udp").put("port", 443)
-                .put("outboundTag", "block"));
-        // 阻断 Android Private DNS（DoT/853），强制查询回到上面的 dns-out
-        rules.put(rule().put("port", 853).put("outboundTag", "block"));
-        rules.put(rule().put("ip", new JSONArray().put("geoip:private"))
-                .put("outboundTag", "direct"));
-        // 2026-11-11 privacy: 敏感域（银行/支付/政务/社保/税务/教育）强制直连，
-        // 绝不进免费节点——节点运营者能看到 TLS 目标域名，账号类站点不该出现在隧道里。
-        JSONArray sensitive = new JSONArray();
-        for (String d : SENSITIVE_DOMAINS) sensitive.put("domain:" + d);
-        rules.put(rule().put("domain", sensitive).put("outboundTag", "direct"));
-        // 2026-11-11 privacy: 明文 HTTP(80) 直连，避免节点看到明文 URL 与内容。
-        rules.put(rule().put("port", 80).put("outboundTag", "direct"));
-        rules.put(rule().put("domain", new JSONArray().put("geosite:cn"))
-                .put("outboundTag", "direct"));
-        rules.put(rule().put("ip", new JSONArray().put("geoip:cn"))
-                .put("outboundTag", "direct"));
-
-        JSONObject routing = new JSONObject().put("domainStrategy", "IPIfNonMatch");
-
-        boolean auto = selected == null || selected.isEmpty() || "auto".equals(selected);
-        Node sel = auto ? null : find(nodes, selected);
-        if (auto || sel == null) {
-            // ChatGPT / Claude 需要地区合格出口：内置节点里深测通过的成员
-            // 各复制一份到 cg-* 前缀，单独组成 cg-balancer。普通流量用全部
-            // 节点求最快，AI 域名只用合格池，两者都由 observatory 探活。
-            int cgCount = 0;
-            for (Node n : nodes) {
-                if (!n.cg) continue;
-                JSONObject copy = new JSONObject(n.outbound.toString());
-                copy.put("tag", "cg-" + n.tag);
-                outbounds.put(copy);
-                cgCount++;
-            }
-            JSONArray subjects = new JSONArray().put("proxy-");
-            JSONArray balancers = new JSONArray().put(new JSONObject()
-                    .put("tag", "balancer")
-                    .put("selector", new JSONArray().put("proxy-"))
-                    .put("strategy", new JSONObject().put("type", "leastPing")));
-            if (cgCount > 0) {
-                subjects.put("cg-");
-                balancers.put(new JSONObject()
-                        .put("tag", "cg-balancer")
-                        .put("selector", new JSONArray().put("cg-"))
-                        .put("strategy", new JSONObject().put("type", "leastPing")));
-            }
-            // 探针决定"挑哪颗节点"，而 gstatic/generate_204 是 0 字节响应：
-            // 量到的只有握手延迟，跟吞吐无关。PC 端实测同一批节点上行
-            // 547 / 435 / 128 KB/s，握手延迟却差不多，于是 leastPing 一直
-            // 选中较慢那颗 —— 页面能开，传大文件传不动。
-            // 用带负载的探针而不是 0 字节的 generate_204。16KB/10 分钟是权衡：
-            // 8 节点一天约 18MB（32KB/5 分钟是 73MB），仍然能把 128 KB/s 和
-            // 547 KB/s 的节点区分开（125ms vs 29ms 的差）。
-            cfg.put("observatory", new JSONObject()
-                    .put("subjectSelector", subjects)
-                    .put("probeUrl", "https://speed.cloudflare.com/__down?bytes=16384")
-                    .put("probeInterval", "600s")
-                    .put("probeTimeout", "10s")
-                    .put("enableConcurrency", true));
-            routing.put("balancers", balancers);
-            if (cgCount > 0) {
-                rules.put(rule().put("network", "tcp,udp")
-                        .put("domain", new JSONArray()
-                                .put("domain:openai.com")
-                                .put("domain:chatgpt.com")
-                                .put("domain:oaistatic.com")
-                                .put("domain:oaiusercontent.com")
-                                .put("domain:anthropic.com")
-                                .put("domain:claude.ai")
-                                .put("domain:claude.com")
-                                .put("domain:claudeusercontent.com"))
-                        .put("balancerTag", "cg-balancer"));
-            }
-            rules.put(rule().put("network", "tcp,udp").put("balancerTag", "balancer"));
-        } else {
-            rules.put(rule().put("network", "tcp,udp")
-                    .put("outboundTag", "proxy-" + sel.tag));
+        if (nodes == null || nodes.isEmpty()) throw new IllegalStateException("没有可用节点");
+        List<JSONObject> proxies = new ArrayList<>();
+        Set<String> cgTags = new HashSet<>();
+        for (Node n : nodes) {
+            proxies.add(n.outbound);
+            if (n.cg) cgTags.add(n.tag);
         }
-        routing.put("rules", rules);
-        cfg.put("routing", routing);
-        return cfg.toString();
+        return NodeConfigCodec.fullConfig(proxies, cgTags, selected);
     }
-
-    private static JSONObject rule() {
-        return new JSONObject();
-    }
-
-    /** 2026-11-11 privacy: 敏感域名单（与 PC 端 pacroute.SENSITIVE 保持一致）。 */
-    private static final String[] SENSITIVE_DOMAINS = {
-            "icbc.com.cn", "ccb.com", "abchina.com", "boc.cn", "bankofchina.com",
-            "cmbchina.com", "bocom.cn", "psbc.com", "cmbc.com.cn", "spdb.com.cn",
-            "ecitic.com", "cib.com.cn", "hxb.com.cn", "cgbchina.com.cn", "cebbank.com",
-            "unionpay.com", "95516.com", "paypal.com", "alipay.com", "tenpay.com",
-            "gov.cn", "chinatax.gov.cn", "12333.gov.cn", "12366.gov.cn", "pbc.gov.cn",
-            "csrc.gov.cn", "nfra.gov.cn", "edu.cn", "si.12333.gov.cn",
-    };
 
     // ---------------------------------------------------------- 分享链接解析
 
     /** 把一条分享链接解析成 Xray 出站（tag 未设置）。不支持/非法返回 null。 */
     public static JSONObject parseUri(String uri) {
-        try {
-            uri = uri == null ? "" : uri.trim();
-            String lower = uri.toLowerCase();
-            if (lower.startsWith("vless://")) return parseVless(uri.substring(8));
-            if (lower.startsWith("vmess://")) return parseVmess(uri.substring(8));
-            if (lower.startsWith("trojan://")) return parseTrojan(uri.substring(9));
-            if (lower.startsWith("ss://")) return parseSs(uri.substring(5));
-            if (lower.startsWith("socks://")) return parseSocksHttp(uri.substring(8), "socks");
-            if (lower.startsWith("socks5://")) return parseSocksHttp(uri.substring(9), "socks");
-            if (lower.startsWith("http://")) return parseSocksHttp(uri.substring(7), "http");
-            // https:// share links mean "TLS to the proxy itself". Xray's HTTP
-            // outbound has no client-side TLS, so treating it as plain http
-            // would put the proxy credentials on the wire in clear (review C4).
-            // Reject it and let the import log say "unsupported".
-            if (lower.startsWith("https://")) return null;
-        } catch (Throwable ignored) {}
-        return null;
+        return NodeConfigCodec.parseUri(uri);
     }
 
-    private static JSONObject parseVless(String body) throws Exception {
-        body = stripFragment(body);
-        String query = null;
-        int qi = body.indexOf('?');
-        if (qi >= 0) {
-            query = body.substring(qi + 1);
-            body = body.substring(0, qi);
-        }
-        int at = body.lastIndexOf('@');
-        if (at <= 0) return null;
-        String uuid = URLDecoder.decode(body.substring(0, at).trim(), "UTF-8");
-        if (uuid.isEmpty()) return null;
-        String[] hp = splitHostPort(body.substring(at + 1));
-        if (hp == null) return null;
-        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
-        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
-        if (!isAllowedNodeHost(hp[0])) return null;
-        Map<String, String> q = parseQuery(query);
-
-        JSONObject user = new JSONObject().put("id", uuid)
-                .put("encryption", q.containsKey("encryption") ? q.get("encryption") : "none");
-        if (q.containsKey("flow") && !q.get("flow").isEmpty()) user.put("flow", q.get("flow"));
-        JSONObject vnext = new JSONObject()
-                .put("address", hp[0]).put("port", Integer.parseInt(hp[1]))
-                .put("users", new JSONArray().put(user));
-        // Xray 26 的 REALITY 只支持 RAW / XHTTP / gRPC，且 xtls-rprx-vision 只能跑
-        // 在 RAW 上。分享链接里 reality+ws 很常见，留着会让整份配置解析失败
-        // （报错："REALITY only supports RAW, XHTTP and gRPC for now"），
-        // 一条就把整个隧道拖得起不来，所以这里直接判为不支持。
-        String net = q.containsKey("type") && !q.get("type").isEmpty() ? q.get("type") : "tcp";
-        String sec = q.containsKey("security") ? q.get("security") : "none";
-        boolean rawLike = "raw".equals(net) || "tcp".equals(net);
-        if ("reality".equals(sec)) {
-            if (!(rawLike || "xhttp".equals(net) || "grpc".equals(net))) return null;
-            if ("tcp".equals(net)) { q.put("type", "raw"); net = "raw"; rawLike = true; }
-        }
-        if (user.has("flow") && !rawLike) return null;
-        JSONObject ob = new JSONObject()
-                .put("protocol", "vless")
-                .put("settings", new JSONObject().put("vnext", new JSONArray().put(vnext)));
-        ob.put("streamSettings", streamSettings(q));
-        return ob;
+    /** 整段 base64 的订阅/剪贴板内容先解码。 */
+    static String tryB64(String s) {
+        return NodeConfigCodec.tryB64(s);
     }
 
-    private static JSONObject parseVmess(String body) throws Exception {
-        body = stripFragment(body);
-        String json = tryB64(body);
-        if (json == null) return null;
-        JSONObject v = new JSONObject(json);
-        String host = v.getString("add").trim();
-        int port = v.getInt("port");
-        String id = v.getString("id").trim();
-        if (host.isEmpty() || id.isEmpty()) return null;
-        JSONObject user = new JSONObject()
-                .put("id", id)
-                .put("alterId", v.optInt("aid", 0))
-                .put("security", v.optString("scy", "auto"));
-        JSONObject vnext = new JSONObject()
-                .put("address", host).put("port", port)
-                .put("users", new JSONArray().put(user));
-        JSONObject ob = new JSONObject()
-                .put("protocol", "vmess")
-                .put("settings", new JSONObject().put("vnext", new JSONArray().put(vnext)));
-
-        Map<String, String> q = new HashMap<>();
-        String net = v.optString("net", "tcp");
-        q.put("type", net);
-        q.put("headerType", v.optString("type", "none"));
-        q.put("host", v.optString("host", ""));
-        q.put("path", v.optString("path", "/"));
-        q.put("sni", v.optString("sni", ""));
-        q.put("fp", v.optString("fp", "chrome"));
-        q.put("alpn", v.optString("alpn", ""));
-        boolean tls = "tls".equals(v.optString("tls", ""));
-        q.put("security", tls ? "tls" : "none");
-        if (tls && q.get("sni").isEmpty()) q.put("sni", q.get("host"));
-        if ("grpc".equals(net)) q.put("serviceName", v.optString("path", ""));
-        ob.put("streamSettings", streamSettings(q));
-        return ob;
+    private static String displayName(JSONObject ob) {
+        return NodeConfigCodec.describe(ob);
     }
 
-    private static JSONObject parseTrojan(String body) throws Exception {
-        body = stripFragment(body);
-        String query = null;
-        int qi = body.indexOf('?');
-        if (qi >= 0) {
-            query = body.substring(qi + 1);
-            body = body.substring(0, qi);
-        }
-        int at = body.lastIndexOf('@');
-        if (at <= 0) return null;
-        String password = URLDecoder.decode(body.substring(0, at).trim(), "UTF-8");
-        String[] hp = splitHostPort(body.substring(at + 1));
-        if (hp == null || password.isEmpty()) return null;
-        Map<String, String> q = parseQuery(query);
-        if (!q.containsKey("security") || q.get("security").isEmpty()) q.put("security", "tls");
-        JSONObject server = new JSONObject()
-                .put("address", hp[0]).put("port", Integer.parseInt(hp[1]))
-                .put("password", password);
-        JSONObject ob = new JSONObject()
-                .put("protocol", "trojan")
-                .put("settings", new JSONObject().put("servers", new JSONArray().put(server)));
-        ob.put("streamSettings", streamSettings(q));
-        return ob;
-    }
-
-    private static JSONObject parseSs(String body) throws Exception {
-        body = stripFragment(body);
-        // 带插件的一律不支持（Xray 无 plugins）
-        if (body.contains("plugin=")) return null;
-        String method, password;
-        String hostPort;
-        int at = body.lastIndexOf('@');
-        if (at > 0) {
-            String userinfo = body.substring(0, at);
-            hostPort = body.substring(at + 1);
-            String decoded = tryB64(userinfo);
-            if (decoded == null || !decoded.contains(":")) {
-                decoded = URLDecoder.decode(userinfo, "UTF-8");
-            }
-            int c = decoded.indexOf(':');
-            if (c <= 0) return null;
-            method = decoded.substring(0, c).trim();
-            password = decoded.substring(c + 1);
-        } else {
-            String decoded = tryB64(body);
-            if (decoded == null) return null;
-            int c = decoded.indexOf(':');
-            int a = decoded.lastIndexOf('@');
-            if (c <= 0 || a <= c) return null;
-            method = decoded.substring(0, c).trim();
-            password = decoded.substring(c + 1, a);
-            hostPort = decoded.substring(a + 1);
-        }
-        if (!SS_CIPHERS.contains(method)) return null;
-        // shadowsocks-2022 的 PSK 是定长 base64（aes-128 要 16 字节，aes-256/chacha 要 32）。
-        // 公开源里这类链接经常被截断或带空格，Xray 会直接在 core init 阶段报
-        // "shadowsocks_2022: invalid key / bad key" 并拒绝整份配置 —— 一条坏节点
-        // 就让整个 App 起不来（2026-11-23 实机）。这里先验，不合格的直接跳过。
-        if (method.startsWith("2022-")) {
-            int want = method.contains("aes-128") ? 16 : 32;
-            if (!validSs2022Key(password, want)) return null;
-        }
-        String[] hp = splitHostPort(hostPort);
-        if (hp == null) return null;
-        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
-        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
-        if (!isAllowedNodeHost(hp[0])) return null;
-        JSONObject server = new JSONObject()
-                .put("address", hp[0]).put("port", Integer.parseInt(hp[1]))
-                .put("method", method).put("password", password);
-        return new JSONObject()
-                .put("protocol", "shadowsocks")
-                .put("settings", new JSONObject().put("servers", new JSONArray().put(server)));
-    }
-
-    /**
-     * SS2022 的 password 可以是多个 key 用 {@code :} 连接（多用户），每个都必须是
-     * 解码后 {@code want} 字节的 base64。任何一段不合法，Xray 都会拒绝整份配置。
-     */
-    private static boolean validSs2022Key(String password, int want) {
-        if (password == null || password.isEmpty()) return false;
-        for (String part : password.split(":", -1)) {
-            String key = part.trim();
-            if (key.isEmpty()) return false;
-            try {
-                byte[] raw = android.util.Base64.decode(key, android.util.Base64.DEFAULT);
-                if (raw == null || raw.length != want) return false;
-            } catch (Throwable t) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** 把 TLS 设置里的 allowInsecure 强制改为 false（导入节点专用）。 */
+    /** 导入节点的 TLS/REALITY 一律关掉 allowInsecure（解析器已置 false，这里兜底）。 */
     private static void stripAllowInsecure(JSONObject ob) throws Exception {
         JSONObject stream = ob.optJSONObject("streamSettings");
         if (stream == null) return;
@@ -822,234 +662,5 @@ public final class ConfigBuilder {
         if (tls != null) tls.put("allowInsecure", false);
         JSONObject reality = stream.optJSONObject("realitySettings");
         if (reality != null) reality.put("allowInsecure", false);
-    }
-
-    /** 只拒字面量私网/回环地址；域名不在这里解析（成本高，交给实际连接）。 */
-    private static boolean isAllowedNodeHost(String host) {
-        String h = host == null ? "" : host.trim();
-        if (h.isEmpty()) return false;
-        try {
-            SubscriptionGuard.checkHost(h);
-            return true;
-        } catch (SubscriptionGuard.Rejected rejected) {
-            return false;
-        } catch (Throwable ignored) {
-            return true;
-        }
-    }
-
-    private static JSONObject parseSocksHttp(String body, String proto) throws Exception {
-        body = stripFragment(body);
-        int qi = body.indexOf('?');   // 分享链接带的 ?tls=true 等装饰参数，Xray http/socks 出站不认
-        if (qi >= 0) body = body.substring(0, qi);
-        int slash = body.indexOf('/'); // http://host:port/ 这种尾路径
-        if (slash >= 0) body = body.substring(0, slash);
-        String user = "", pass = "";
-        int at = body.lastIndexOf('@');
-        if (at >= 0) {
-            String ui = URLDecoder.decode(body.substring(0, at), "UTF-8");
-            body = body.substring(at + 1);
-            int c = ui.indexOf(':');
-            if (c >= 0) {
-                user = ui.substring(0, c);
-                pass = ui.substring(c + 1);
-            } else {
-                user = ui;
-            }
-        }
-        String[] hp = splitHostPort(body);
-        if (hp == null) return null;
-        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
-        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
-        if (!isAllowedNodeHost(hp[0])) return null;
-        JSONObject server = new JSONObject()
-                .put("address", hp[0]).put("port", Integer.parseInt(hp[1]));
-        if (!user.isEmpty()) {
-            server.put("users", new JSONArray().put(
-                    new JSONObject().put("user", user).put("pass", pass)));
-        }
-        return new JSONObject()
-                .put("protocol", proto)
-                .put("settings", new JSONObject().put("servers", new JSONArray().put(server)));
-    }
-
-    private static final LinkedHashSet<String> SS_CIPHERS = new LinkedHashSet<>();
-
-    static {
-        String[] c = {
-                "aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
-                "chacha20-ietf-poly1305", "chacha20-poly1305", "xchacha20-poly1305",
-                "xchacha20-ietf-poly1305", "chacha20", "chacha20-ietf",
-                "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
-                "2022-blake3-chacha20-poly1305",
-                "none", "plain", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr",
-                "aes-128-cfb", "aes-192-cfb", "aes-256-cfb",
-        };
-        for (String s : c) SS_CIPHERS.add(s);
-    }
-
-    /**
-     * Xray 26 移除了 {@code http} / {@code h2} 传输：报错原文是
-     * "The feature HTTP transport (without header padding, etc.) has been removed
-     * and migrated to XHTTP stream-one H2 & H3"。
-     * 公开源里这类分享链接不少，而 Xray 只要遇到一条不认识的传输就整份配置解析
-     * 失败 —— 表现是"启动失败"，一条坏节点把 120 条全部拖死（2026-11-22 实机）。
-     * 所以在解析阶段就拒掉，让导入/构建时自然跳过。
-     */
-    private static final java.util.Set<String> SUPPORTED_NET =
-            new java.util.HashSet<>(java.util.Arrays.asList(
-                    "tcp", "raw", "ws", "grpc", "xhttp", "mkcp", "kcp", "quic", "httpupgrade"));
-
-    private static JSONObject streamSettings(Map<String, String> q) throws Exception {
-        String net = q.containsKey("type") && !q.get("type").isEmpty() ? q.get("type") : "tcp";
-        String sec = q.containsKey("security") && !q.get("security").isEmpty()
-                ? q.get("security") : "none";
-        if (!SUPPORTED_NET.contains(net.toLowerCase(java.util.Locale.ROOT))) {
-            throw new IllegalArgumentException("unsupported transport: " + net);
-        }
-        JSONObject ss = new JSONObject();
-        ss.put("network", net);
-
-        if ("reality".equals(sec)) {
-            ss.put("security", "reality");
-            JSONObject r = new JSONObject();
-            r.put("serverName", q.containsKey("sni") ? q.get("sni") : "");
-            r.put("fingerprint", q.containsKey("fp") && !q.get("fp").isEmpty()
-                    ? q.get("fp") : "chrome");
-            r.put("publicKey", q.containsKey("pbk") ? q.get("pbk") : "");
-            r.put("shortId", q.containsKey("sid") ? q.get("sid") : "");
-            r.put("spiderX", q.containsKey("spx") && !q.get("spx").isEmpty()
-                    ? q.get("spx") : "/");
-            ss.put("realitySettings", r);
-        } else if ("tls".equals(sec)) {
-            ss.put("security", "tls");
-            JSONObject t = new JSONObject();
-            String sni = q.containsKey("sni") ? q.get("sni") : "";
-            if (sni.isEmpty() && q.containsKey("host")) sni = q.get("host");
-            if (!sni.isEmpty()) t.put("serverName", sni);
-            t.put("fingerprint", q.containsKey("fp") && !q.get("fp").isEmpty()
-                    ? q.get("fp") : "chrome");
-            String alpn = q.containsKey("alpn") ? q.get("alpn") : "";
-            if (!alpn.isEmpty()) {
-                JSONArray a = new JSONArray();
-                for (String x : alpn.split(",")) {
-                    x = x.trim();
-                    if (!x.isEmpty()) a.put(x);
-                }
-                t.put("alpn", a);
-            }
-            String insecure = q.containsKey("allowInsecure") ? q.get("allowInsecure") : "0";
-            t.put("allowInsecure", "1".equals(insecure) || "true".equals(insecure));
-            ss.put("tlsSettings", t);
-        } else {
-            ss.put("security", "none");
-        }
-
-        if ("ws".equals(net)) {
-            JSONObject w = new JSONObject().put("path",
-                    q.containsKey("path") && !q.get("path").isEmpty() ? q.get("path") : "/");
-            String host = q.containsKey("host") ? q.get("host") : "";
-            if (!host.isEmpty()) w.put("headers", new JSONObject().put("Host", host));
-            ss.put("wsSettings", w);
-        } else if ("grpc".equals(net)) {
-            ss.put("grpcSettings", new JSONObject()
-                    .put("serviceName", q.containsKey("serviceName") ? q.get("serviceName") : "")
-                    .put("multiMode", "multi".equals(q.containsKey("mode") ? q.get("mode") : "gun")));
-        } else if ("httpupgrade".equals(net)) {
-            JSONObject h = new JSONObject().put("path",
-                    q.containsKey("path") && !q.get("path").isEmpty() ? q.get("path") : "/");
-            String host = q.containsKey("host") ? q.get("host") : "";
-            if (!host.isEmpty()) h.put("host", host);
-            ss.put("httpupgradeSettings", h);
-        } else if ("h2".equals(net)) {
-            JSONObject h = new JSONObject().put("path",
-                    q.containsKey("path") && !q.get("path").isEmpty() ? q.get("path") : "/");
-            String host = q.containsKey("host") ? q.get("host") : "";
-            if (!host.isEmpty()) h.put("host", new JSONArray().put(host));
-            ss.put("httpSettings", h);
-        } else if ("tcp".equals(net)
-                && "http".equals(q.containsKey("headerType") ? q.get("headerType") : "none")) {
-            ss.put("tcpSettings", new JSONObject().put("header",
-                    new JSONObject().put("type", "http")));
-        }
-        return ss;
-    }
-
-    // ------------------------------------------------------------- 小工具
-
-    private static String stripFragment(String s) {
-        int h = s.indexOf('#');
-        return h >= 0 ? s.substring(0, h) : s;
-    }
-
-    private static String[] splitHostPort(String hp) {
-        hp = hp.trim();
-        if (hp.isEmpty()) return null;
-        try {
-            if (hp.startsWith("[")) {
-                int e = hp.indexOf(']');
-                if (e < 0) return null;
-                String host = hp.substring(1, e);
-                int c = hp.indexOf(':', e);
-                int port = c < 0 ? 443 : Integer.parseInt(hp.substring(c + 1));
-                return new String[]{host, String.valueOf(port)};
-            }
-            int c = hp.lastIndexOf(':');
-            if (c <= 0) return new String[]{hp, "443"};
-            String host = hp.substring(0, c);
-            int port = Integer.parseInt(hp.substring(c + 1));
-            if (port <= 0 || port > 65535) return null;
-            return new String[]{host, String.valueOf(port)};
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static Map<String, String> parseQuery(String q) throws Exception {
-        Map<String, String> m = new HashMap<>();
-        if (q == null || q.isEmpty()) return m;
-        for (String kv : q.split("&")) {
-            if (kv.isEmpty()) continue;
-            int i = kv.indexOf('=');
-            String k = i < 0 ? kv : kv.substring(0, i);
-            String v = i < 0 ? "" : kv.substring(i + 1);
-            m.put(URLDecoder.decode(k, "UTF-8"), URLDecoder.decode(v, "UTF-8"));
-        }
-        return m;
-    }
-
-    /** 宽松 base64 解码（URL-safe / 缺 padding / 带换行都认）。失败返回 null。 */
-    static String tryB64(String s) {
-        if (s == null) return null;
-        s = s.trim().replace("\r", "").replace("\n", "").replace(" ", "");
-        if (s.isEmpty()) return null;
-        s = s.replace('-', '+').replace('_', '/');
-        int pad = (4 - s.length() % 4) % 4;
-        for (int i = 0; i < pad; i++) s += "=";
-        try {
-            byte[] b = android.util.Base64.decode(s, android.util.Base64.DEFAULT);
-            String out = new String(b, "UTF-8");
-            return out.isEmpty() ? null : out;
-        } catch (Throwable e) {
-            return null;
-        }
-    }
-
-    private static String displayName(JSONObject ob) {
-        try {
-            String proto = ob.optString("protocol", "?");
-            JSONObject st = ob.optJSONObject("settings");
-            String host = "?";
-            if (st != null) {
-                JSONArray arr = st.optJSONArray("vnext");
-                if (arr == null) arr = st.optJSONArray("servers");
-                if (arr != null && arr.length() > 0) {
-                    host = arr.getJSONObject(0).optString("address", "?");
-                }
-            }
-            return proto + " " + host;
-        } catch (Exception e) {
-            return "?";
-        }
     }
 }

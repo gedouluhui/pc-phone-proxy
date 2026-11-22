@@ -1,6 +1,7 @@
 # 审查意见处理记录（2026-11-23）
 
 对照 `REVIEW_REPORT.md`（两位审查者）逐条落地情况。**只做已改动的**，未动的写明原因。
+「未处理」表是**第一轮当时**的状态，其中大部分已在第二轮 / 第三轮补掉，见文末。
 
 ## 已修复
 
@@ -50,4 +51,21 @@
 | 17 | 用真内核校验配置 | 新增 `phone/tools/check_nodes.py`：把 `nodes.json` 每条 outbound 拼成最小配置跑 `xray run -test -c`；已接进 `build_apk.py` 作为打包前预检（无二进制自动跳过），CI 可设 `XRAY_BIN` 强制执行 |
 | 18 | Java 侧零自动化 | CI 新增 `android` job：JDK 17 + Android SDK，取上游 `libv2ray.aar` 的 classes.jar 后 `javac` 全量编译 |
 
-仍未做：`TestXray`/AAR 导出（要改 Go）、投毒语料 + 真内核闭环（需要把 `parseUri` 抽成纯 JVM 模块）、`2098` 合并进主实例、PC 端"低速假死流"放行。
+以上遗留四项已在第三轮全部完成，见下节。
+
+## 第三轮（2026-11-23）：剩余四项收口
+
+| # | 意见 | 处理 |
+|---|---|---|
+| 19 | 真内核校验（TestXray/AAR 导出） | 不导出 AAR：复用 AAR 已暴露的 `Libv2ray.measureOutboundDelay`，把探测 URL 设为故意非法的 `http://[::1`。调用在 `http.NewRequest` 阶段就返回，**不发起任何网络请求**；只把 `config load error` / `instance creation failed` / `startup failed` 判为配置无效。导入订阅时逐条预检（`screenImports`），启动被内核拒绝时后台用 `quarantineInvalidImports` 标记，下次启动跳过；缓存以去除 tag 的 outbound JSON 的 SHA-1 为键，解析规则变化会自动失效 |
+| 20 | 投毒语料 + 纯 JVM `parseUri` + CI 闭环 | 新增纯 Java `NodeConfigCodec`（不依赖 Android Framework；自带 Base64/百分号解码器），`ConfigBuilder` 只保留 Context/网络/AAR 胶水。`phone/tests/PoisonHarness.java` 生成 333 条样本（145 接受 / 188 拒绝 / 0 崩溃），`phone/tools/check_poison.py` 编译后把每条被接受的 outbound 和 auto/manual 完整配置交给真 `xray run -test`，并与 `full_config.golden.json` 比对；CI `android` job 固定版本下载 + 缓存后运行。闭环过程中真实修掉 3 条解析规则与内核的漂移（trojan 明文、UUID 长度/格式、`:443` 空主机） |
+| 21 | PC `2098` 合并进 TUN 主实例 | `tun_mode.py` 删除 `gai` HTTP outbound / `gai_tag` / 启动前的 `ensure_gai()`；`grp-google`、`grp-amazon`、`grp-dns` 全部由主配置内的 pinned 节点组成，DoH detour 指向 `grp-dns`（IP 字面量探针）。`2098/2099` 保留给分流模式，TUN 停止流程仍会清理残留的 2098 |
+| 22 | PC 端「低速假死流」放行 | `watchdog.py` 取两次 Clash API 快照（间隔 4 秒）算实时速率；仅当所有 >20MB 代理流都 ≥60 秒且 <30KB/s，且深测池存在 ≥3 倍速度的备选时放行重建，日志记录「低速假死流放行」；`classify_bulk` / `better_candidate` 有 8 个回归测试 |
+| 23 | PC 解析器投毒 + 可移植性 | `nodes.py` 拒绝空主机/空端口/越界端口/空 UUID/空 SS 加密方式；新增 `tests_ci/test_poison_parse.py`（240+ 变异链接，不抛异常、结构可信、危险主机可识别）；`pacroute.py` 的 `winreg` 改为条件导入，非 Windows 可 import |
+
+## 最终验证（2026-11-23）
+
+- `python -m unittest discover -s tests_ci`：**90 tests OK**
+- `python phone/tools/check_poison.py`：333 cases / 145 accepted 全部过 `xray run -test`，golden 一致
+- `javac -source 8 -target 8`（android.jar + AAR classes.jar）通过
+- TUN 配置离线烟雾测试：无 `gai` outbound，DNS 两个 DoH 均 detour `grp-dns`，AI/Amazon 规则指向内建组

@@ -44,6 +44,8 @@ phone/aligned.apk
 phone/res.zip
 phone/libs/xray/
 phone/libs/libv2ray.aar
+phone/tools/.cache/
+phone/tools/xray/
 pc/_proxy/bin/
 pc/_proxy/singbox*.json
 pc/_proxy/__pycache__/

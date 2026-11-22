@@ -25,11 +25,26 @@
 
 - **直连优先**：内置 `rulesets/geoip-cn.srs`，目标 IP 在中国境内一律直连。
   域名列表只负责需要提前分流的站点。Steam / 壁纸引擎在直连判定之前显式走代理。
-- **Google AI 专用出口 2098**：Google 按出口 IP 判定地区，同一批节点里有的被
-  拒（notebooklm 返回 `location=unsupported`）。2098 用 `pinned.json` 里除
-  `google_bad.json` 之外的节点组成 urltest 组，AI 域名优先走它。
+- **Google AI 专用出口**：Google 按出口 IP 判定地区，同一批节点里有的被
+  拒（notebooklm 返回 `location=unsupported`）。分流模式仍由 `start_proxy.py`
+  在 `2098` 上用 `pinned.json` 里除 `google_bad.json` 之外的节点组成 urltest 组；
+  **TUN 已不再依赖它**：`tun_mode.build_config()` 在主实例里直接建 `grp-google`
+  （同样的过滤 + Gemini 探针）、`grp-amazon`（AWS 探针）和 `grp-dns`
+  （`1.1.1.1` IP 字面量探针），DoH 的 detour 指向 `grp-dns`。
 
 提交：`0035ed5` → `48e0bc3` → `7b9161c` → `fc43f9c` → `954272c`。
+
+### 2026-11-23 这一轮
+
+- `tun_mode.py` 删除了 `gai` HTTP outbound、`gai_tag` 和启动前的 `ensure_gai()`；
+  AI/Amazon 组直接使用主实例内的 pinned 节点。`tun_mode.py gai` 子命令一并删除，
+  `修复AI出口.bat` 只对分流模式有意义。
+- `watchdog.bulk_active()` 改为两次快照（间隔 4 秒）算实时速率；低速僵尸流
+  在存在 3 倍以上深测备选时放行重建；`classify_bulk()` / `better_candidate()`
+  有 `tests_ci/test_zombie_release.py` 覆盖。
+- `nodes.py` 拒绝空主机/空端口/越界端口/空 UUID/空 SS 加密方式；
+  `tests_ci/test_poison_parse.py` 覆盖 240+ 变异链接。
+- `pacroute.py` 的 `winreg` 改条件导入，非 Windows 可 import。
 
 ---
 
@@ -40,7 +55,7 @@
   启动代理.bat      选择模式并启动（1 分流 / 2 TUN）
   关闭代理.bat      完整关闭：进程、PAC、静态代理、环境变量、直连实测
   体检.bat          六层体检，第一个 FAIL 就是根因
-  修复AI出口.bat    只重建 2098，不动隧道（AI 站点打不开先点它）
+  修复AI出口.bat    只重建分流模式的 2098，不动隧道（TUN 模式不需要）
   重新扫描节点.bat  重抓公开源 + 深测（10-40 分钟）
   命令行代理.bat    给 Codex/git/pip 用的终端（2090）
   查看代理报告.bat  打开 report.html
@@ -64,7 +79,7 @@
 | 2090 | 命令行混合入口（静态兜底，按域名分流） |
 | 2086 | 香港单节点（Reddit；深测池无 HK 时不存在） |
 | 2096 | Steam 美国单节点 |
-| 2098 | Google AI 专用出口（urltest，多节点自动切换） |
+| 2098 / 2099 | Google AI 专用出口（**仅分流模式**；TUN 已内建同一组，不启动它） |
 | 19090 / 19091 | 分流 / TUN 的 clash 控制端口（只绑 127.0.0.1） |
 | 8891 | PAC 服务（`/proxy.pac?v=<hash>`） |
 
@@ -87,7 +102,8 @@
 1. 双击 `体检.bat`，按行序看第一个 FAIL。
 2. 出口端口红 → 重跑 `启动代理.bat`（会重建出口组）。
 3. PAC 红 → 重跑 `启动代理.bat`；浏览器要**完全退出**才会重读 PAC。
-4. AI 站点打不开 → 先点 `修复AI出口.bat`（只换 2098，不断网）。
+4. AI 站点打不开 → 分流模式点 `修复AI出口.bat`（只换 2098，不断网）；
+   TUN 模式在 `tun-mode.bat` 里重建隧道即可，AI 组会随主配置一起换节点。
 5. 节点普遍不行 → `重新扫描节点.bat`；看门狗平时每 12 小时自动做一次。
 6. TUN 启动报「UAC 未确认」→ 看任务栏盾牌图标；报「已在运行」会自动重建。
 

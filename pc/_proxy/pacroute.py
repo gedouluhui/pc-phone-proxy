@@ -30,7 +30,11 @@ import socket
 import subprocess
 import sys
 import time
-import winreg
+
+try:                                  # Windows-only; tests import this module elsewhere
+    import winreg
+except ImportError:                   # pragma: no cover - non-Windows import path
+    winreg = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAC_PATH = os.path.join(HERE, "proxy.pac")
@@ -38,7 +42,7 @@ PAC_URL_PATH = os.path.join(HERE, "pac_url.txt")
 PID_PATH = os.path.join(HERE, "pac_server.pid")
 LOG_DIR = os.path.join(HERE, "logs")
 PORT = 8891
-K = winreg.HKEY_CURRENT_USER
+K = winreg.HKEY_CURRENT_USER if winreg else 0
 IS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 
 DEFAULT_GENERAL = "127.0.0.1:9910"   # Geph HTTP
@@ -667,7 +671,11 @@ def notify():
         pass
 
 
-def _wset(name, value, kind=winreg.REG_SZ):
+def _wset(name, value, kind=None):
+    if winreg is None:
+        raise OSError("WinINET 代理设置仅支持 Windows")
+    if kind is None:
+        kind = winreg.REG_SZ
     k = winreg.CreateKeyEx(K, IS, 0, winreg.KEY_ALL_ACCESS)
     try:
         winreg.SetValueEx(k, name, 0, kind, value)
@@ -676,6 +684,8 @@ def _wset(name, value, kind=winreg.REG_SZ):
 
 
 def _wget(name):
+    if winreg is None:
+        return None
     try:
         k = winreg.OpenKey(K, IS)
         try:
@@ -741,14 +751,16 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
     # 这里若强制 ProxyEnable=0，看门狗每 10 分钟就把它写回来（日志里的
     # "static proxy entry missing/drifted -> re-apply"），两边拉锯。
     # PAC 存在时 WinINET 本来就优先用 PAC，静态值只是兜底，所以保留它。
-    try:
-        _k = winreg.OpenKey(K, IS, 0, winreg.KEY_READ)
+    _srv = ""
+    if winreg is not None:
         try:
-            _srv = winreg.QueryValueEx(_k, "ProxyServer")[0]
-        finally:
-            _k.Close()
-    except OSError:
-        _srv = ""
+            _k = winreg.OpenKey(K, IS, 0, winreg.KEY_READ)
+            try:
+                _srv = winreg.QueryValueEx(_k, "ProxyServer")[0]
+            finally:
+                _k.Close()
+        except OSError:
+            pass
     if not _srv:
         _wset("ProxyEnable", 0, winreg.REG_DWORD)
     notify()
@@ -758,14 +770,15 @@ def apply_pac(general=DEFAULT_GENERAL, fast=DEFAULT_FAST, port=PORT, hk="auto", 
 
 
 def clear_pac():
-    try:
-        k = winreg.OpenKey(K, IS, 0, winreg.KEY_ALL_ACCESS)
+    if winreg is not None:
         try:
-            winreg.DeleteValue(k, "AutoConfigURL")
-        finally:
-            k.Close()
-    except FileNotFoundError:
-        pass
+            k = winreg.OpenKey(K, IS, 0, winreg.KEY_ALL_ACCESS)
+            try:
+                winreg.DeleteValue(k, "AutoConfigURL")
+            finally:
+                k.Close()
+        except FileNotFoundError:
+            pass
     notify()
     stop_server()
     return True

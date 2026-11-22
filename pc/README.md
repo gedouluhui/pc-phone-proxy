@@ -81,6 +81,11 @@ TUN 全局模式（可选，需管理员）：
 tun-mode.bat
 ```
 
+TUN 只启动一个 sing-box 实例：`grp-google`（Gemini 探针）、`grp-amazon`
+（AWS 探针）和 `grp-dns`（IP 字面量探针）都由主配置内的节点组成，DoH 的
+detour 指向 `grp-dns`。它不会再拉起分流模式的 `2098`；启动 TUN 时那个端口
+会被一并收掉，停止 TUN 后由下次分流启动重新创建。
+
 关闭：
 
 ```bat
@@ -96,9 +101,9 @@ stop-proxy.bat
 | 2101 http / 2100 socks | `general`：ChatGPT / Claude / OpenAI，只放能过地区闸门的节点 |
 | 2103 http / 2102 socks | `fast`：Google / GitHub / HuggingFace / 普通网页 |
 | 2090 mixed | 命令行（git/pip/curl/npm）与静态代理兜底：按域名再分流到上面两组 |
-| 2086 | 香港单节点（Reddit；深测池没有 HK 时不存在） |
-| 2096 | Steam 专用（可选；拿不到可用美国出口时回落到 2103） |
-| 2098 | Google AI 专用出口：只放 Google 不拒的节点，urltest 自动切换 |
+| 2086 http / 2085 socks | 香港单节点（Reddit；深测池没有 HK 时不存在） |
+| 2096 http / 2097 socks | Steam 专用（可选；拿不到可用美国出口时回落到 2103） |
+| 2098 http / 2099 socks | Google AI 专用出口：**仅分流模式**。TUN 已把 AI 组内建进主实例，不再启动这两个端口 |
 | 8891（或 8892-8900） | 本地 PAC 服务，地址带内容哈希 `?v=<sha1前8位>` |
 | 19090 / 19091 | sing-box Clash API（分流 / TUN，仅本机，供看门狗切换/观测） |
 
@@ -116,6 +121,7 @@ IP 分配 CDN，走节点会拿到境外源，大文件必断。Steam 商店与�
 - **单实例**：启动时读 `watchdog.pid`，若同 PID 文件指向另一个存活的 Python 进程，直接退出，避免双看门狗互相覆盖。
 - **端口检查**：60 秒一次；连续失败才触发重建（有 900 秒冷却）。
 - **站点闸门**：300 秒一次 ChatGPT / gstatic；连续 3 次失败才重建；检测到 Clash API 上有 >20 MB 活动下载时延后 10 分钟，不打断驱动安装包。
+- **假死流放行**：延后前会取两次 Clash API 快照（间隔 4 秒）算实时速率。只有全部大流量都持续 ≥60 秒且低于 30 KB/s，并且 `node_deep.json` 里存在 3 倍以上速度的备选节点时，才放行重建，日志写「低速假死流放行」；正常下载仍然受保护。
 - **PAC 检查**：120 秒一次，对比 `pac_url.txt` 里记录的实际地址，并确认本地 PAC 服务返回的内容与磁盘 `proxy.pac` **逐字节一致**；不一致会重装。静态代理被改掉也会写回。
 - **整池失效**：最多 12 小时重扫一次公开源（`harvest.py` + `deep_test.py`）。
 - **降级优先**：任何“检测失败就重建”的路径都不会先拆掉唯一存活的栈；`bestroute.py --apply` 在 fast 组检测不过时会把 fast 角色降级到 general 门，而不是拒绝应用导致全断。

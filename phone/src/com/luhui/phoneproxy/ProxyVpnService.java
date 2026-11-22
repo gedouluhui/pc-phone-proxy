@@ -169,6 +169,14 @@ public class ProxyVpnService extends VpnService {
                 // 但错误原文必须先落地，不能吞掉（之前重试成功就再也查不到根因了）。
                 Log.e(TAG, "core rejected config", startError);
                 log("内核拒绝了当前配置：" + startError.getMessage());
+                // 先保证能上网，再在后台把真正不合规的导入节点找出来拉黑，
+                // 下次启动就能带着其余正常节点一起用，而不是全部丢弃。
+                new Thread(() -> {
+                    int bad = ConfigBuilder.quarantineInvalidImports(getApplicationContext());
+                    if (bad > 0) {
+                        log("已标记 " + bad + " 个内核不兼容的导入节点，下次启动不再加载");
+                    }
+                }, "node-quarantine").start();
 
                 // 不能拿同一个 tunFd 重试：libv2ray 失败清理时可能已经 close 过这个 fd，
                 // 复用会拿到 EBADF 或者一个被复用的句柄。先停内核、关网卡、再重建。

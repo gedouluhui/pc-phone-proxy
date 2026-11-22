@@ -41,7 +41,7 @@ NODE_PREFER = ["172.233.129.65", "172.235.37.168", "172.233.129.172",
 
 # Amazon / AWS 的下载链路（Quick 安装包、S3、CloudFront）。2026-11-22 实测：
 # 同一条 aws.amazon.com 页面，grp-any 挑中的节点只有 10.8 KB/s（30s 还没下完），
-# 经 gai(2098) 是 99~129 KB/s。所以这块单独指到 gai。
+# 经专用出口组是 99~129 KB/s。所以这块单独指到 grp-amazon（AWS 同源探针）。
 AMAZON_DL = ["amazon.com", "amazonaws.com", "awsstatic.com", "awsstatic.net",
              "aws.dev", "a2z.com", "media-amazon.com", "ssl-images-amazon.com"]
 
@@ -187,18 +187,10 @@ def build_config():
         if need not in tags:
             raise SystemExit("singbox_pinned.json 缺少出口 %s，先跑一次启动代理" % need)
 
-    # Google AI 的地区闸门跟 IP 走：TUN 若只把 AI 域名丢进 grp-general，最快
-    # 那颗节点可能正是 Google 拒绝的。2098 是 启动代理 起的专用出口（已经过
-    # 地区判定），TUN 通过一个本地 http outbound 串上去，规则与分流模式一致。
-    gai_tag = None
-    try:
-        if P.listen_ok(2098):
-            outbounds = outbounds + [{"type": "http", "tag": "gai",
-                                      "server": "127.0.0.1", "server_port": 2098}]
-            gai_tag = "gai"
-    except Exception:
-        gai_tag = None
-
+    # Google AI 的地区闸门跟 IP 走。这里不再串分流模式的 2098 单进程：
+    # AI 组直接由 TUN 自己的 pinned 节点组成，urltest 负责探测和切换，
+    # 少一个进程、少一个端口，也不会因为 2098 没起来就把 AI 域名全丢给兜底组。
+    #
     # Never make the AI path a single outbound: a free node dies within minutes
     # and a direct rule would leave the browser spinning forever (no fallback
     # inside TUN, unlike the PAC chain).  urltest measures every member and
@@ -236,35 +228,34 @@ def build_config():
         except ValueError:
             return (2, 0, o.get("tag") or "")
 
-    # google_bad.json 是 2026-11-21 手写的“Gemini 拒绝”名单，早于深测数据，
-    # 里面那颗（94.183.164.176）现在是深测第一名且 chatgpt_ok。Google 组已经
-    # 用 gemini.google.com/robots.txt 做探针，运行时自己就会踢掉不合格的，
-    # 静态黑名单留着只会误杀，所以这里只用它兜底（没有深测数据时）。
+    # google_bad.json 只对 AI 组生效：它是“Gemini 拒绝”的历史名单，拿来
+    # 过滤通用组会误杀后来变快的节点。没有深测数据时，其他组以前也吃这份
+    # 名单，现在统一改为只影响 grp-google，行为由下面的探针兜底。
     candidates = [o for o in outbounds
                   if (o.get("tag") or "").startswith("g")
-                  and o.get("type") not in ("urltest", "direct")
-                  and (o.get("tag") or "") != gai_tag
-                  and (deep or (o.get("server") or "").lower() not in google_bad)]
+                  and o.get("type") not in ("urltest", "direct")]
     ranked = sorted(candidates, key=_rank)
+    google_ranked = [o for o in ranked
+                     if (o.get("server") or "").lower() not in google_bad]
+    if not google_ranked:
+        google_ranked = ranked
 
-    def _usable():
+    def _usable(pool):
         """深测吞吐前 4 颗，且不低于最快那颗的 1/4（低于这个没有实用价值）。"""
-        have = [o for o in ranked if _speed(o) > 0]
+        have = [o for o in pool if _speed(o) > 0]
         if not have:
-            return ranked[:4]
+            return pool[:4]
         best = _speed(have[0])
         keep = [o for o in have if _speed(o) >= best * 0.25][:4]
         return keep if len(keep) >= 2 else have[:2]
 
-    fast_all = _usable()
-    gmembers = [o.get("tag") for o in fast_all if o.get("tag")]
-    for o in ranked:
+    fast_all = _usable(ranked)
+    google_fast = _usable(google_ranked)
+    gmembers = [o.get("tag") for o in google_fast if o.get("tag")]
+    for o in google_ranked:
         tag = o.get("tag")
         if tag and tag not in gmembers:
             gmembers.append(tag)
-    if gai_tag:
-        # urltest 只吃前 10 个成员：先截断再追加，gai 才不会被挤掉
-        gmembers = gmembers[:9] + [gai_tag]
     if gmembers:
         # 探针必须用 Gemini 自己的地址：gstatic 谁都能过，但 Google 对
         # gemini.google.com 有独立的地区/IP 判定，用 gstatic 探出来的“最快”
@@ -278,8 +269,6 @@ def build_config():
     # “最快”节点对 AWS 可能只有 10~17 KB/s，而同一时刻另一颗有 118 KB/s
     # （2026-11-22 实测）—— 探针地址必须跟目标站同源，否则量的是两回事。
     amembers = [o.get("tag") for o in ranked if o.get("tag")]
-    if gai_tag:
-        amembers = amembers[:9] + [gai_tag]
     am_out = "grp-any"
     if amembers:
         outbounds = outbounds + [{"type": "urltest", "tag": "grp-amazon",
@@ -318,8 +307,8 @@ def build_config():
     log_deep = {t: round(_speed(by_tag.get(t) or {}), 0) for t in fast_tags}
     print("[rank] 深测样本 %d 条，入选 %s" % (len(deep), log_deep))
 
-    # DoH 的出口：优先能自动故障转移的 grp-dns；没有成员时才退回 gai。
-    DNS_DETOUR = "grp-dns" if dns_members else (gai_tag or "direct")
+    # DoH 的出口：优先能自动故障转移的 grp-dns；没有成员时才退回 direct。
+    DNS_DETOUR = "grp-dns" if dns_members else "direct"
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
@@ -400,7 +389,7 @@ def build_config():
                 # AI 站必须走合格出口；其余默认走合并组
                 {"domain_suffix": pacroute.GOOGLE_APP,
                  "outbound": "grp-google" if gmembers else "grp-general"},
-                # Amazon 系下载走 2098（gai）；没有 2098 时退回合并组。
+                # Amazon 系下载走同源探针的 Amazon 组；没有成员时退回合并组。
                 {"domain_suffix": AMAZON_DL, "outbound": am_out},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},
                 # 目标 IP 在中国境内 -> 直连。放在最后，前面显式规则优先。
@@ -517,8 +506,8 @@ def _singbox_procs():
 
 def stop_stack():
     pids = set(tun_pids()) | set(foreign_tun_pids())
-    # The Google-AI exit started for TUN is a plain sing-box on 2098; it has no
-    # TUN marker, so collect it by port or it outlives the tunnel.
+    # A split-mode Google-AI exit on 2098 has no TUN marker; collect it by port
+    # so it cannot outlive the tunnel when both modes were started in a row.
     try:
         for pid in P.port_pids(2098):
             if P.pid_image(pid).lower().startswith("sing-box"):
@@ -569,7 +558,7 @@ def start_admin():
     log("[1/6] wintun 驱动就绪，准备接管流量")
 
     # 分流模式的栈必须先让路：端口、PAC、静态代理都归零
-    log("[2/6] 停止分流模式的栈（端口 / PAC / 静态代理）…")
+    log("[2/5] 停止分流模式的栈（端口 / PAC / 静态代理）…")
     try:
         import stop_proxy
         stop_proxy.main()
@@ -578,16 +567,8 @@ def start_admin():
     except Exception as e:
         log("停止分流模式时出错（继续尝试 TUN）: %r" % (e,))
 
-    # 分流模式停止时会把 2098 一起收掉；TUN 需要它来承载 Google AI 域名。
-    log("[3/6] 挑选能过 Google 地区判定的节点（最多试 3 颗）…")
-    try:
-        import start_proxy as S
-        if S.ensure_gai():
-            log("Google AI 专用出口已就绪 (2098)，TUN 内 AI 域名走它")
-    except Exception as e:
-        log("Google AI 专用出口启动失败（AI 域名回退到节点组）: %r" % (e,))
-
-    log("[4/6] 生成 TUN 配置并做 sing-box check …")
+    # AI 出口现在直接内建在 TUN 配置里（pinned 节点 + urltest），不再启动 2098。
+    log("[3/5] 生成 TUN 配置并做 sing-box check …")
     cfg = build_config()
     with io.open(CFG, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=1)
@@ -595,7 +576,7 @@ def start_admin():
     if rc != 0:
         return 1, "sing-box check 失败: " + out[:500]
 
-    log("[5/6] 启动 sing-box，创建 %s 虚拟网卡 …" % IFACE)
+    log("[4/5] 启动 sing-box，创建 %s 虚拟网卡 …" % IFACE)
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
     # sing-box 自己的 ERROR 流单独写文件：混进 tun.log 会淹没进度输出。
     logf = io.open(SB_LOG, "ab")
@@ -619,7 +600,7 @@ def start_admin():
     with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as f:
         f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
-    log("[6/6] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
+    log("[5/5] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
     t0 = time.time()
     while time.time() - t0 < 15 and p.poll() is None and not adapter_present():
         time.sleep(0.5)
@@ -651,21 +632,10 @@ def main(argv):
         except OSError:
             pass
     ev = "--result" in argv
-    cmd = next((a for a in argv if a in ("start", "stop", "status", "gai")), "status")
+    cmd = next((a for a in argv if a in ("start", "stop", "status")), "status")
     if ev:
         i = argv.index("--result")
         globals()["RESULT"] = argv[i + 1]
-
-    if cmd == "gai":
-        if not admin:
-            log("正在重建 Google AI 出口（会弹一次 UAC，约 10 秒）…")
-            rc, msg = elevate([cmd], wait=180)
-            print(("[OK] " if rc == 0 else "[失败] ") + msg)
-            return rc
-        import start_proxy as S
-        rc = S.gai_only()
-        write_result(rc, "AI 出口已重建" if rc == 0 else "AI 出口重建失败")
-        return rc
 
     if cmd == "status":
         pid = read_pid()
@@ -687,12 +657,12 @@ def main(argv):
         return 0
 
     if not admin:
-        # TUN start also picks a Google-AI-capable node before building the
-        # tunnel, so the elevated child legitimately needs more than 90s; a
-        # short wait made the parent declare failure while the child was still
-        # working (and the old tunnel kept running, which looked like "TUN 用不了").
+        # Starting TUN stops the split-mode stack, builds the config and waits
+        # for the adapter; a short wait made the parent declare failure while
+        # the child was still working (the old tunnel kept running, which
+        # looked like "TUN 用不了").
         if cmd == "start":
-            log("提权后正在挑选 Google AI 节点并创建网卡，最长约 2 分钟，请不要关闭窗口 …")
+            log("提权后正在生成配置并创建网卡，最长约 2 分钟，请不要关闭窗口 …")
         rc, msg = elevate([cmd], wait=240 if cmd == "start" else 150)
         print(("[OK] " if rc == 0 else "[失败] ") + msg)
         return rc

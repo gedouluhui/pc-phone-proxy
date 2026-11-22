@@ -86,9 +86,14 @@ def parse_uri(uri):
             j = json.loads(b64d(uri.split("://", 1)[1]))
             net = (j.get("net") or "tcp").lower()
             tls = str(j.get("tls") or "").lower() in ("tls", "reality", "true", "1")
+            server = str(j["add"]).strip("[]")
+            port = int(j["port"])
+            uuid = str(j["id"] or "").strip()
+            if not server or not uuid or not 1 <= port <= 65535:
+                return None, None
             ob = {
-                "type": "vmess", "server": str(j["add"]).strip("[]"),
-                "server_port": int(j["port"]), "uuid": j["id"],
+                "type": "vmess", "server": server,
+                "server_port": port, "uuid": uuid,
                 "alter_id": int(j.get("aid") or 0),
                 "security": (j.get("scy") or "auto") or "auto",
             }
@@ -108,13 +113,20 @@ def parse_uri(uri):
         if scheme in ("vless", "trojan"):
             u = up.urlsplit(uri)
             q = dict(up.parse_qsl(u.query, keep_blank_values=True))
-            ob = {"type": scheme, "server": u.hostname, "server_port": int(u.port)}
+            port = int(u.port or 0)
+            if not u.hostname or not 1 <= port <= 65535:
+                return None, None
+            ob = {"type": scheme, "server": u.hostname, "server_port": port}
             if scheme == "vless":
                 ob["uuid"] = up.unquote(u.username or "")
+                if not ob["uuid"]:
+                    return None, None
                 if q.get("flow"):
                     ob["flow"] = q["flow"]
             else:
                 ob["password"] = up.unquote(u.username or "")
+                if not ob["password"]:
+                    return None, None
             sec = (q.get("security") or "").lower()
             sni = q.get("sni") or q.get("peer") or q.get("host") or u.hostname
             tls = {}
@@ -156,7 +168,10 @@ def parse_uri(uri):
                 if "?" in hostport:
                     hostport, q = hostport.split("?", 1)
                 host, _, port = hostport.rpartition(":")
-                ob = {"type": "shadowsocks", "server": host.strip("[]"),
+                host = host.strip("[]")
+                if not host or not method or not port.isdigit() or not 1 <= int(port) <= 65535:
+                    return None, None
+                ob = {"type": "shadowsocks", "server": host,
                       "server_port": int(port), "method": method, "password": pwd}
                 return ob, {"proto": "ss", "net": "tcp", "tls": False}
             dec = b64d(body)
@@ -164,13 +179,16 @@ def parse_uri(uri):
                 userinfo, hostport = dec.rsplit("@", 1)
                 method, _, pwd = userinfo.partition(":")
                 host, _, port = hostport.rpartition(":")
-                ob = {"type": "shadowsocks", "server": host.strip("[]"),
+                host = host.strip("[]")
+                if not host or not method or not port.isdigit() or not 1 <= int(port) <= 65535:
+                    return None, None
+                ob = {"type": "shadowsocks", "server": host,
                       "server_port": int(port), "method": method, "password": pwd}
                 return ob, {"proto": "ss", "net": "tcp", "tls": False}
             return None, None
         if scheme == "http":
             u = up.urlsplit(uri)
-            if not u.hostname or not u.port:
+            if not u.hostname or not u.port or not 1 <= int(u.port) <= 65535:
                 return None, None
             ob = {"type": "http", "server": u.hostname, "server_port": int(u.port),
                   "username": up.unquote(u.username or ""), "password": up.unquote(u.password or "")}

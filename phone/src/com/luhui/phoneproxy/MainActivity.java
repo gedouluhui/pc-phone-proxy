@@ -293,6 +293,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             List<String> logs = new ArrayList<>();
             try {
                 List<String> uris = ConfigBuilder.fetchPublicSources(logs);
+                uris = ConfigBuilder.screenImports(this, uris, logs);
                 int added = ConfigBuilder.addImportedUris(this, uris);
                 int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
@@ -354,6 +355,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             return;
         }
         new Thread(() -> {
+            List<String> logs = new ArrayList<>();
             try {
                 List<String> uris;
                 if (looksLikeSubscription(t)) {
@@ -362,9 +364,11 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 } else {
                     uris = ConfigBuilder.splitUris(t);
                 }
+                uris = ConfigBuilder.screenImports(this, uris, logs);
                 int added = ConfigBuilder.addImportedUris(this, uris);
                 int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
+                    for (String l : logs) appendLog("  · " + l);
                     toast("导入 " + added + " 个新节点（共 " + total + "）");
                     appendLog("导入 " + added + " 个新节点（共 " + total + "）");
                     rebuildSpinner();
@@ -395,6 +399,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
     private void clearImported() {
         ConfigBuilder.saveImportedUris(this, new ArrayList<>());
+        ConfigBuilder.clearKernelBad(this);
         toast("已清空导入节点");
         appendLog("已清空导入节点");
         rebuildSpinner();

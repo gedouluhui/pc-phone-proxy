@@ -43,18 +43,23 @@ git push -u origin main
 ## 3. 发布公版 APK（Release）
 
 1. 打开仓库页 → 右侧 **Releases** → **Draft a new release**
-2. **Choose a tag**：输入 `v2.1` → 点 "Create new tag: v1.0.0 on publish"
-3. Release title：`v2.1 — 手机 + 电脑 双端代理`
+2. **Choose a tag**：输入 `v2.6` → 点 "Create new tag: v2.6 on publish"
+3. Release title：`v2.6 — 真内核预检、假死流放行、单实例 TUN`
 4. 描述可以直接复制：
 
    ```text
-   首个公开版本。
+   v2.6。
 
    手机端：PhoneProxy-public.apk（Android 7.0+，不内置节点，安装后导入自己的分享链接/订阅）
-   电脑端：见仓库 pc/ 目录，Windows 10/11 x64
+   - 导入与启动前用真 Xray 内核做零网络配置预检，坏节点自动隔离
+   - AI 闸门缓存 1 天；observatory 探针 16KB / 10 分钟
+
+   电脑端：见仓库 pc/ 目录，Windows 10/11 x64（V3.2）
+   - TUN 单实例，原 2098 GAI 出口并入主配置
+   - 低速假死流判定放行；PC 解析器投毒用例
 
    SHA256（PhoneProxy-public.apk）：
-   fb92da28181edd5c07ff3cf6961fee846195bed8f60e27a051cf0e4cbd29c06b
+   0890349b80f591932847054b1f45c0b61bb8eb3ec8e0225a2a229192ac8651ff
    ```
 
 5. 把 `dist/手机代理-公版.apk` 拖进 **Attach binaries** 区域（约 54 MB，上传需要一会儿）
@@ -63,23 +68,22 @@ git push -u origin main
 > GitHub 会把 Release 资产名里的中文剥掉（实测 `手机代理-公版.apk` 会变成 `-.apk`），所以资产名统一用 ASCII 的 `PhoneProxy-public.apk`；本地构建产物仍叫 `手机代理-公版.apk`，两者字节相同。
 
 > **发版前对一遍版本**：`phone/AndroidManifest.xml` 的 `versionName` 是源码真相，
-> `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.5、
-> 用户下到的还是 2.4 且校验值对不上。
+> `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.6、
+> 用户下到的还是 2.5 且校验值对不上。
 >
-> 电脑端（2026-11-19）：仓库内 PC 脚本为 **V3.1**（真关闭 / 静态代理兜底 /
-> 下载保护 / 可选 TUN 全局模式），以源码形式发布，不随 APK 资产打包。
+> 电脑端（2026-11-23）：仓库内 PC 脚本为 **V3.2**（真关闭 / 静态代理兜底 /
+> 下载保护 / 低速假死流放行 / TUN 单实例），以源码形式发布，不随 APK 资产打包。
 >
-> 当前状态（2026-11-18）：已发布 **v2.5**
-> （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.5>），
-> 资产 `PhoneProxy-public.apk` 56,955,831 B，
-> SHA256 `072347bb231169433660c91a0dfea4032ef211f2080fb9fe9651cde6c04261df`，
-> 与 `dist/手机代理-公版.apk` 字节一致。下次发版按上面第 5 步重新上传并改这一行。
+> 当前状态（2026-11-23）：源码 **v2.6**，公版 APK 已构建完成，**待上传为 v2.6 Release**。
+> 资产 `PhoneProxy-public.apk` 56,964,102 B，
+> SHA256 `0890349b80f591932847054b1f45c0b61bb8eb3ec8e0225a2a229192ac8651ff`，
+> 与 `dist/手机代理-公版.apk` 字节一致。上传完成后把本行改成「已发布 **v2.6**」。
 >
 > **公开版必须 `python build_apk.py --public`**。不带参数时脚本会把本地
 > `assets/nodes.json`（真实节点凭据）打进 APK；2026-11-18 第一次发的 v2.5 资产就是这样
 > 把 24 个节点带上去的，十分钟后才发现并替换。现在 `--public` 会强制空表并在打包后
-> 读回 APK 断言节点数为 0，`python phone/check_release.py`（无参数）也会检查
-> `dist/` 与本地产物的节点数。两者都不通过就不要上传。
+> 读回 APK 断言节点数为 0；发版前运行
+> `python phone/check_release.py dist/手机代理-公版.apk`，必须打印 `assets/nodes.json = []`。
 
 ## 4. 发布后验证
 
@@ -91,7 +95,7 @@ git push -u origin main
   Get-FileHash .\PhoneProxy-public.apk -Algorithm SHA256
   ```
 
-  结果应为 `FB92DA28181EDD5C07FF3CF6961FEE846195BED8F60E27A051CF0E4CBD29C06B`。
+  结果应为 `0890349B80F591932847054B1F45C0B61BB8EB3EC8E0225A2A229192AC8651FF`。
 - 用手机浏览器打开 Release 页面，确认能下载并安装。
 
 ## 5. 可选：让提交作者显示成你自己

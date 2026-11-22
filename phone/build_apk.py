@@ -25,6 +25,14 @@ from release_guard import ReleaseCheckError, nodes_in_apk, read_nodes
 
 ROOT = Path(__file__).resolve().parent
 
+# Windows consoles may use GBK; tool stderr decoded with errors="replace"
+# contains U+FFFD, which GBK cannot encode. Logging must never kill a build.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 class BuildError(ValueError):
     """A build could not complete; the previous final APK is retained."""

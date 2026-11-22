@@ -26,16 +26,18 @@ No account, no telemetry, no paid tier.
 
 ## What it does
 
-**Android (7.0+, v2.5)**
+**Android (7.0+, v2.6)**
 
-- One-tap start: benchmarks the whole pool concurrently, then Xray's observatory re-checks it every 30 s
-  and fails over automatically
+- One-tap start: benchmarks the whole pool concurrently, then Xray's observatory re-checks it every 10
+  minutes with a 16 KB probe and fails over automatically
 - Split tunnelling: `geosite:cn` / `geoip:cn` / private ranges direct, everything else through the proxy
 - **AI egress gate (v2.5)**: one tap probes `chatgpt.com` and `claude.ai` through the fastest nodes on the
   device; only nodes that answer 200/204 to *both* join `cg-balancer`, which is the only path for
-  ChatGPT/Claude domains. Results are keyed by node fingerprint and kept 7 days (the list shows `AI✓`).
+  ChatGPT/Claude domains. Results are keyed by node fingerprint and kept 1 day (the list shows `AI✓`).
   Without it, publicly imported nodes have no region qualification at all and AI traffic lands on a random
   egress — the classic "internet works but ChatGPT returns 403"
+- **Kernel pre-check / quarantine (v2.6)**: imports and every start validate configs with the real Xray
+  kernel in a zero-network dry run; nodes the kernel rejects are skipped instead of taking the tunnel down
 - Import: `vless://` `vmess://` `trojan://` `ss://` share links, `http(s)` subscriptions, or the built-in
   public-source importer (7 lists, GitHub raw + jsDelivr mirror, 40 per source, 120 total)
 - TUN mode, no root; four ABIs (arm64-v8a, armeabi-v7a, x86, x86_64)
@@ -45,12 +47,15 @@ No account, no telemetry, no paid tier.
 
 - One command to build a pool: harvest public sources → TCP pre-filter → deep test (download/upload/ChatGPT
   region gate) → pick the fastest egress
-- Three channels: `general 2101` (ChatGPT/Claude), `fast 2103` (Google/GitHub/HF/web), `cli 2090`
-  (git/pip/curl/npm); optional Reddit 2086 and Steam 2096
+- Three channels: `general 2101/2100` (ChatGPT/Claude), `fast 2103/2102` (Google/GitHub/HF/web),
+  `cli 2090` (git/pip/curl/npm); optional Reddit `2086/2085` and Steam `2096/2097`
+- TUN mode builds the Google-AI and Amazon groups inside the main sing-box instance; `2098/2099` is
+  split-mode only, `19090`/`19091` are the two Clash APIs, `8891` serves PAC
 - PAC-based browser split tunnelling; shell proxy variables set for you
 - Watchdog: repairs dead ports, broken PAC, unreachable sites — and degrades instead of tearing down the
-  only surviving stack
-- Periodic re-scan every 6 hours (`PROXY_REFRESH_HOURS`), so faster nodes replace slower ones
+  only surviving stack. Large transfers are protected, but a >60 s flow below 30 KB/s is released when a
+  3x-faster deep-tested exit exists, so a stalled "zombie" stream cannot block rebuilds forever
+- Periodic re-scan every 12 hours (`PROXY_REFRESH_HOURS`), so faster nodes replace slower ones
 - Every listener binds `127.0.0.1`; one command removes PAC and env vars
 
 ## Quick start

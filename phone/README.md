@@ -3,6 +3,28 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## 内核预检与投毒闭环（v2.6）
+
+**问题**：`parseUri` 的规则和 Xray 内核是两套实现，解析器放过的配置不一定能启动；
+一条坏节点被塞进同一个 `outbounds` 数组，内核会拒绝整份配置，表现就是「启动失败」。
+
+**做法**：解析器抽成纯 JVM 的 `NodeConfigCodec`（不依赖 Android Framework），
+再用 AAR 已暴露的 `Libv2ray.measureOutboundDelay` 做**零网络**内核预检：
+
+- 把待测 outbound 拼成最小配置，探测 URL 故意写成 `http://[::1`；
+- `http.NewRequest` 在拨号前就失败，所以整个调用不会发任何流量；
+- 只有 `config load error` / `instance creation failed` / `startup failed` 判为配置无效，
+  URL 错误说明配置已经被内核接受；
+- 导入时逐条预检（`screenImports`），启动被内核拒绝时后台标记坏节点
+  （`quarantineInvalidImports`），下次启动直接跳过；缓存键是 outbound JSON 的 SHA-1，
+  解析规则一变就自然失效。
+
+**投毒语料**：`phone/tests/PoisonHarness.java` 生成 333 条样本（正常链接 + 变异/畸形/
+私网地址/超长/错误编码），`phone/tools/check_poison.py` 编译纯 JVM 解析器后：
+每条被接受的 outbound 和 auto/manual 完整配置都交给真 `xray run -test`，
+完整配置还与 `phone/tests/full_config.golden.json` 逐字节比对。CI 的 `android` job
+已接入（固定版本 + SHA256 + 缓存），任何解析规则与内核漂移都会直接失败。
+
 ## AI 出口闸门（v2.5）
 
 **问题**：公开源导入的节点没有任何「地区资格」信息。App 原来的 `cg-balancer` 只认
@@ -27,7 +49,7 @@ AI 打不开」。
 
 - **按节点指纹存，不按 tag**：导入节点的 tag 是 `i0/i1…` 按位置生成的，换一次源整批平移，
   用 tag 会把「能过闸门」的标记贴到别的节点上。指纹是 `server:port/protocol` 的 SHA-1 前 8 字节。
-- **结果 7 天过期**：免费节点换手快，两周前的结论比没有结论更误导。
+- **结果 1 天过期**：免费节点换手快，两周前的结论比没有结论更误导。
 - **只验最快的 24 个**：120 个节点 × 2 探针 × 12s 超时会把手机烤熟；慢节点本来也抢不到流量。
 - **开代理时如果 `cg` 池为空会明确提示**，不再静默降级（原来这是最坑的一点）。
 - **不自动跑**：测一次是分钟级的耗电动作，交给用户按需点；导入后日志会提示。
@@ -157,7 +179,10 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 |---|---|
 | `src/.../MainActivity.java` | 界面：一键启动/断开、节点下拉、测速、导入/订阅、日志、流量显示 |
 | `src/.../ProxyVpnService.java` | 前台 VPN 服务：建 TUN、启动/停止 Xray、统计流量、通知 |
-| `src/.../ConfigBuilder.java` | 生成 Xray 配置：出站、observatory、两个 balancer、分流规则、DNS |
+| `src/.../NodeConfigCodec.java` | 纯 JVM 解析器 + 完整 Xray 配置生成（可脱离 Android 测试） |
+| `src/.../ConfigBuilder.java` | Android 胶水：Context/偏好/网络/内核预检，委托 `NodeConfigCodec` 生成配置 |
+| `tests/PoisonHarness.java` | 333 条投毒语料生成器，输出每条被接受的 outbound 与完整配置 |
+| `tools/check_poison.py` | 编译并运行投毒语料，逐条过 `xray run -test`，比对 golden |
 | `AndroidManifest.xml` | minSdk 24 / targetSdk 33，VPN Service 声明 |
 | `build_apk.py` | javac → d8 → aapt2 → zip → zipalign → apksigner |
 | `gen_nodes.py` / `gen_pool.py` | 把电脑端节点数据转换/挑选成 `assets/nodes.json` |
@@ -165,11 +190,11 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 ## 实现要点
 
 - **分流**：`geosite:cn`、`geoip:cn`、`geoip:private` 走 `direct`；其余走 `proxy`。
-- **自动选线**：Xray `observatory` 每 5 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
-  探针是 32KB 的固定负载（`speed.cloudflare.com/__down?bytes=32768`）而不是 `gstatic/generate_204`：
+- **自动选线**：Xray `observatory` 每 10 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
+  探针是 16KB 的固定负载（`speed.cloudflare.com/__down?bytes=16384`）而不是 `gstatic/generate_204`：
   0 字节响应只反映握手延迟，测不出带宽，PC 端实测同一批节点上行 547 / 435 / 128 KB/s、握手延迟却几乎一样，
-  leastPing 就会稳定选中较慢那颗（页面能开、传大文件传不动）。32KB 在 128 KB/s 上要 250ms、在 547 KB/s 上 58ms，
-  延迟里才带上吞吐。代价是每颗节点每轮 32KB，11 颗节点一轮约 0.35MB。
+  leastPing 就会稳定选中较慢那颗（页面能开、传大文件传不动）。16KB 在 128 KB/s 上要 125ms、在 547 KB/s 上约 29ms，
+  延迟里仍能带上吞吐；8 节点约 18MB/天，比 32KB/5 分钟省 75%。
 - **ChatGPT**：通过 `cg=true` 的节点组成 `cg-balancer`，只给 OpenAI/Anthropic 域名使用。
 - **防回环**：VPN 建立时 `addDisallowedApplication(自身包名)`，App 自己的流量不走 TUN。
 - **DNS**：国内 `223.5.5.5` 直连解析；国外域名走 Cloudflare DoH（经代理）。

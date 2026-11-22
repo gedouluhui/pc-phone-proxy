@@ -66,3 +66,14 @@ jobs:
             -classpath "$ANDROID_HOME/platforms/android-35/android.jar:/tmp/lv/classes.jar" \
             -d /tmp/classes $(find phone/src -name '*.java')
           echo "javac OK: $(find /tmp/classes -name '*.class' | wc -l) classes"
+
+      - name: 缓存 Xray / org.json（按固定版本）
+        uses: actions/cache@v4
+        with:
+          path: phone/tools/.cache
+          key: poison-${{ runner.os }}-xray-v26.11.9-json-20240303
+
+      # 解析器与真内核的闭环：333 条投毒样本 + 每条被接受节点过 `xray run -test`
+      # + fullConfig 与 golden 比对。任何解析规则与内核漂移都会在这里失败。
+      - name: 投毒语料闭环（纯 JVM 解析器 ↔ Xray）
+        run: python3 phone/tools/check_poison.py
