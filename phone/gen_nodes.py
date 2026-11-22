@@ -98,6 +98,48 @@ def ss_outbound(p):
     }
 
 
+def vmess_outbound(p):
+    """v2rayN 风格的 vmess://<base64 JSON>。"""
+    info = json.loads(b64decode_pad(p.netloc + p.path))
+    net = (info.get("net") or "tcp").lower()
+    tls = (info.get("tls") or "").lower()
+    ob = {
+        "protocol": "vmess",
+        "settings": {"vnext": [{
+            "address": info.get("add"),
+            "port": int(info.get("port") or 443),
+            "users": [{"id": info.get("id"), "alterId": int(info.get("aid") or 0),
+                       "security": info.get("scy") or "auto"}]}]},
+        "streamSettings": {"network": net, "security": "tls" if tls == "tls" else "none"},
+    }
+    ss = ob["streamSettings"]
+    if tls == "tls":
+        ss["tlsSettings"] = {"serverName": info.get("sni") or info.get("host") or "",
+                             "fingerprint": info.get("fp") or "chrome"}
+    if net == "ws":
+        ss["wsSettings"] = {"path": info.get("path") or "/",
+                            "headers": {"Host": info.get("host")} if info.get("host") else {}}
+    elif net == "grpc":
+        ss["grpcSettings"] = {"serviceName": info.get("path") or ""}
+    return ob
+
+
+def http_outbound(p, q):
+    """http://[user:pass@]host:port?tls=true&sni=...&host=..."""
+    tls = (q.get("tls", ["false"])[0] or "").lower() in ("true", "1")
+    server = {"address": p.hostname, "port": p.port}
+    if p.username:
+        server["users"] = [{"user": urllib.parse.unquote(p.username),
+                            "pass": urllib.parse.unquote(p.password or "")}]
+    ob = {"protocol": "http", "settings": {"servers": [server]},
+          "streamSettings": {"security": "tls" if tls else "none"}}
+    if tls:
+        ob["streamSettings"]["tlsSettings"] = {
+            "serverName": q.get("sni", [""])[0] or q.get("host", [""])[0] or "",
+            "fingerprint": q.get("fp", ["chrome"])[0]}
+    return ob
+
+
 def main():
     with open(PINNED, encoding="utf-8") as f:
         d = json.load(f)
@@ -113,11 +155,19 @@ def main():
             ob = vless_outbound(p, q)
         elif p.scheme == "ss":
             ob = ss_outbound(p)
+        elif p.scheme == "vmess":
+            ob = vmess_outbound(p)
+        elif p.scheme in ("http", "https"):
+            ob = http_outbound(p, q)
         else:
             raise ValueError("unsupported scheme " + p.scheme)
         ob["tag"] = "proxy"
         nodes.append({"tag": tag, "name": tag, "outbound": ob})
-        print("OK", tag, ob["protocol"], p.hostname, p.port)
+        # 只打印最终 outbound 里的地址：vmess 的"hostname"其实是 base64 凭据整块，
+        # 直接 echo 会把 UUID 打到控制台/日志里。
+        st = ob.get("settings") or {}
+        first = (st.get("vnext") or st.get("servers") or [{}])[0]
+        print("OK", tag, ob["protocol"], first.get("address"), first.get("port"))
     if not nodes:
         raise SystemExit("no nodes found in " + PINNED)
     os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)

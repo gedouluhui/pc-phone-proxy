@@ -165,7 +165,11 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 ## 实现要点
 
 - **分流**：`geosite:cn`、`geoip:cn`、`geoip:private` 走 `direct`；其余走 `proxy`。
-- **自动选线**：Xray `observatory` 每 30 秒探测所有节点；`balancer` 按最低延迟选路，节点失败自动切换。
+- **自动选线**：Xray `observatory` 每 5 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
+  探针是 32KB 的固定负载（`speed.cloudflare.com/__down?bytes=32768`）而不是 `gstatic/generate_204`：
+  0 字节响应只反映握手延迟，测不出带宽，PC 端实测同一批节点上行 547 / 435 / 128 KB/s、握手延迟却几乎一样，
+  leastPing 就会稳定选中较慢那颗（页面能开、传大文件传不动）。32KB 在 128 KB/s 上要 250ms、在 547 KB/s 上 58ms，
+  延迟里才带上吞吐。代价是每颗节点每轮 32KB，11 颗节点一轮约 0.35MB。
 - **ChatGPT**：通过 `cg=true` 的节点组成 `cg-balancer`，只给 OpenAI/Anthropic 域名使用。
 - **防回环**：VPN 建立时 `addDisallowedApplication(自身包名)`，App 自己的流量不走 TUN。
 - **DNS**：国内 `223.5.5.5` 直连解析；国外域名走 Cloudflare DoH（经代理）。

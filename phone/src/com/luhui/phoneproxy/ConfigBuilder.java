@@ -546,11 +546,18 @@ public final class ConfigBuilder {
                         .put("selector", new JSONArray().put("cg-"))
                         .put("strategy", new JSONObject().put("type", "leastPing")));
             }
+            // 探针决定"挑哪颗节点"，而 gstatic/generate_204 是 0 字节响应：
+            // 量到的只有握手延迟，跟吞吐无关。PC 端实测同一批节点上行
+            // 547 / 435 / 128 KB/s，握手延迟却差不多，于是 leastPing 一直
+            // 选中较慢那颗 —— 页面能开，传大文件传不动。
+            // 换成 32KB 固定负载、5 分钟一轮：32KB 在 128 KB/s 上要 250ms，
+            // 在 547 KB/s 上 58ms，延迟里就带上了吞吐差异。24 颗节点一轮
+            // 约 0.75MB，5 分钟一次，移动网络下可接受。
             cfg.put("observatory", new JSONObject()
                     .put("subjectSelector", subjects)
-                    .put("probeUrl", "https://www.gstatic.com/generate_204")
-                    .put("probeInterval", "30s")
-                    .put("probeTimeout", "8s")
+                    .put("probeUrl", "https://speed.cloudflare.com/__down?bytes=32768")
+                    .put("probeInterval", "300s")
+                    .put("probeTimeout", "10s")
                     .put("enableConcurrency", true));
             routing.put("balancers", balancers);
             if (cgCount > 0) {
