@@ -249,7 +249,8 @@ public final class ConfigBuilder {
     private static final String KEY_GATE = "gate_ok";
 
     /** 闸门结果有效期（天）。免费节点换手很快，太久以前的结果反而误导。 */
-    public static final int GATE_TTL_DAYS = 7;
+    // 免费池里的干净 IP 几小时就可能被刷到 403，7 天等于让死节点继续背一周流量。
+    public static final int GATE_TTL_DAYS = 1;
 
     private static long today() {
         return System.currentTimeMillis() / 86400000L;
