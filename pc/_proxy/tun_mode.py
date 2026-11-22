@@ -288,6 +288,16 @@ def build_config():
                                   "interval": "120s", "tolerance": 300}]
         am_out = "grp-amazon"
 
+    # DoH 专用组：探测地址是 IP 字面量（https://1.1.1.1/cdn-cgi/trace），
+    # urltest 探针因此永远不需要解析域名 —— 这就是「DoH 指 urltest 会死锁」的
+    # 根治办法。同时它给 DNS 带来多节点故障转移，不再依赖 2098 单进程。
+    dns_members = [o.get("tag") for o in ranked if o.get("tag")][:6]
+    if dns_members:
+        outbounds = outbounds + [{"type": "urltest", "tag": "grp-dns",
+                                  "outbounds": dns_members,
+                                  "url": "https://1.1.1.1/cdn-cgi/trace",
+                                  "interval": "120s", "tolerance": 200}]
+
     # 通用分组（grp-any / grp-general / grp-fast）来自 pinned 基线，同样按
     # 吞吐表重排：不然浏览器随手一个请求就落到 4s 延迟那颗节点上。
     by_tag = {o.get("tag"): o for o in outbounds}
@@ -308,8 +318,8 @@ def build_config():
     log_deep = {t: round(_speed(by_tag.get(t) or {}), 0) for t in fast_tags}
     print("[rank] 深测样本 %d 条，入选 %s" % (len(deep), log_deep))
 
-    # DoH 的出口：优先 2098（gai 自带解析与 urltest 兜底），其次第一颗快节点。
-    DNS_DETOUR = gai_tag or (fast_all[0].get("tag") if fast_all else "direct")
+    # DoH 的出口：优先能自动故障转移的 grp-dns；没有成员时才退回 gai。
+    DNS_DETOUR = "grp-dns" if dns_members else (gai_tag or "direct")
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
@@ -319,11 +329,12 @@ def build_config():
         # 被重置，表现就是“打不开”。TUN 自己用 DoH 取真实地址（DoH 走代理，
         # 避免 53/udp 明文被劫持），其余域名仍交给系统解析。
         "dns": {
+            # detour 指 grp-dns（探针是 IP 字面量，不需要 DNS），既不会和
+            # urltest 互相等待，也不会像 2098 那样是单点。
             "servers": [
-                # detour 不能指 grp-any：urltest 的健康探测本身要解析域名，
-                # 而域名解析又要走 DoH —— 互相等待，结果 DNS 超时、整机断网
-                # （2026-11-22 实测）。固定走 gai(2098)，它有独立的解析路径。
                 {"type": "https", "tag": "doh", "server": "1.1.1.1",
+                 "detour": DNS_DETOUR},
+                {"type": "https", "tag": "doh2", "server": "8.8.8.8",
                  "detour": DNS_DETOUR},
                 {"type": "local", "tag": "local"},
             ],
@@ -341,7 +352,9 @@ def build_config():
             "type": "tun",
             "tag": "tun-in",
             "interface_name": IFACE,
-            "address": [TUN_ADDR],
+            # 只给 IPv4 的话，双栈网络下 Windows 的 v6 流量与 v6 DNS 会绕过
+            # pcproxy 直接出网（真实 IP 泄漏，且部分双栈站点走被污染的 v6 DNS）。
+            "address": [TUN_ADDR, "fdfe:dcba:9876::1/126"],
             "mtu": 1400,
             "auto_route": True,
             "strict_route": True,

@@ -153,52 +153,36 @@ public class ProxyVpnService extends VpnService {
                 log("AI 出口：" + gated + " 个已验证节点，AI 域名只走它们");
             }
 
-            Builder builder = new Builder()
-                    .setSession("手机代理")
-                    .addAddress("172.19.0.1", 30)
-                    .addRoute("0.0.0.0", 0)
-                    // 双栈网络下必须同时接管 IPv6，否则所有 v6 流量与 v6 DNS
-                    // 会绕过 VPN 直接从 Wi-Fi/蜂窝出网（真实 IP 泄漏）。
-                    .addAddress("fd00::1", 126)
-                    .addRoute("::", 0)
-                    .addDnsServer("8.8.8.8")
-                    .addDnsServer("1.1.1.1")
-                    .setMtu(1500)
-                    .addDisallowedApplication(getPackageName()); // 内核出站绕过 TUN，防回环
-            tunFd = builder.establish();
+            tunFd = buildTun();
             if (tunFd == null) throw new IllegalStateException("VPN 建立失败（未授权？）");
 
-            controller = Libv2ray.newCoreController(new CoreCallbackHandler() {
-                @Override public long startup() { return 0; }
-                @Override public long shutdown() { return 0; }
-                @Override public long onEmitStatus(long code, String msg) {
-                    Log.i(TAG, "core status " + code + ": " + msg);
-                    return 0;
-                }
-            });
+            controller = newController();
             try {
                 controller.startLoop(config, tunFd.getFd());
             } catch (Throwable startError) {
-                // 内核是"整份配置要么全用、要么全不用"：导入池里只要有一条不合法
-                // （http 传输、reality+ws、SS2022 坏 key…），启动就直接失败。
-                // 各个协议都已经在解析阶段过滤，这里留最后一道：剔除导入节点，
-                // 只用内置节点重启一次，至少保证能上网。
+                // 内核是「整份配置要么全用、要么全不用」。真正的原因是某条出站不合法，
+                // 但错误原文必须先落地，不能吞掉（之前重试成功就再也查不到根因了）。
+                Log.e(TAG, "core rejected config", startError);
+                log("内核拒绝了当前配置：" + startError.getMessage());
+
+                // 不能拿同一个 tunFd 重试：libv2ray 失败清理时可能已经 close 过这个 fd，
+                // 复用会拿到 EBADF 或者一个被复用的句柄。先停内核、关网卡、再重建。
+                try { controller.stopLoop(); } catch (Throwable ignored) {}
+                controller = null;
+                closeTun();
+
                 java.util.List<ConfigBuilder.Node> builtin = new java.util.ArrayList<>();
-                for (ConfigBuilder.Node n : nodes) {
-                    if (n.tag == null || !n.tag.startsWith("i")) builtin.add(n);
-                }
+                for (ConfigBuilder.Node n : nodes) if (!n.imported) builtin.add(n);
                 if (builtin.isEmpty() || builtin.size() == nodes.size()) throw startError;
-                log("内核拒绝了当前配置，剔除 "
-                        + (nodes.size() - builtin.size()) + " 个导入节点后重试…");
-                config = ConfigBuilder.fullConfig(builtin, selection);
-                controller = Libv2ray.newCoreController(new CoreCallbackHandler() {
-                    @Override public long startup() { return 0; }
-                    @Override public long shutdown() { return 0; }
-                    @Override public long onEmitStatus(long code, String msg) {
-                        Log.i(TAG, "core status " + code + ": " + msg);
-                        return 0;
-                    }
-                });
+
+                log("剔除 " + (nodes.size() - builtin.size()) + " 个导入节点，只用内置节点重试…");
+                nodes = builtin;                       // 必须同步，否则下面 UI 会显示成已剔除的节点
+                if (ConfigBuilder.find(nodes, selection) == null) selection = "auto";
+                config = ConfigBuilder.fullConfig(nodes, selection);
+
+                tunFd = buildTun();
+                if (tunFd == null) throw new IllegalStateException("VPN 重建失败");
+                controller = newController();
                 controller.startLoop(config, tunFd.getFd());
             }
             if (!controller.getIsRunning()) throw new IllegalStateException("内核启动失败");
@@ -434,6 +418,32 @@ public class ProxyVpnService extends VpnService {
         if (notifyState) {
             runningNode = "";
         }
+    }
+
+    /** VPN 网卡：双栈都接管，否则 IPv6 流量会绕过隧道泄漏真实地址。 */
+    private ParcelFileDescriptor buildTun() throws Exception {
+        return new Builder()
+                .setSession("手机代理")
+                .addAddress("172.19.0.1", 30)
+                .addRoute("0.0.0.0", 0)
+                .addAddress("fd00::1", 126)
+                .addRoute("::", 0)
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1")
+                .setMtu(1500)
+                .addDisallowedApplication(getPackageName())  // 内核出站绕过 TUN，防回环
+                .establish();
+    }
+
+    private CoreController newController() {
+        return Libv2ray.newCoreController(new CoreCallbackHandler() {
+            @Override public long startup() { return 0; }
+            @Override public long shutdown() { return 0; }
+            @Override public long onEmitStatus(long code, String msg) {
+                Log.i(TAG, "core status " + code + ": " + msg);
+                return 0;
+            }
+        });
     }
 
     private void failStop() {

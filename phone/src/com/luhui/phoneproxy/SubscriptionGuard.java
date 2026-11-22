@@ -235,4 +235,56 @@ public final class SubscriptionGuard {
             checkIpv4Literal(lower.substring(mapped + 7));
         }
     }
+
+    /**
+     * 解析目标域名并检查每一个 A/AAAA 结果。字符串检查拦不住 DNS rebinding：
+     * 攻击者让公网域名解析到 127.0.0.1 / 169.254.169.254 即可绕过第一道防线。
+     * 必须在后台线程调用（会做真实 DNS 查询）。
+     */
+    public static void checkResolved(String host) throws Rejected {
+        if (host == null || host.trim().isEmpty()) {
+            throw new Rejected("host_missing");
+        }
+        java.net.InetAddress[] all;
+        try {
+            all = java.net.InetAddress.getAllByName(host.trim());
+        } catch (java.net.UnknownHostException error) {
+            throw new Rejected("host_unresolved");
+        }
+        for (java.net.InetAddress address : all) {
+            if (isBlockedAddress(address)) {
+                throw new Rejected("host_resolved_private");
+            }
+        }
+    }
+
+    private static boolean isBlockedAddress(java.net.InetAddress address) {
+        if (address.isAnyLocalAddress() || address.isLoopbackAddress()
+                || address.isLinkLocalAddress() || address.isSiteLocalAddress()
+                || address.isMulticastAddress()) {
+            return true;
+        }
+        byte[] raw = address.getAddress();
+        if (raw.length == 4) {
+            int first = raw[0] & 0xff, second = raw[1] & 0xff;
+            if (first == 0) return true;                                  // 0.0.0.0/8
+            if (first == 100 && second >= 64 && second <= 127) return true; // 100.64/10 CGNAT
+            return false;
+        }
+        int firstByte = raw[0] & 0xff;
+        if ((firstByte & 0xfe) == 0xfc) return true;   // fc00::/7 ULA
+        if (firstByte == 0xff) return true;            // ff00::/8 多播
+        boolean mapped = true;
+        for (int i = 0; i < 10; i++) {
+            if (raw[i] != 0) { mapped = false; break; }
+        }
+        if (mapped && (raw[10] & 0xff) == 0xff && (raw[11] & 0xff) == 0xff) {
+            int a = raw[12] & 0xff, b = raw[13] & 0xff;
+            return a == 0 || a == 10 || a == 127
+                    || (a == 169 && b == 254)
+                    || (a == 192 && b == 168)
+                    || (a == 172 && b >= 16 && b <= 31);
+        }
+        return false;
+    }
 }

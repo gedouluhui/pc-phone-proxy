@@ -198,6 +198,9 @@ public final class ConfigBuilder {
             String tag = "i" + idx++;
             try {
                 ob.put("tag", "proxy-" + tag);
+                // 公开源/第三方订阅里的 allowInsecure=1 等于让节点静默关掉证书校验，
+                // 中间人可以随便截。导入节点一律不信这个字段，只信内置节点自带的配置。
+                stripAllowInsecure(ob);
             } catch (Exception e) {
                 continue;
             }
@@ -347,6 +350,9 @@ public final class ConfigBuilder {
             c.setInstanceFollowRedirects(false);
             c.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+            // SubscriptionGuard 只做字符串检查；域名解析成 127.0.0.1 / 169.254.x 的
+            // rebinding 攻击必须在这里再拦一次（拿的是真实解析结果）。
+            SubscriptionGuard.checkResolved(target.getHost());
             int code = c.getResponseCode();
             if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
                 String location = c.getHeaderField("Location");
@@ -355,8 +361,15 @@ public final class ConfigBuilder {
                 if (hop == SubscriptionGuard.MAX_REDIRECTS) {
                     throw new IllegalStateException("重定向次数过多");
                 }
+                java.net.URI next;
                 try {
-                    target = SubscriptionGuard.check(location);
+                    // Location 可能是相对路径（/v2ray.txt），直接当绝对 URI 校验会误拒。
+                    next = target.resolve(location.trim());
+                    if ("https".equalsIgnoreCase(target.getScheme())
+                            && !"https".equalsIgnoreCase(next.getScheme())) {
+                        throw new IllegalStateException("不允许从 HTTPS 降级到 HTTP 重定向");
+                    }
+                    target = SubscriptionGuard.check(next.toString());
                 } catch (SubscriptionGuard.Rejected rejected) {
                     throw new IllegalStateException("重定向被拒绝：" + rejected.reason);
                 }
@@ -365,8 +378,11 @@ public final class ConfigBuilder {
             if (code != 200) throw new IllegalStateException("HTTP " + code);
             break;
         }
-        InputStream in = c.getInputStream();
+        if (c == null) throw new IllegalStateException("没有可用的连接");
+        InputStream in = null;
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try {
+        in = c.getInputStream();
         byte[] buf = new byte[16384];
         int n;
         int total = 0;
@@ -374,13 +390,15 @@ public final class ConfigBuilder {
             total += n;
             // A hostile or broken subscription must not exhaust the phone's RAM
             // (review C11). 10 MB is far beyond any real share-link list.
-            if (total > 10 * 1024 * 1024) {
-                in.close();
-                throw new IllegalStateException("subscription larger than 10 MB");
+            if (total > 2 * 1024 * 1024) {
+                throw new IllegalStateException("订阅超过 2 MB，已中止");
             }
             bos.write(buf, 0, n);
         }
-        in.close();
+        } finally {
+            if (in != null) try { in.close(); } catch (Exception ignored) {}
+            c.disconnect();
+        }
         String body = bos.toString("UTF-8").trim();
         if (!body.contains("://")) {
             String dec = tryB64(body);
@@ -634,6 +652,9 @@ public final class ConfigBuilder {
         if (uuid.isEmpty()) return null;
         String[] hp = splitHostPort(body.substring(at + 1));
         if (hp == null) return null;
+        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
+        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
+        if (!isAllowedNodeHost(hp[0])) return null;
         Map<String, String> q = parseQuery(query);
 
         JSONObject user = new JSONObject().put("id", uuid)
@@ -762,6 +783,9 @@ public final class ConfigBuilder {
         }
         String[] hp = splitHostPort(hostPort);
         if (hp == null) return null;
+        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
+        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
+        if (!isAllowedNodeHost(hp[0])) return null;
         JSONObject server = new JSONObject()
                 .put("address", hp[0]).put("port", Integer.parseInt(hp[1]))
                 .put("method", method).put("password", password);
@@ -789,6 +813,30 @@ public final class ConfigBuilder {
         return true;
     }
 
+    /** 把 TLS 设置里的 allowInsecure 强制改为 false（导入节点专用）。 */
+    private static void stripAllowInsecure(JSONObject ob) throws Exception {
+        JSONObject stream = ob.optJSONObject("streamSettings");
+        if (stream == null) return;
+        JSONObject tls = stream.optJSONObject("tlsSettings");
+        if (tls != null) tls.put("allowInsecure", false);
+        JSONObject reality = stream.optJSONObject("realitySettings");
+        if (reality != null) reality.put("allowInsecure", false);
+    }
+
+    /** 只拒字面量私网/回环地址；域名不在这里解析（成本高，交给实际连接）。 */
+    private static boolean isAllowedNodeHost(String host) {
+        String h = host == null ? "" : host.trim();
+        if (h.isEmpty()) return false;
+        try {
+            SubscriptionGuard.checkHost(h);
+            return true;
+        } catch (SubscriptionGuard.Rejected rejected) {
+            return false;
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
     private static JSONObject parseSocksHttp(String body, String proto) throws Exception {
         body = stripFragment(body);
         int qi = body.indexOf('?');   // 分享链接带的 ?tls=true 等装饰参数，Xray http/socks 出站不认
@@ -810,6 +858,9 @@ public final class ConfigBuilder {
         }
         String[] hp = splitHostPort(body);
         if (hp == null) return null;
+        // 节点的服务器地址也不能是私网/回环：恶意订阅里塞 vless://...@192.168.1.1 就是拿
+        // 手机当内网扫描器（本 App 的 TUN 会把它拨出去）。域名留给使用侧解析。
+        if (!isAllowedNodeHost(hp[0])) return null;
         JSONObject server = new JSONObject()
                 .put("address", hp[0]).put("port", Integer.parseInt(hp[1]));
         if (!user.isEmpty()) {
