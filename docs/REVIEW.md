@@ -1,5 +1,9 @@
 # 代码审查请求（2026-11-23）
 
+> **历史文档**：保留审查当时的问题与架构描述，便于追溯；其中 PC 端 TUN 的 AI 出口
+> 后来已合并进 sing-box 主实例，不再使用 `2098`。当前架构与逐条处理结果见
+> [`REVIEW_RESPONSE.md`](REVIEW_RESPONSE.md) 末节及 README。
+
 两个产物共用同一套节点池与分流策略：
 
 - **PC 便携版**（`pc/`）：Python + sing-box。TUN 接管全局流量，另起 `2098` 端口作为 Google/AI 专用出口。

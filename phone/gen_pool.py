@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pick the phone app's embedded node pool out of node_deep.json rows.
 
-The phone app does its own health checking (Xray observatory, 30s), so what it
+The phone app does its own health checking (Xray observatory, 600s), so what it
 needs is *breadth*: a mix of ChatGPT-capable exits plus the fastest remaining
 bulk exits.  Every picked node keeps its original share URI; the Android side
 parses URIs with the exact same parser it uses for user imports, so there is
@@ -40,7 +40,7 @@ OUT = os.path.join(HERE, "assets", "nodes.json")
 
 N_CG = 14          # ChatGPT-capable members (drive both the general balancer
                    # and the cg-balancer for openai/anthropic domains)
-MAX_TOTAL = 24     # observatory pings every member every 30s on mobile data
+MAX_TOTAL = 24     # observatory pings every member every 600s (16KB each)
 TARGET_MIN = 16    # below this, top up from yesterday's rows
 MAX_PER_HOST = 2   # one dead host should not gut the pool
 MAX_PER_PREFIX = 2 # same for one /24 or registrable-domain suffix

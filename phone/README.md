@@ -116,7 +116,7 @@ App 支持三种节点来源：
 # 方式 A：从电脑端 pinned.json（分享链接 -> outbound）
 python gen_nodes.py /path/to/pinned.json
 
-# 方式 B：从电脑端深测结果挑 24 个（推荐，保留原始分享链接）
+# 方式 B：从电脑端深测结果挑一批（目标 24 个，可用不足时自动收缩；推荐，保留原始分享链接）
 PROXY_DIR=/path/to/代理便携版/_proxy python gen_pool.py
 
 python build_apk.py

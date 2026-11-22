@@ -118,7 +118,7 @@ v2.4 的公开源一键导入与 v2.3 的安全加固（`https://` 不再降级�
 
 ```bash
 cd phone
-PROXY_DIR=/path/to/代理便携版/_proxy python gen_pool.py   # 生成 24 个实测节点
+PROXY_DIR=/path/to/代理便携版/_proxy python gen_pool.py   # 目标 24 个，可用不足时自动收缩
 PROXY_APK_OUT=/path/to/手机代理/手机代理.apk python build_apk.py
 ```
 
