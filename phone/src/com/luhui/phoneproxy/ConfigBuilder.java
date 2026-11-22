@@ -797,10 +797,25 @@ public final class ConfigBuilder {
         for (String s : c) SS_CIPHERS.add(s);
     }
 
+    /**
+     * Xray 26 移除了 {@code http} / {@code h2} 传输：报错原文是
+     * "The feature HTTP transport (without header padding, etc.) has been removed
+     * and migrated to XHTTP stream-one H2 & H3"。
+     * 公开源里这类分享链接不少，而 Xray 只要遇到一条不认识的传输就整份配置解析
+     * 失败 —— 表现是"启动失败"，一条坏节点把 120 条全部拖死（2026-11-22 实机）。
+     * 所以在解析阶段就拒掉，让导入/构建时自然跳过。
+     */
+    private static final java.util.Set<String> SUPPORTED_NET =
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "tcp", "raw", "ws", "grpc", "xhttp", "mkcp", "kcp", "quic", "httpupgrade"));
+
     private static JSONObject streamSettings(Map<String, String> q) throws Exception {
         String net = q.containsKey("type") && !q.get("type").isEmpty() ? q.get("type") : "tcp";
         String sec = q.containsKey("security") && !q.get("security").isEmpty()
                 ? q.get("security") : "none";
+        if (!SUPPORTED_NET.contains(net.toLowerCase(java.util.Locale.ROOT))) {
+            throw new IllegalArgumentException("unsupported transport: " + net);
+        }
         JSONObject ss = new JSONObject();
         ss.put("network", net);
 
