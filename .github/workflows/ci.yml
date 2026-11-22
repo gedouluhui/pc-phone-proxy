@@ -44,7 +44,9 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: 安装 platform / build-tools
-        run: sdkmanager --install "platforms;android-35" "build-tools;34.0.0" > /dev/null
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-35" "build-tools;34.0.0"
 
       - name: 取 libv2ray.aar（二进制不入库，用上游固定版本）
         run: |
