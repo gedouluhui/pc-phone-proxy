@@ -203,37 +203,62 @@ def build_config():
             google_bad = {str(x).lower() for x in (json.load(f) or [])}
     except Exception:
         pass
-    # 实测：这批免费节点对 Google 的“延迟”和“吞吐”完全不是一回事。
-    # 2026-11-21 逐节点 1MB 实测 389 / 122 / 75 / 43 / 33 / 6 / 5 KB/s，
-    # 而 urltest 按延迟挑中的那颗只有 33 KB/s —— 页面能开但转圈。
-    # 所以 Google 组只放实测快的几颗（掉线时 gai 仍在末尾兜底）。
+    # “延迟”和“吞吐”在这批免费节点上完全不是一回事：urltest 按延迟挑中的
+    # 那颗，实测 1MB 只有 33 KB/s；页面能开，大文件传不动。
+    # 吞吐数据来自 rescan.py 的深测（node_deep.json 的 dl_kbps）。用文件而不是
+    # 写死 IP：用户每跑一次「重新扫描节点」，这里就自动跟着换，不会失配。
+    deep = {}
+    try:
+        with io.open(os.path.join(HERE, "node_deep.json"), encoding="utf-8") as f:
+            for row in (json.load(f) or {}).get("rows") or []:
+                if row.get("dl_status") == 200 and (row.get("dl_kbps") or 0) > 0:
+                    deep[str(row.get("server") or "").lower()] = float(row["dl_kbps"])
+    except Exception:
+        deep = {}
+
+    def _speed(o):
+        return deep.get((o.get("server") or "").lower(), 0.0)
+
     def _rank(o):
+        """升序：先按深测吞吐降序；没有深测的按静态表，最后按 tag。"""
+        speed = _speed(o)
+        if speed > 0:
+            return (0, -speed, o.get("tag") or "")
         server = (o.get("server") or "").lower()
         try:
-            return NODE_PREFER.index(server)
+            return (1, NODE_PREFER.index(server), o.get("tag") or "")
         except ValueError:
-            return len(NODE_PREFER)
+            return (2, 0, o.get("tag") or "")
 
-    gmembers = []
+    # google_bad.json 是 2026-11-21 手写的“Gemini 拒绝”名单，早于深测数据，
+    # 里面那颗（94.183.164.176）现在是深测第一名且 chatgpt_ok。Google 组已经
+    # 用 gemini.google.com/robots.txt 做探针，运行时自己就会踢掉不合格的，
+    # 静态黑名单留着只会误杀，所以这里只用它兜底（没有深测数据时）。
     candidates = [o for o in outbounds
                   if (o.get("tag") or "").startswith("g")
                   and o.get("type") not in ("urltest", "direct")
                   and (o.get("tag") or "") != gai_tag
-                  and (o.get("server") or "").lower() not in google_bad]
-    fast = sorted([o for o in candidates if _rank(o) < len(NODE_PREFER)], key=_rank)
-    rest = sorted([o for o in candidates if _rank(o) >= len(NODE_PREFER)],
-                  key=lambda o: (o.get("tag") or ""))
-    for o in fast + rest:
-        tag = o.get("tag") or ""
+                  and (deep or (o.get("server") or "").lower() not in google_bad)]
+    ranked = sorted(candidates, key=_rank)
+
+    def _usable():
+        """深测吞吐前 4 颗，且不低于最快那颗的 1/4（低于这个没有实用价值）。"""
+        have = [o for o in ranked if _speed(o) > 0]
+        if not have:
+            return ranked[:4]
+        best = _speed(have[0])
+        keep = [o for o in have if _speed(o) >= best * 0.25][:4]
+        return keep if len(keep) >= 2 else have[:2]
+
+    fast_all = _usable()
+    gmembers = [o.get("tag") for o in fast_all if o.get("tag")]
+    for o in ranked:
+        tag = o.get("tag")
         if tag and tag not in gmembers:
             gmembers.append(tag)
-    # Google 组同样只留快的，gai 末尾兜底
-    _server_of = {o.get("tag"): (o.get("server") or "").lower() for o in outbounds}
-    fast_only = [t for t in gmembers if _server_of.get(t) in NODE_PREFER[:4]]
-    if fast_only:
-        gmembers = fast_only
     if gai_tag:
-        gmembers.append(gai_tag)
+        # urltest 只吃前 10 个成员：先截断再追加，gai 才不会被挤掉
+        gmembers = gmembers[:9] + [gai_tag]
     if gmembers:
         # 探针必须用 Gemini 自己的地址：gstatic 谁都能过，但 Google 对
         # gemini.google.com 有独立的地区/IP 判定，用 gstatic 探出来的“最快”
@@ -247,23 +272,24 @@ def build_config():
     # 吞吐表重排：不然浏览器随手一个请求就落到 4s 延迟那颗节点上。
     by_tag = {o.get("tag"): o for o in outbounds}
 
-    def _rank_tag(tag):
-        server = ((by_tag.get(tag) or {}).get("server") or "").lower()
-        try:
-            return NODE_PREFER.index(server)
-        except ValueError:
-            return len(NODE_PREFER)
-
-    # 只保留实测吞吐靠前的 4 颗：urltest 按延迟选，候选里留着 128 KB/s 的
-    # 慢节点，它延迟一低就会把整条浏览拖死（实测 g1 4004ms 仍在被选中）。
-    # 这 4 颗全挂时再跑一次「重新扫描节点」。
-    fast_tags = [o.get("tag") for o in outbounds
-                 if (o.get("server") or "").lower() in NODE_PREFER[:4]]
+    # 通用分组同样只留吞吐靠前的几颗：候选里混着慢节点，它延迟一低就会把
+    # 整条浏览拖死（实测 g1 延迟 4004ms 仍被 urltest 选中过）。
+    # 快的排前面，其余按顺序垫后：深测数据是"某个时刻"的快照，免费节点
+    # 半小时就能死一半（2026-11-22 实测：08:08 深测第一名的 g0，08:59 已经
+    # 连不上）。只留 4 颗会在这种时候直接断网，所以慢节点留着当备份 ——
+    # urltest 只在快节点全挂时才会轮到它们。
+    fast_tags = [o.get("tag") for o in fast_all if o.get("tag")]
+    prefer = fast_tags + [o.get("tag") for o in ranked
+                          if o.get("tag") and o.get("tag") not in fast_tags]
     for o in outbounds:
         if o.get("type") == "urltest" and o.get("tag") != "grp-google":
-            members = [t for t in (o.get("outbounds") or []) if t in fast_tags]
-            o["outbounds"] = members or sorted(o.get("outbounds") or [],
-                                               key=lambda t: (_rank_tag(t), t))
+            members = [t for t in prefer if t in (o.get("outbounds") or [])]
+            o["outbounds"] = members or sorted(o.get("outbounds") or [])
+    log_deep = {t: round(_speed(by_tag.get(t) or {}), 0) for t in fast_tags}
+    print("[rank] 深测样本 %d 条，入选 %s" % (len(deep), log_deep))
+
+    # DoH 的出口：优先 2098（gai 自带解析与 urltest 兜底），其次第一颗快节点。
+    DNS_DETOUR = gai_tag or (fast_all[0].get("tag") if fast_all else "direct")
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
@@ -274,8 +300,11 @@ def build_config():
         # 避免 53/udp 明文被劫持），其余域名仍交给系统解析。
         "dns": {
             "servers": [
+                # detour 不能指 grp-any：urltest 的健康探测本身要解析域名，
+                # 而域名解析又要走 DoH —— 互相等待，结果 DNS 超时、整机断网
+                # （2026-11-22 实测）。固定走 gai(2098)，它有独立的解析路径。
                 {"type": "https", "tag": "doh", "server": "1.1.1.1",
-                 "detour": "grp-any"},
+                 "detour": DNS_DETOUR},
                 {"type": "local", "tag": "local"},
             ],
             "rules": [
