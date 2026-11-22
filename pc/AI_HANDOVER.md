@@ -191,3 +191,19 @@ ChatGPT 3.2s、AI Studio 1.9s、Gemini 7–16s（节点下行抖）。
 保活任务已全部撤掉，隧道继续由用户窗口托管。此时 `grp-google` 落到 `gai`(2098)：
 免费 vless 节点这一刻都没过 `gemini.google.com/robots.txt` 探针，兜底按设计生效——
 Gemini 3.5s、AI Studio 2.1s、ChatGPT 3.5s，`nslookup gemini` 正常返回 142.251.155.2。
+
+## 22:20–22:30 Amazon / AWS 下载慢
+
+用户要下 Amazon Quick，页面 30s 打不开、点了半天才动。实测（同一 URL
+aws.amazon.com/quick/download/）：
+
+- 经 TUN（urltest 选的 g7）：30s 只下 12 KB/s
+- 经 gai(2098)：99~129 KB/s
+- 逐节点测：g6 67~118 KB/s 最好，g7 17、g3 15、g5 1.4、g0/g2 直接失败
+- 直连（绕过隧道）：10 KB/s —— 所以直连也救不了，不是纯路由问题
+
+结论：gstatic 探针选出的"最快"节点对 AWS 可能是最慢的（探针和目标站不同源）。
+处理：新增 `grp-amazon` 组，探针用 `aws.amazon.com/robots.txt`（13KB），
+成员是全部节点 + gai；`AMAZON_DL`（amazon.com / amazonaws.com / awsstatic.com
+等）走这个组。改完首页从 30s/12 KB/s 变成 5.3s/79 KB/s，但池子本身对 AWS
+只有 10~80 KB/s，大文件依旧慢 —— 这是免费节点的上限。

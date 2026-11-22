@@ -39,6 +39,12 @@ NODE_PREFER = ["172.233.129.65", "172.235.37.168", "172.233.129.172",
                "172.233.142.149", "88.216.214.159",
                "172.104.48.194", "172.105.203.15"]
 
+# Amazon / AWS 的下载链路（Quick 安装包、S3、CloudFront）。2026-11-22 实测：
+# 同一条 aws.amazon.com 页面，grp-any 挑中的节点只有 10.8 KB/s（30s 还没下完），
+# 经 gai(2098) 是 99~129 KB/s。所以这块单独指到 gai。
+AMAZON_DL = ["amazon.com", "amazonaws.com", "awsstatic.com", "awsstatic.net",
+             "aws.dev", "a2z.com", "media-amazon.com", "ssl-images-amazon.com"]
+
 GOOGLE_DNS = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
               "gvt1.com", "ggpht.com", "youtube.com", "ytimg.com", "googlevideo.com",
               "withgoogle.com", "google.dev"]
@@ -268,6 +274,20 @@ def build_config():
                                   "url": "https://gemini.google.com/robots.txt",
                                   "interval": "60s", "tolerance": 300}]
 
+    # Amazon 单独一组，探针用 aws.amazon.com/robots.txt（13KB）。gstatic 探出来的
+    # “最快”节点对 AWS 可能只有 10~17 KB/s，而同一时刻另一颗有 118 KB/s
+    # （2026-11-22 实测）—— 探针地址必须跟目标站同源，否则量的是两回事。
+    amembers = [o.get("tag") for o in ranked if o.get("tag")]
+    if gai_tag:
+        amembers = amembers[:9] + [gai_tag]
+    am_out = "grp-any"
+    if amembers:
+        outbounds = outbounds + [{"type": "urltest", "tag": "grp-amazon",
+                                  "outbounds": amembers[:10],
+                                  "url": "https://aws.amazon.com/robots.txt",
+                                  "interval": "120s", "tolerance": 300}]
+        am_out = "grp-amazon"
+
     # 通用分组（grp-any / grp-general / grp-fast）来自 pinned 基线，同样按
     # 吞吐表重排：不然浏览器随手一个请求就落到 4s 延迟那颗节点上。
     by_tag = {o.get("tag"): o for o in outbounds}
@@ -367,6 +387,8 @@ def build_config():
                 # AI 站必须走合格出口；其余默认走合并组
                 {"domain_suffix": pacroute.GOOGLE_APP,
                  "outbound": "grp-google" if gmembers else "grp-general"},
+                # Amazon 系下载走 2098（gai）；没有 2098 时退回合并组。
+                {"domain_suffix": AMAZON_DL, "outbound": am_out},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},
                 # 目标 IP 在中国境内 -> 直连。放在最后，前面显式规则优先。
                 *([{"rule_set": "geoip-cn", "outbound": "direct"}]
