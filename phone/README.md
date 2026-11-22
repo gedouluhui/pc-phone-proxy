@@ -177,6 +177,8 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
   解析阶段会拒绝 Xray 26 已移除的传输（`http` / `h2`）以及 REALITY 不支持的组合
   （`reality` 只能配 `raw`/`xhttp`/`grpc`，`xtls-rprx-vision` 只能跑在 raw 上）：
   这类节点留在池里会让整份配置解析失败，一条坏链接把整池拖死（实机表现是点「启动代理」直接 `启动失败`）。
+  shadowsocks-2022 的 PSK 也在这里验（必须是定长 base64：aes-128 16 字节、aes-256/chacha 32 字节）。
+  万一还有漏网的，`ProxyVpnService` 会在内核拒绝配置时剔除全部导入节点、只用内置节点重启一次。
 - **公开源**：7 个聚合列表依次尝试，单源上限 40 条、总数上限 120 条；主地址失败自动换 jsDelivr 镜像；
   只保留 `parseUri` 能解析的链接，抓完自动触发测速。
 - **空池保护**：节点池为空时不启动 VPN，弹窗引导导入。

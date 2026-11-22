@@ -176,7 +176,31 @@ public class ProxyVpnService extends VpnService {
                     return 0;
                 }
             });
-            controller.startLoop(config, tunFd.getFd());
+            try {
+                controller.startLoop(config, tunFd.getFd());
+            } catch (Throwable startError) {
+                // 内核是"整份配置要么全用、要么全不用"：导入池里只要有一条不合法
+                // （http 传输、reality+ws、SS2022 坏 key…），启动就直接失败。
+                // 各个协议都已经在解析阶段过滤，这里留最后一道：剔除导入节点，
+                // 只用内置节点重启一次，至少保证能上网。
+                java.util.List<ConfigBuilder.Node> builtin = new java.util.ArrayList<>();
+                for (ConfigBuilder.Node n : nodes) {
+                    if (n.tag == null || !n.tag.startsWith("i")) builtin.add(n);
+                }
+                if (builtin.isEmpty() || builtin.size() == nodes.size()) throw startError;
+                log("内核拒绝了当前配置，剔除 "
+                        + (nodes.size() - builtin.size()) + " 个导入节点后重试…");
+                config = ConfigBuilder.fullConfig(builtin, selection);
+                controller = Libv2ray.newCoreController(new CoreCallbackHandler() {
+                    @Override public long startup() { return 0; }
+                    @Override public long shutdown() { return 0; }
+                    @Override public long onEmitStatus(long code, String msg) {
+                        Log.i(TAG, "core status " + code + ": " + msg);
+                        return 0;
+                    }
+                });
+                controller.startLoop(config, tunFd.getFd());
+            }
             if (!controller.getIsRunning()) throw new IllegalStateException("内核启动失败");
 
             currentSelection = selection;

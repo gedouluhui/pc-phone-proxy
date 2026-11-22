@@ -752,6 +752,14 @@ public final class ConfigBuilder {
             hostPort = decoded.substring(a + 1);
         }
         if (!SS_CIPHERS.contains(method)) return null;
+        // shadowsocks-2022 的 PSK 是定长 base64（aes-128 要 16 字节，aes-256/chacha 要 32）。
+        // 公开源里这类链接经常被截断或带空格，Xray 会直接在 core init 阶段报
+        // "shadowsocks_2022: invalid key / bad key" 并拒绝整份配置 —— 一条坏节点
+        // 就让整个 App 起不来（2026-11-23 实机）。这里先验，不合格的直接跳过。
+        if (method.startsWith("2022-")) {
+            int want = method.contains("aes-128") ? 16 : 32;
+            if (!validSs2022Key(password, want)) return null;
+        }
         String[] hp = splitHostPort(hostPort);
         if (hp == null) return null;
         JSONObject server = new JSONObject()
@@ -760,6 +768,25 @@ public final class ConfigBuilder {
         return new JSONObject()
                 .put("protocol", "shadowsocks")
                 .put("settings", new JSONObject().put("servers", new JSONArray().put(server)));
+    }
+
+    /**
+     * SS2022 的 password 可以是多个 key 用 {@code :} 连接（多用户），每个都必须是
+     * 解码后 {@code want} 字节的 base64。任何一段不合法，Xray 都会拒绝整份配置。
+     */
+    private static boolean validSs2022Key(String password, int want) {
+        if (password == null || password.isEmpty()) return false;
+        for (String part : password.split(":", -1)) {
+            String key = part.trim();
+            if (key.isEmpty()) return false;
+            try {
+                byte[] raw = android.util.Base64.decode(key, android.util.Base64.DEFAULT);
+                if (raw == null || raw.length != want) return false;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static JSONObject parseSocksHttp(String body, String proto) throws Exception {
