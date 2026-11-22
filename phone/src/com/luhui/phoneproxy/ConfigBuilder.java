@@ -642,6 +642,18 @@ public final class ConfigBuilder {
         JSONObject vnext = new JSONObject()
                 .put("address", hp[0]).put("port", Integer.parseInt(hp[1]))
                 .put("users", new JSONArray().put(user));
+        // Xray 26 的 REALITY 只支持 RAW / XHTTP / gRPC，且 xtls-rprx-vision 只能跑
+        // 在 RAW 上。分享链接里 reality+ws 很常见，留着会让整份配置解析失败
+        // （报错："REALITY only supports RAW, XHTTP and gRPC for now"），
+        // 一条就把整个隧道拖得起不来，所以这里直接判为不支持。
+        String net = q.containsKey("type") && !q.get("type").isEmpty() ? q.get("type") : "tcp";
+        String sec = q.containsKey("security") ? q.get("security") : "none";
+        boolean rawLike = "raw".equals(net) || "tcp".equals(net);
+        if ("reality".equals(sec)) {
+            if (!(rawLike || "xhttp".equals(net) || "grpc".equals(net))) return null;
+            if ("tcp".equals(net)) { q.put("type", "raw"); net = "raw"; rawLike = true; }
+        }
+        if (user.has("flow") && !rawLike) return null;
         JSONObject ob = new JSONObject()
                 .put("protocol", "vless")
                 .put("settings", new JSONObject().put("vnext", new JSONArray().put(vnext)));

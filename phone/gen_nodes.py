@@ -42,10 +42,21 @@ def b64decode_pad(s):
         return base64.b64decode(s).decode("utf-8")
 
 
+REALITY_NET = ("raw", "tcp", "xhttp", "grpc")
+
+
 def vless_outbound(p, q):
     uuid = urllib.parse.unquote(p.username or "")
     net = q.get("type", ["tcp"])[0]
     sec = q.get("security", ["none"])[0]
+    # Xray 26 起 REALITY 只支持 RAW / XHTTP / gRPC（报错原文：
+    # "REALITY only supports RAW, XHTTP and gRPC for now"）。这类节点留在表里
+    # 会让整份配置解析失败，整个 App 起不来，所以在生成阶段就剔掉。
+    if sec == "reality":
+        if net == "tcp":
+            net = "raw"  # xray 26 里 tcp 已改名 raw，reality 只认新名字
+        if net not in REALITY_NET:
+            raise ValueError("reality over %s is unsupported by xray 26" % net)
     user = {"id": uuid, "encryption": q.get("encryption", ["none"])[0]}
     if q.get("flow"):
         user["flow"] = q["flow"][0]
@@ -151,16 +162,21 @@ def main():
         uri = by_tag[tag]
         p = urllib.parse.urlparse(uri)
         q = urllib.parse.parse_qs(p.query)
-        if p.scheme == "vless":
-            ob = vless_outbound(p, q)
-        elif p.scheme == "ss":
-            ob = ss_outbound(p)
-        elif p.scheme == "vmess":
-            ob = vmess_outbound(p)
-        elif p.scheme in ("http", "https"):
-            ob = http_outbound(p, q)
-        else:
-            raise ValueError("unsupported scheme " + p.scheme)
+        try:
+            if p.scheme == "vless":
+                ob = vless_outbound(p, q)
+            elif p.scheme == "ss":
+                ob = ss_outbound(p)
+            elif p.scheme == "vmess":
+                ob = vmess_outbound(p)
+            elif p.scheme in ("http", "https"):
+                ob = http_outbound(p, q)
+            else:
+                raise ValueError("unsupported scheme " + p.scheme)
+        except ValueError as e:
+            # 单条不兼容就跳过，不能让整张表生成失败
+            print("SKIP", tag, e)
+            continue
         ob["tag"] = "proxy"
         nodes.append({"tag": tag, "name": tag, "outbound": ob})
         # 只打印最终 outbound 里的地址：vmess 的"hostname"其实是 base64 凭据整块，
