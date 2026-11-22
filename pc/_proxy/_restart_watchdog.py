@@ -49,7 +49,13 @@ with open(LOG, "ab") as logf:
     p = subprocess.Popen([pyw, os.path.join(HERE, "watchdog.py")], cwd=HERE,
                          stdout=logf, stderr=subprocess.STDOUT,
                          stdin=subprocess.DEVNULL,
-                         creationflags=0x00000008 | 0x08000000)
+                         # 必须和 pacroute 拉起的 PAC 服务用同一组标志。
+                         # DETACHED_PROCESS(0x8) | CREATE_NO_WINDOW(0x08000000) 是自相矛盾的：
+                         # NO_WINDOW 会给子进程建一个控制台，宿主工具的控制台一销毁，
+                         # 这个「后台」进程就跟着无声消失（finally 都不跑、日志一行不写）。
+                         # 实测：NO_WINDOW 起的看门狗活 3~8 分钟就没了；NEW_PROCESS_GROUP
+                         # 起的 PAC 服务（pacroute:475）能活一个多小时。2026-11-18。
+                         creationflags=0x00000008 | 0x00000200)
 with io.open(PIDF, "w", encoding="utf-8", newline="\n") as f:
     f.write(str(p.pid))
 time.sleep(2.0)
