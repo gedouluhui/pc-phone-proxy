@@ -111,15 +111,30 @@ def _prefix(server):
     return ".".join(parts[-2:]) if len(parts) >= 2 else s
 
 
+def ul_ok(r, min_ul):
+    """上传门槛（纯函数，tests_ci 覆盖）。
+
+    2026-11-23 20:0x：深测里下载 400~900 KB/s、ChatGPT/GitHub 都通的 3 个节点，只因 1 MB 上传在 12 秒内
+    没传完（ul_kbps=0、ul_err 为空 = 超时）就被整体排除，名额被没实测过的旧节点占掉，结果 10 个出口里
+    只有 3 个活的、Gemini 一直转圈。上传慢只影响传图，不该连浏览也不让用：超时的按 0 计分、排在后面，
+    但不淘汰；上传明确报错（ul_err 非空）的照旧要求达标。"""
+    ul = r.get("ul_kbps") or 0
+    if ul >= min_ul:
+        return True
+    return ul == 0 and not r.get("ul_err") and "ul_status" not in r
+
+
 def pick(rows, need_cg, min_dl, min_ul, k, max_per_prefix=2):
     bad = health_bad()
     cand = [r for r in rows
-            if (r.get("dl_kbps") or 0) >= min_dl and (r.get("ul_kbps") or 0) >= min_ul
+            if (r.get("dl_kbps") or 0) >= min_dl and ul_ok(r, min_ul)
             and r.get("github_ok")
             and (str(r.get("server", "")).lower(), str(r.get("port"))) not in bad]
     if need_cg:
         cand = [r for r in cand if r.get("chatgpt_ok")]
-    cand.sort(key=lambda r: -score(r))
+    # 本轮实测过的节点一律排在「沿用上次的旧节点」前面：旧节点的 dl/ul 是填的假定值，
+    # 以前它们的假分数（~525）比实测 400~500 KB/s 的新节点还高，把活节点挤出了池子。
+    cand.sort(key=lambda r: (bool(r.get("fallback")), -score(r)))
     out, seen, pref = [], set(), {}
     for r in cand:
         key = r["server"].lower()
@@ -156,7 +171,8 @@ def pinned_fallback_rows():
         out.append({"server": ob.get("server"), "port": ob.get("server_port"),
                     "proto": ob.get("type") or "?", "uri": uri,
                     "dl_kbps": 400, "ul_kbps": 120, "github_ok": True,
-                    "chatgpt_ok": True, "loc": "旧", "cg_ttfb_ms": 1500})
+                    "chatgpt_ok": True, "loc": "旧", "cg_ttfb_ms": 1500,
+                    "fallback": True})
     return out
 
 

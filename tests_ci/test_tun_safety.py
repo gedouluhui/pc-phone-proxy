@@ -237,5 +237,48 @@ class NoRegression(unittest.TestCase):
                 self.assertIn("old", f.read())
 
 
+class PoolPick(unittest.TestCase):
+    """2026-11-23 20:0x：上传超时的快节点不能被排除；旧节点不能排在实测节点前面。"""
+
+    def setUp(self):
+        import bestroute as B
+        self.B = B
+        self._hb = B.health_bad
+        B.health_bad = lambda: set()
+
+    def tearDown(self):
+        self.B.health_bad = self._hb
+
+    def row(self, server, dl, ul=None, ul_err=None, ul_status=None, **kw):
+        r = {"server": server, "port": 443, "proto": "vless", "uri": "vless://x@%s:443" % server,
+             "dl_kbps": dl, "github_ok": True, "chatgpt_ok": True, "cg_ttfb_ms": 800}
+        if ul is not None:
+            r["ul_kbps"] = ul
+        if ul_err is not None:
+            r["ul_err"] = ul_err
+        if ul_status is not None:
+            r["ul_status"] = ul_status
+        r.update(kw)
+        return r
+
+    def test_ul_timeout_is_kept(self):
+        B = self.B
+        self.assertTrue(B.ul_ok(self.row("1.1.1.1", 500, ul=0, ul_err=""), 80))
+        self.assertTrue(B.ul_ok(self.row("1.1.1.1", 500, ul=200, ul_status=200), 80))
+        self.assertFalse(B.ul_ok(self.row("1.1.1.1", 500, ul=0, ul_err="socks_rep1"), 80))
+        self.assertFalse(B.ul_ok(self.row("1.1.1.1", 500, ul=30, ul_status=200), 80))
+
+    def test_measured_rows_beat_fallback(self):
+        B = self.B
+        rows = [self.row("10.0.1.1", 891, ul=261, ul_status=200),
+                self.row("10.0.2.1", 559, ul=0, ul_err=""),
+                self.row("10.0.3.1", 518, ul=0, ul_err=""),
+                self.row("10.0.4.1", 415, ul=0, ul_err="")]
+        old = [self.row("10.9.%d.1" % i, 400, ul=120, fallback=True) for i in range(9)]
+        got = [r["server"] for r in B.pick(rows + old, True, 300, 80, 10)]
+        self.assertEqual(got[:4], ["10.0.1.1", "10.0.2.1", "10.0.3.1", "10.0.4.1"])
+        self.assertEqual(len(got), 10)
+
+
 if __name__ == "__main__":
     unittest.main()
