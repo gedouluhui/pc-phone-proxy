@@ -3,6 +3,33 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## 带宽感知选线 / Hysteria2 / SNI 分片自救 / 自动 AI 闸门（v3.1，2026-11-23）
+
+v3.0 解决了「能不能连上」，v3.1 解决「连上之后快不快、稳不稳」：
+
+- **带宽感知选线**：`NodeTester.speedTest` 用内核对实测最快的节点下载 256 KB（移动数据 128 KB）。
+  libv2ray 的 `measureInstDelay` 会读完响应体再计时、两次取快（第二次复用连接），所以
+  「下载耗时 − 204 延迟」≈ 纯传输时间。评分 = 延迟 + 200000/带宽(KB/s)（≈ 加载一个 200 KB 资源的毫秒数），
+  `aliveFresh` / 运行配置 / 兜底出口都按评分排。
+- **内核选路**：`observatory + leastPing` → `burstObservatory + leastLoad`。burst 每个节点保留最近 3 次探测
+  （3 分钟一轮），leastLoad 比较「平均延迟 + 抖动」× 代价系数；系数 = 评分/延迟（限制 1~20），
+  用锚定正则 `^tag$` 写进 `costs`（非正则是子串匹配，`proxy-i1` 会误伤 `proxy-i10`）。
+  `expected=1` 让出口固定、不随机换 IP；`maxRTT 5s`、`tolerance 0.34`（3 次里失败 2 次就不选）。
+- **何时测带宽**：连上 8 秒后后台测一次；之后每 20 分钟维护时补测 2 小时内没测过的。
+  测完若发现评分好 1.8 倍以上的节点才重建出口（断流 1~2 秒），否则等下次重建自然生效。
+- **Hysteria2**：解析 `hysteria2://` / `hy2://` → `protocol=hysteria`（version 2）+ `network=hysteria`
+  + 强制 TLS（ALPN h3）；`obfs=salamander` → `finalmask.udp`；`443,20000-30000` 或 `mport=` →
+  `finalmask.quicParams.udpHop`。UDP 节点跳过 TCP 预筛直接内核测。`insecure=1` / `pinSHA256` 不采纳
+  （与其它导入节点一致，自签名节点在实测阶段被筛掉）。
+- **SNI 分片自救**：普通 TLS 节点（非 REALITY/QUIC）TCP 能连上、TLS 却不通时，用 ClientHello 分片
+  （`finalmask.tcp` fragment，`tlshello` / 长度 100-200 / 间隔 10-20ms）重试；通了就记到 `NodeHealth.frag`，
+  `ConfigBuilder.loadNodes` 之后对该节点一律套上分片。下拉标签显示「分片」。
+- **自动 AI 闸门**：连上后如果当前出口里一个 AI 合格节点都没有，每天自动跑一次（12 个节点），
+  验出合格节点就重建出口；维护线程也会在发现新的 AI 合格节点时重建。
+- 界面：节点标签多了实测带宽（如 `· 320ms · 1.2MB/s`）。
+- 验证：投毒语料 351 条（+18 Hysteria2、+1 分片出站），154 条被接受、全部过 `xray run -test`；
+  `full_auto` 改走 leastLoad + costs + fallback，golden 由新增的 `Poison golden` 工作流在云端重新生成。
+
 ## 本机实测选线与节点池自维护（v3.0，2026-11-23）
 
 **问题**（实机截图）：「已连接 · 自动选线（144 节点池）」，但 144 个节点全部「不可用」，网页图片都打不开。
@@ -210,7 +237,7 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 | `src/.../ConfigBuilder.java` | Android 胶水：Context/偏好/网络/内核预检，委托 `NodeConfigCodec` 生成配置 |
 | `src/.../NodeHealth.java` | v3.0：本机实测健康度（按节点指纹持久化） |
 | `src/.../NodeTester.java` | v3.0：TCP 预筛 + 内核真实请求的两段式实测 |
-| `src/.../NodePool.java` | v3.0：导入池唯一写入口；公开源补充、死节点清理、运行配置选员 |
+| `src/.../NodePool.java` | v3.0：导入池唯一写入口；公开源补充、死节点清理、运行配置选员；v3.1：综合评分与 leastLoad 代价系数 |
 | `tests/PoisonHarness.java` | 333 条投毒语料生成器，输出每条被接受的 outbound 与完整配置 |
 | `tools/check_poison.py` | 编译并运行投毒语料，逐条过 `xray run -test`，比对 golden |
 | `AndroidManifest.xml` | minSdk 24 / targetSdk 33，VPN Service 声明 |
@@ -220,7 +247,7 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 ## 实现要点
 
 - **分流**：`geosite:cn`、`geoip:cn`、`geoip:private` 走 `direct`；其余走 `proxy`。
-- **自动选线**（v3.0 起）：内核只放本机实测可用的最快 30 个节点；Xray `observatory` 每 3 分钟用 `generate_204` 探测，
+- **自动选线**（v3.1 起改为 burstObservatory + leastLoad + 带宽代价系数，详见上文；v3.0 时）：内核只放本机实测可用的最快 30 个节点；Xray `observatory` 每 3 分钟用 `generate_204` 探测，
   `balancer`（leastPing）按探测结果选路，`fallbackTag` 兜底到实测最快节点。以下是 v2.x 旧设计的记录：
   observatory 每 10 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
   探针是 16KB 的固定负载（`speed.cloudflare.com/__down?bytes=16384`）而不是 `gstatic/generate_204`：
