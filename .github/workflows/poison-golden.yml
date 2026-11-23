@@ -1,0 +1,39 @@
+name: Poison golden
+
+# 手动触发：在云端用真 Xray 重新生成 phone/tests/full_config.golden.json，并把结果作为 artifact 下载。
+# 用于改了 NodeConfigCodec.fullConfig 或投毒语料之后（本地没有 JDK/xray 时）。
+# 第一遍 --update-golden 写 golden，第二遍不带参数再跑一次，确认所有被接受的出站和完整配置都过 xray -test。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 重新生成 golden 并复核
+        run: |
+          set +e
+          python3 phone/tools/check_poison.py --update-golden > poison.log 2>&1
+          echo "update rc=$?" >> poison.log
+          python3 phone/tools/check_poison.py >> poison.log 2>&1
+          echo "verify rc=$?" >> poison.log
+          cat poison.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: poison-golden
+          path: |
+            phone/tests/full_config.golden.json
+            poison.log
+          retention-days: 3
