@@ -77,3 +77,23 @@ jobs:
       # + fullConfig 与 golden 比对。任何解析规则与内核漂移都会在这里失败。
       - name: 投毒语料闭环（纯 JVM 解析器 ↔ Xray）
         run: python3 phone/tools/check_poison.py
+
+      # 只做 javac 挡不住 aapt2/d8/Manifest 这类打包期错误（specialUse 属性、
+      # dataExtractionRules 都只有真正打包时才会被校验）。这里用临时 debug 签名
+      # 完整跑一遍 build_apk.py。
+      - name: 完整打包（debug 签名）
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$BT" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          fi
+          keytool -genkeypair -keystore /tmp/ci.keystore -alias ci -storepass android \
+            -keypass android -dname "CN=CI" -keyalg RSA -keysize 2048 -validity 3650 \
+            > /dev/null 2>&1
+          echo '[]' > /tmp/empty-nodes.json
+          PROXY_KEYSTORE=/tmp/ci.keystore PROXY_KS_ALIAS=ci PROXY_KS_PASS=android \
+            PROXY_NODES_JSON=/tmp/empty-nodes.json PROXY_APK_OUT=/tmp/ci.apk \
+            python3 phone/build_apk.py
+          test -s /tmp/ci.apk && echo "APK built: $(stat -c %s /tmp/ci.apk) bytes"

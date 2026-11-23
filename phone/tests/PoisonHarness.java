@@ -98,6 +98,15 @@ public final class PoisonHarness {
                 + " rejected=" + rejected
                 + " parse_crashes=" + parseCrashes);
         if (parseCrashes > 0) System.exit(3);
+
+        // 定向回归：authority 后面跟路径（host:port/）不该整条被丢弃。分享站常这么写，
+        // 以前会判成"不可用"，而它并不是畸形链接。放在语料之外，避免打乱 golden 的 tag 序列。
+        String slashUri = "vless://" + UUID + "@1.2.3.4:443/?encryption=none"
+                + "&security=reality&sni=www.example.com&fp=chrome&pbk=" + PBK + "&sid=&type=raw#ok";
+        if (NodeConfigCodec.parseUri(slashUri) == null) {
+            System.err.println("REGRESSION: host:port/ 被拒绝");
+            System.exit(4);
+        }
     }
 
     // ---------------------------------------------------------------- 语料

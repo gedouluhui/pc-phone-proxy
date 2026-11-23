@@ -69,3 +69,13 @@
 - `python phone/tools/check_poison.py`：333 cases / 145 accepted 全部过 `xray run -test`，golden 一致
 - `javac -source 8 -target 8`（android.jar + AAR classes.jar）通过
 - TUN 配置离线烟雾测试：无 `gai` outbound，DNS 两个 DoH 均 detour `grp-dns`，AI/Amazon 规则指向内建组
+
+## 第四轮（2026-11-23 下午）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 24 | `host:port/` 形式的分享链接被整条判为不可用 | `NodeConfigCodec.splitHostPort` 先截掉 authority 后的路径（WS 的 path 在 query 里，不在 authority）；`PoisonHarness` 加定向回归断言（`exit(4)`），不混进语料以免打乱 golden 的 tag 序列 |
+| 25 | CI 只做 javac，挡不住 aapt2 / d8 / Manifest 打包期错误 | `android` job 追加「完整打包」步骤：临时 debug keystore + 空节点表 + `PROXY_APK_OUT=/tmp/ci.apk`，断言产物非空。`specialUse` 前台类型、`dataExtractionRules` 这类只在打包时校验的改动从此有 CI 兜底 |
+| 26 | Android 15 的 16 KB page size 要求（审查稿 item 16） | 已实测 `libgojni.so`（arm64）三个 PT_LOAD 段 `p_align = 0x4000`，满足要求，无需改构建；此处留记录，将来换 AAR 时按同一方法复验 |
+
+验证：`check_poison.py` 333 cases / 145 accepted 全过 `xray run -test`，golden 未变（定向断言不进语料）。

@@ -743,6 +743,10 @@ public final class NodeConfigCodec {
 
     private static String[] splitHostPort(String hp) {
         hp = hp == null ? "" : hp.trim();
+        // 不少分享链接把 authority 写成 host:port/（路径并非传输参数，WS 的
+        // path 在 query 里）。以前整条链接因此被丢弃，节点显示“不可用”。
+        int slash = hp.indexOf('/');
+        if (slash >= 0) hp = hp.substring(0, slash);
         if (hp.isEmpty()) return null;
         try {
             if (hp.startsWith("[")) {
