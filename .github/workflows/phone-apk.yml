@@ -2,14 +2,20 @@ name: Phone APK
 
 # 手动触发：用仓库 secret 里的签名文件构建「公版」APK（0 内置节点，启动时自动从公开源找节点），
 # 作为 workflow artifact 下载。签名与本地 phone/phoneproxy.keystore 一致，可覆盖安装旧版。
+# 填 release_tag（如 v3.0）时，同时把 APK 以 PhoneProxy-public.apk 挂到该 Release（覆盖同名附件）。
 #   PHONE_KS_B64  = base64(phoneproxy.keystore)
 #   PHONE_KS_PASS = keystore / key 口令
 # 不在 CI 构建内置节点的私用版：公开仓库的 artifact 任何登录用户都能下载，会泄露节点凭据。
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "挂到哪个 Release（留空=只出 artifact）"
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   apk:
@@ -56,6 +62,17 @@ jobs:
             python phone/build_apk.py --public
           python phone/check_release.py "out/手机代理-公版.apk"
           cd out && sha256sum *.apk | tee SHA256SUMS.txt
+
+      - name: 挂到 Release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p rel
+          cp "out/手机代理-公版.apk" rel/PhoneProxy-public.apk
+          (cd rel && sha256sum PhoneProxy-public.apk > SHA256SUMS.txt)
+          gh release upload "$TAG" rel/PhoneProxy-public.apk rel/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
 
       - uses: actions/upload-artifact@v4
         with:

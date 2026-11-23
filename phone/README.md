@@ -25,9 +25,10 @@
 **电脑端配套**：`pc/_proxy/tun_mode.py` 路由第一条让 `sing-box.exe` / `xray.exe` 直连，TUN 开着扫描也能测出真实结果。
 重新生成内置池：TUN 重启 → 重新扫描节点 → `gen_pool.py` → `build_apk.py`。
 
-**验证状态**：本轮在无 JDK/SDK、不能执行命令的环境里完成，**尚未编译、尚未真机测试**；`full_config.golden.json`
-按代码逻辑手工同步了 observatory 三个值。构建后请跑 `tools/check_poison.py`，真机按
-`kaggle/PHONEPROXY_V3_HANDOVER_2026-11-23.md` 的清单验收。
+**验证状态**：GitHub Actions CI 全绿（`javac`、`check_poison.py` 投毒闭环 + golden、完整打包、`tests_ci`）；
+签名 APK 由新增的 `.github/workflows/phone-apk.yml`（手动触发，仓库 secret `PHONE_KS_B64` / `PHONE_KS_PASS`
+= 本地 `phoneproxy.keystore`）构建，证书与 v2.x 一致可覆盖安装，已挂到 Release v3.0。**尚未真机验证**，
+按 `kaggle/PHONEPROXY_V3_HANDOVER_2026-11-23.md` 的清单验收。
 
 ## 内核预检与投毒闭环（v2.6）
 
