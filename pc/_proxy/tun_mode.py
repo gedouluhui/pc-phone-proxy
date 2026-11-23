@@ -386,6 +386,12 @@ def build_config():
                            "path": GEOIP_SRS}] if os.path.isfile(GEOIP_SRS) else []),
             "final": "grp-any",
             "rules": [
+                # 本项目自己的测速/探测内核必须直连。TUN 开着跑「重新扫描节点」时，
+                # 深测用的 sing-box 子进程会被 TUN 接管、经当前出口二次转发，测到的是
+                # 「节点套节点」的可达性——国内直连根本连不上的节点也会显示 1.8M/GPT。
+                # 2026-11-23 手机端 24 个内置节点全部不可用，根因就是这批数据。
+                # 主实例自己的出站走 auto_detect_interface，不受这条规则影响。
+                {"process_name": ["sing-box.exe", "xray.exe"], "outbound": "direct"},
                 # 先嗅探域名：后面的 domain_suffix 才能命中 TLS/HTTP 目标
                 {"action": "sniff", "inbound": ["tun-in"],
                  "sniffer": ["http", "tls", "quic"], "timeout": "500ms"},

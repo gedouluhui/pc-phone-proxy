@@ -443,9 +443,26 @@ public final class NodeConfigCodec {
      */
     public static String fullConfig(List<JSONObject> proxies, Set<String> cgTags,
                                     String selectedTag) throws Exception {
+        return fullConfig(proxies, cgTags, selectedTag, null);
+    }
+
+    /**
+     * 同上，另带 balancer 的 fallbackTag。
+     *
+     * <p>v3.0：observatory 刚启动、还没有探测结果时，leastPing 选不出节点，Xray 会落到
+     * outbounds 里的第一个出站——以前那是节点池第一个（常常是死节点），表现是「已连接但
+     * 什么都打不开」，要等 10 分钟后第一轮探测结束才恢复。现在由调用方传入本机实测最快的
+     * 出站作为兜底，冷启动第一秒就走能用的节点。
+     *
+     * @param fallbackTag 完整出站 tag（如 {@code proxy-i3}）；null/空 表示不设置
+     */
+    public static String fullConfig(List<JSONObject> proxies, Set<String> cgTags,
+                                    String selectedTag, String fallbackTag) throws Exception {
         if (proxies == null || proxies.isEmpty()) {
             throw new IllegalStateException("没有可用节点");
         }
+        boolean hasFallback = fallbackTag != null && !fallbackTag.isEmpty()
+                && findByFullTag(proxies, fallbackTag) != null;
 
         JSONObject cfg = new JSONObject();
         cfg.put("log", new JSONObject().put("loglevel", "warning"));
@@ -535,24 +552,31 @@ public final class NodeConfigCodec {
                 cgCount++;
             }
             JSONArray subjects = new JSONArray().put("proxy-");
-            JSONArray balancers = new JSONArray().put(new JSONObject()
+            JSONObject mainBalancer = new JSONObject()
                     .put("tag", "balancer")
                     .put("selector", new JSONArray().put("proxy-"))
-                    .put("strategy", new JSONObject().put("type", "leastPing")));
+                    .put("strategy", new JSONObject().put("type", "leastPing"));
+            if (hasFallback) mainBalancer.put("fallbackTag", fallbackTag);
+            JSONArray balancers = new JSONArray().put(mainBalancer);
             if (cgCount > 0) {
                 subjects.put("cg-");
-                balancers.put(new JSONObject()
+                JSONObject cgBalancer = new JSONObject()
                         .put("tag", "cg-balancer")
                         .put("selector", new JSONArray().put("cg-"))
-                        .put("strategy", new JSONObject().put("type", "leastPing")));
+                        .put("strategy", new JSONObject().put("type", "leastPing"));
+                if (hasFallback) cgBalancer.put("fallbackTag", fallbackTag);
+                balancers.put(cgBalancer);
             }
-            // 探针决定「挑哪颗节点」，0 字节响应只量握手延迟；16KB/10 分钟
-            // 能把 128 KB/s 与 547 KB/s 的节点区分开，又控制移动流量成本。
+            // v3.0：探针改回 generate_204、间隔 10 分钟 → 3 分钟。
+            // 旧值（16KB/600s）意味着当前出口死掉后最长 10 分钟才切走，用户看到的就是
+            // 「已连接但图片都加载不出来」。节点池现在只放本机实测可用的 ≤30 个节点，
+            // 3 分钟一轮 204 探测约 2~3 MB/小时，换来分钟级故障切换。
+            // 带宽差异由 App 侧的实测排序（NodeTester）和 fallbackTag 负责。
             cfg.put("observatory", new JSONObject()
                     .put("subjectSelector", subjects)
-                    .put("probeUrl", "https://speed.cloudflare.com/__down?bytes=16384")
-                    .put("probeInterval", "600s")
-                    .put("probeTimeout", "10s")
+                    .put("probeUrl", "https://www.gstatic.com/generate_204")
+                    .put("probeInterval", "180s")
+                    .put("probeTimeout", "6s")
                     .put("enableConcurrency", true));
             routing.put("balancers", balancers);
             if (cgCount > 0) {
@@ -585,6 +609,13 @@ public final class NodeConfigCodec {
     private static JSONObject find(List<JSONObject> proxies, String baseTag) {
         for (JSONObject ob : proxies) {
             if (("proxy-" + baseTag).equals(ob.optString("tag", ""))) return ob;
+        }
+        return null;
+    }
+
+    private static JSONObject findByFullTag(List<JSONObject> proxies, String fullTag) {
+        for (JSONObject ob : proxies) {
+            if (fullTag.equals(ob.optString("tag", ""))) return ob;
         }
         return null;
     }

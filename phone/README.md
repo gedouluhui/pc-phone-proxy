@@ -3,6 +3,32 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## 本机实测选线与节点池自维护（v3.0，2026-11-23）
+
+**问题**（实机截图）：「已连接 · 自动选线（144 节点池）」，但 144 个节点全部「不可用」，网页图片都打不开。
+三个根因：① 内置 24 个节点是电脑端 **TUN 开着**跑深测得到的——深测子进程被 TUN 接管、经当前出口二次转发，
+测的是「境外能连」而不是「大陆直连能连」；② 公开源按顺序凑满 120 条就停，前三个伊朗/全球向的源占满名额，
+面向大陆的源轮不到，且入池前从不测连通性；③ 内核里放全部节点、observatory 10 分钟一轮、无兜底出口，
+全死时仍显示「已连接」。
+
+**做法**：
+
+- `NodeTester`：**在手机上直连实测**（App 自身不走 VPN）。TCP 预筛（3s、32 并发）→ 通过的用
+  `measureOutboundDelay` 真发 `generate_204`（8 并发）。结果按节点指纹存进 `NodeHealth`，30 分钟内算新鲜。
+- `NodePool`：公开源 12 个（大陆向在前），每个自动试 raw → jsDelivr → ghfast.top，6 路并发、全部抓完，
+  去重后最多 480 个候选，**实测能连上的才入池**（上限 80）；连续失败 3 次的导入节点自动删除。
+- `ProxyVpnService`：可用 <6 先实测（够 6 个先连）；全灭自动去公开源找；仍然没有就**报错、不建 VPN**。
+  运行配置只放实测可用的最快 30 个，balancer 设 `fallbackTag`=最快节点；observatory 改 `generate_204/180s`。
+  运行中每 20 分钟后台复测、清死节点、可用 <5 自动补充，出口过半失效自动重建内核。
+- 界面：下拉按实测排序并显示 `xxms / 未测 / 不可用`；新增「清理不可用的导入节点」；空池可直接点启动。
+
+**电脑端配套**：`pc/_proxy/tun_mode.py` 路由第一条让 `sing-box.exe` / `xray.exe` 直连，TUN 开着扫描也能测出真实结果。
+重新生成内置池：TUN 重启 → 重新扫描节点 → `gen_pool.py` → `build_apk.py`。
+
+**验证状态**：本轮在无 JDK/SDK、不能执行命令的环境里完成，**尚未编译、尚未真机测试**；`full_config.golden.json`
+按代码逻辑手工同步了 observatory 三个值。构建后请跑 `tools/check_poison.py`，真机按
+`kaggle/PHONEPROXY_V3_HANDOVER_2026-11-23.md` 的清单验收。
+
 ## 内核预检与投毒闭环（v2.6）
 
 **问题**：`parseUri` 的规则和 Xray 内核是两套实现，解析器放过的配置不一定能启动；
@@ -98,7 +124,7 @@ keytool 与 apksigner 共用别名和口令，口令通过工具的环境变量�
 
 App 支持三种节点来源：
 
-1. **公开源一键导入**（v2.4 起，公版也能用）：APK 里只存 7 个公开聚合列表的 URL
+1. **公开源一键导入**（v2.4 起，公版也能用；v3.0 起 12 个源、本机实测后只留能连上的）：APK 里只存公开聚合列表的 URL
    （`ConfigBuilder.PUBLIC_SOURCES`，每个都有 GitHub raw + jsDelivr 镜像），运行时抓取、去重、限 120 条，再自动测速。
    **不含任何节点凭据**，所以公开版装完点一下就能用。
 2. **用户导入**：粘贴分享链接或订阅地址。
@@ -181,6 +207,9 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 | `src/.../ProxyVpnService.java` | 前台 VPN 服务：建 TUN、启动/停止 Xray、统计流量、通知 |
 | `src/.../NodeConfigCodec.java` | 纯 JVM 解析器 + 完整 Xray 配置生成（可脱离 Android 测试） |
 | `src/.../ConfigBuilder.java` | Android 胶水：Context/偏好/网络/内核预检，委托 `NodeConfigCodec` 生成配置 |
+| `src/.../NodeHealth.java` | v3.0：本机实测健康度（按节点指纹持久化） |
+| `src/.../NodeTester.java` | v3.0：TCP 预筛 + 内核真实请求的两段式实测 |
+| `src/.../NodePool.java` | v3.0：导入池唯一写入口；公开源补充、死节点清理、运行配置选员 |
 | `tests/PoisonHarness.java` | 333 条投毒语料生成器，输出每条被接受的 outbound 与完整配置 |
 | `tools/check_poison.py` | 编译并运行投毒语料，逐条过 `xray run -test`，比对 golden |
 | `AndroidManifest.xml` | minSdk 24 / targetSdk 33，VPN Service 声明 |
@@ -190,7 +219,9 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 ## 实现要点
 
 - **分流**：`geosite:cn`、`geoip:cn`、`geoip:private` 走 `direct`；其余走 `proxy`。
-- **自动选线**：Xray `observatory` 每 10 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
+- **自动选线**（v3.0 起）：内核只放本机实测可用的最快 30 个节点；Xray `observatory` 每 3 分钟用 `generate_204` 探测，
+  `balancer`（leastPing）按探测结果选路，`fallbackTag` 兜底到实测最快节点。以下是 v2.x 旧设计的记录：
+  observatory 每 10 分钟探测一次，`balancer` 按探测结果选路，节点失败自动切换。
   探针是 16KB 的固定负载（`speed.cloudflare.com/__down?bytes=16384`）而不是 `gstatic/generate_204`：
   0 字节响应只反映握手延迟，测不出带宽，PC 端实测同一批节点上行 547 / 435 / 128 KB/s、握手延迟却几乎一样，
   leastPing 就会稳定选中较慢那颗（页面能开、传大文件传不动）。16KB 在 128 KB/s 上要 125ms、在 547 KB/s 上约 29ms，
@@ -204,9 +235,9 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
   这类节点留在池里会让整份配置解析失败，一条坏链接把整池拖死（实机表现是点「启动代理」直接 `启动失败`）。
   shadowsocks-2022 的 PSK 也在这里验（必须是定长 base64：aes-128 16 字节、aes-256/chacha 32 字节）。
   万一还有漏网的，`ProxyVpnService` 会在内核拒绝配置时剔除全部导入节点、只用内置节点重启一次。
-- **公开源**：7 个聚合列表依次尝试，单源上限 40 条、总数上限 120 条；主地址失败自动换 jsDelivr 镜像；
-  只保留 `parseUri` 能解析的链接，抓完自动触发测速。
-- **空池保护**：节点池为空时不启动 VPN，弹窗引导导入。
+- **公开源**（v3.0）：12 个聚合列表 6 路并发全部抓取，每个依次试 raw / jsDelivr / ghfast.top；按 server:port/协议去重，
+  最多 480 个候选，**本机实测能连上的才入池**（上限 80）。v2.x 是依次抓、凑满 120 条就停、不测连通性。
+- **空池 / 全灭保护**（v3.0）：节点池为空或全部不可用时，启动会自动去公开源找节点；仍然没有就报错、不建立 VPN。
 
 ## 许可
 

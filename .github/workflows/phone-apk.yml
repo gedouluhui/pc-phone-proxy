@@ -1,0 +1,64 @@
+name: Phone APK
+
+# 手动触发：用仓库 secret 里的签名文件构建「公版」APK（0 内置节点，启动时自动从公开源找节点），
+# 作为 workflow artifact 下载。签名与本地 phone/phoneproxy.keystore 一致，可覆盖安装旧版。
+#   PHONE_KS_B64  = base64(phoneproxy.keystore)
+#   PHONE_KS_PASS = keystore / key 口令
+# 不在 CI 构建内置节点的私用版：公开仓库的 artifact 任何登录用户都能下载，会泄露节点凭据。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android platform
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          if [ ! -f "$SDK/platforms/android-35/android.jar" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35"
+          fi
+
+      - name: AAR 与签名文件
+        env:
+          KS_B64: ${{ secrets.PHONE_KS_B64 }}
+        run: |
+          test -n "$KS_B64" || { echo "缺少 secret PHONE_KS_B64"; exit 1; }
+          mkdir -p phone/libs out
+          curl -sSL -o phone/libs/libv2ray.aar \
+            https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.11.9/libv2ray.aar
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/phone.keystore"
+          echo '[]' > "$RUNNER_TEMP/empty-nodes.json"
+
+      - name: 构建公版
+        env:
+          PROXY_KEYSTORE: ${{ runner.temp }}/phone.keystore
+          PROXY_KS_PASS: ${{ secrets.PHONE_KS_PASS }}
+        run: |
+          PROXY_NODES_JSON="$RUNNER_TEMP/empty-nodes.json" \
+            PROXY_APK_OUT="$PWD/out/手机代理-公版.apk" \
+            python phone/build_apk.py --public
+          python phone/check_release.py "out/手机代理-公版.apk"
+          cd out && sha256sum *.apk | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phone-apk
+          path: out/
+          retention-days: 7

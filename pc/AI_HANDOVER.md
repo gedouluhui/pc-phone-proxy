@@ -34,6 +34,17 @@
 
 提交：`0035ed5` → `48e0bc3` → `7b9161c` → `fc43f9c` → `954272c`。
 
+### 2026-11-23 下午：TUN 开着扫描会测出假结果（手机端全灭的根因之一）
+
+- 手机端 24 个内置节点、144 个节点池全部不可用。查 `logs/tun.log`：TUN 从 04:46:56 一直接管，
+  `node_deep.json` 05:11 生成——深测用的 sing-box 子进程被 TUN 接管、经当前出口二次转发，测的是「节点套节点」。
+  harvest 的 TCP 预筛在 system stack 下对任何 IP 都能连上，也失效。
+- 修：`tun_mode.build_config()` 路由第一条 `{"process_name": ["sing-box.exe", "xray.exe"], "outbound": "direct"}`。
+  主实例出站走 `auto_detect_interface`，不受影响。仓库与 `代理便携版/_proxy` 两份已同步，**下次启动 TUN 生效**。
+- 之后要重新扫描节点 → `phone/gen_pool.py` → `phone/build_apk.py`，内置池才是真实大陆直连可用的。
+- 手机端同时改为 v3.0（本机实测选线、节点池自维护），详见 `phone/README.md` 与
+  `kaggle/PHONEPROXY_V3_HANDOVER_2026-11-23.md`。原文件备份在 `kaggle/_bak_phoneproxy_20261123/`。
+
 ### 2026-11-23 这一轮
 
 - `tun_mode.py` 删除了 `gai` HTTP outbound、`gai_tag` 和启动前的 `ensure_gai()`；

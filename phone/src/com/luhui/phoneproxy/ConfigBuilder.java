@@ -13,10 +13,14 @@ import java.net.URL;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import libv2ray.Libv2ray;
 
@@ -33,44 +37,64 @@ public final class ConfigBuilder {
 
     public static final String PREFS = "imported";
     public static final String KEY_URIS = "uris";
-    /** 上限：公开源一次能收进来一百多个，40 太小；120 条出站对 Xray 仍是轻松的。 */
-    public static final int MAX_IMPORTED = 120;
-    /** 单个源最多收多少条，避免一个巨型聚合列表把池子塞满。 */
-    private static final int PER_SOURCE = 40;
+    /**
+     * 导入池上限。v3.0 起导入池只放「本机实测能连上」的节点（死节点会被
+     * {@link NodePool#pruneDeadImports} 清掉），80 个足够；运行配置再从里面挑最快的 30 个。
+     */
+    public static final int MAX_IMPORTED = 80;
+    /** 单个源最多取多少条候选，避免一个巨型聚合列表挤掉其它源。 */
+    private static final int PER_SOURCE = 80;
+    /** 一次补充最多实测多少个候选（去重后）。TCP 预筛 32 并发，约 1 分钟。 */
+    private static final int CANDIDATE_MAX = 480;
 
     /**
      * 公开订阅源：仓库里只放 URL，**不含任何节点凭据**，运行时才去抓。
-     * 每行 = {名字, 主地址, 镜像地址}。镜像是 jsDelivr 的 GitHub 加速，国内更容易连上；
-     * 主地址与镜像都失败就跳过这一条，不影响其它源。
+     * 每行 = {名字, GitHub raw 地址}；jsDelivr 与 ghfast.top 镜像由 {@link #mirrorsOf} 自动生成
+     * （大陆直连 raw.githubusercontent.com 常被 DNS 污染）。全部失败就跳过这一条。
      * 这些是第三方公开聚合列表，节点质量与存活率不受本项目控制。
+     *
+     * <p>v3.0 顺序：面向大陆用户、自称在国内测过速的源放前面，伊朗/俄罗斯向的大聚合放后面。
+     * 顺序只影响去重时谁先占位——是否入池完全由本机实测决定，所以列表写宽一点没有坏处，
+     * 抓不到（404/被墙）的源只是在日志里显示失败。2026-11-23 改写时开发环境无法访问 GitHub，
+     * 这些路径没有逐个验证过，接手者请看 App 日志里每个源的「N 条，收下 M」。
      */
     public static final String[][] PUBLIC_SOURCES = {
-            {"barry-far",
-             "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt",
-             "https://cdn.jsdelivr.net/gh/barry-far/V2ray-Config@main/All_Configs_Sub.txt"},
-            {"mahdibland",
-             "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
-             "https://cdn.jsdelivr.net/gh/mahdibland/V2RayAggregator@master/sub/sub_merge.txt"},
-            {"ALIILAPRO",
-             "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt",
-             "https://cdn.jsdelivr.net/gh/ALIILAPRO/v2rayNG-Config@main/sub.txt"},
-            {"peasoft",
-             "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
-             "https://cdn.jsdelivr.net/gh/peasoft/NoMoreWalls@master/list.txt"},
-            {"ermaozi",
-             "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
-             "https://cdn.jsdelivr.net/gh/ermaozi/get_subscribe@main/subscribe/v2ray.txt"},
-            {"aiboboxx",
-             "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub",
-             "https://cdn.jsdelivr.net/gh/aiboboxx/v2rayfree@main/sub"},
-            {"ripaojiedian",
-             "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub",
-             "https://cdn.jsdelivr.net/gh/ripaojiedian/freenode@main/sub"},
+            // —— 面向大陆 ——
+            {"peasoft", "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt"},
+            {"ermaozi", "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"},
+            {"aiboboxx", "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2"},
+            {"aiboboxx-sub", "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub"},
+            {"Pawdroid", "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"},
+            {"ripaojiedian", "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub"},
+            {"chengaopan", "https://raw.githubusercontent.com/chengaopan/AutoMergePublicNodes/master/list.txt"},
+            {"mfuu", "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray"},
+            {"freefq", "https://raw.githubusercontent.com/freefq/free/master/v2"},
+            // —— 全球大聚合（大陆直连存活率低，靠实测筛） ——
+            {"mahdibland", "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt"},
+            {"barry-far", "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt"},
+            {"ALIILAPRO", "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt"},
     };
+
+    /** raw 地址 → [raw, jsDelivr, ghfast.top]。非 GitHub raw 的地址原样返回。 */
+    static List<String> mirrorsOf(String raw) {
+        List<String> out = new ArrayList<>();
+        out.add(raw);
+        String prefix = "https://raw.githubusercontent.com/";
+        if (raw.startsWith(prefix)) {
+            String[] seg = raw.substring(prefix.length()).split("/", 4); // owner/repo/branch/path
+            if (seg.length == 4) {
+                out.add("https://cdn.jsdelivr.net/gh/" + seg[0] + "/" + seg[1] + "@" + seg[2] + "/" + seg[3]);
+            }
+            out.add("https://ghfast.top/" + raw);
+        }
+        return out;
+    }
 
 
     /** loadNodes 跳过的条目（tag + 原因），供界面日志诊断用。 */
-    public static final List<String> lastSkips = new ArrayList<>();
+    // v3.0：loadNodes 会被界面、实测、后台维护线程同时调用，必须是线程安全的列表
+    public static final List<String> lastSkips =
+            java.util.Collections.synchronizedList(new ArrayList<String>());
 
     /**
      * AI 出口闸门的探针。必须是「被地区封锁时返回 403、正常时返回 200」的地址。
@@ -185,32 +209,20 @@ public final class ConfigBuilder {
         Set<String> kernelBad = loadKernelBad(ctx);
         int idx = 0;
         for (String uri : uris) {
-            JSONObject ob;
-            try {
-                ob = parseUri(uri);
-            } catch (Throwable t) {
-                ob = null;
-            }
-            if (ob == null) {
+            String tag = "i" + idx;
+            Node node = nodeFromUri(uri, tag, true);
+            if (node == null) {
                 lastSkips.add("导入第 " + (idx + 1) + " 个无法解析");
                 idx++;
                 continue;
             }
-            String tag = "i" + idx++;
-            try {
-                ob.put("tag", "proxy-" + tag);
-                // 公开源/第三方订阅里的 allowInsecure=1 等于让节点静默关掉证书校验，
-                // 中间人可以随便截。导入节点一律不信这个字段，只信内置节点自带的配置。
-                stripAllowInsecure(ob);
-            } catch (Exception e) {
-                continue;
-            }
-            String fp = outboundFingerprint(ob);
+            idx++;
+            String fp = outboundFingerprint(node.outbound);
             if (fp != null && kernelBad.contains(fp)) {
                 lastSkips.add(tag + " 未通过内核预检");
                 continue;
             }
-            out.add(new Node(tag, tag + " · " + displayName(ob), true, false, ob));
+            out.add(node);
         }
         // 本机实测过的闸门结果优先于内置 JSON 里的静态标记：
         // 公开源导入的节点没有 cg 字段，全靠这一步才有资格进 cg-balancer。
@@ -219,6 +231,48 @@ public final class ConfigBuilder {
             if (!n.cg && gated.contains(n.key)) n.cg = true;
         }
         return out;
+    }
+
+    /**
+     * 一条分享链接 → Node（tag 由调用方给）。导入路径与公开源候选共用，保证候选阶段
+     * 测出的健康度（按 nodeKey）入池后原样沿用。解析失败返回 null。
+     */
+    public static Node nodeFromUri(String uri, String tag, boolean imported) {
+        JSONObject ob;
+        try {
+            ob = parseUri(uri);
+        } catch (Throwable t) {
+            ob = null;
+        }
+        if (ob == null) return null;
+        try {
+            ob.put("tag", "proxy-" + tag);
+            // 公开源/第三方订阅里的 allowInsecure=1 等于让节点静默关掉证书校验，
+            // 中间人可以随便截。导入节点一律不信这个字段，只信内置节点自带的配置。
+            if (imported) stripAllowInsecure(ob);
+        } catch (Exception e) {
+            return null;
+        }
+        return new Node(tag, tag + " · " + displayName(ob), imported, false, ob);
+    }
+
+    /** 出站的服务器地址 {host, port}；取不到返回 null。 */
+    public static String[] endpoint(JSONObject ob) {
+        try {
+            JSONObject s = ob.optJSONObject("settings");
+            JSONArray v = s != null ? s.optJSONArray("vnext") : null;
+            JSONArray sv = s != null ? s.optJSONArray("servers") : null;
+            JSONObject ep = null;
+            if (v != null && v.length() > 0) ep = v.optJSONObject(0);
+            else if (sv != null && sv.length() > 0) ep = sv.optJSONObject(0);
+            if (ep == null) return null;
+            String host = ep.optString("address", "").trim();
+            int port = ep.optInt("port", 0);
+            if (host.isEmpty() || port < 1 || port > 65535) return null;
+            return new String[]{host, String.valueOf(port)};
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 用标签查节点；找不到返回 null。 */
@@ -461,20 +515,10 @@ public final class ConfigBuilder {
         sp.edit().putStringSet(KEY_GATE, next).apply();
     }
 
-    /** 合并导入（去重、限 40 条），返回新增条数。 */
+    /** 合并导入（按 server:port/协议 去重、按健康度排序、限 {@link #MAX_IMPORTED}），返回新增条数。 */
     public static int addImportedUris(Context ctx, List<String> newUris) {
-        LinkedHashSet<String> set = new LinkedHashSet<>(loadImportedUris(ctx));
-        int before = set.size();
-        for (String u : newUris) {
-            u = u.trim();
-            if (u.isEmpty()) continue;
-            if (parseUri(u) == null) continue; // 只收能解析的
-            set.add(u);
-            if (set.size() >= MAX_IMPORTED) break;
-        }
-        List<String> merged = new ArrayList<>(set);
-        saveImportedUris(ctx, merged);
-        return Math.max(0, merged.size() - before);
+        // 所有导入池写操作统一走 NodePool（同一把锁），界面导入与后台维护可能并发
+        return NodePool.addUris(ctx, newUris);
     }
 
     /** 把一段文本拆成分享链接（支持多行/空格分隔；整段 base64 会先解码）。 */
@@ -505,8 +549,8 @@ public final class ConfigBuilder {
         HttpURLConnection c = null;
         for (int hop = 0; hop <= SubscriptionGuard.MAX_REDIRECTS; hop++) {
             c = (HttpURLConnection) target.toURL().openConnection();
-            c.setConnectTimeout(15000);
-            c.setReadTimeout(25000);
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(20000);
             // Redirects are followed by hand so every hop passes the same guard;
             // otherwise a public URL could bounce the app into 127.0.0.1.
             c.setInstanceFollowRedirects(false);
@@ -543,6 +587,7 @@ public final class ConfigBuilder {
         if (c == null) throw new IllegalStateException("没有可用的连接");
         InputStream in = null;
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        boolean truncated = false;
         try {
         in = c.getInputStream();
         byte[] buf = new byte[16384];
@@ -551,9 +596,11 @@ public final class ConfigBuilder {
         while ((n = in.read(buf)) > 0) {
             total += n;
             // A hostile or broken subscription must not exhaust the phone's RAM
-            // (review C11). 10 MB is far beyond any real share-link list.
+            // (review C11). v3.0: 超过 2 MB 不再整源作废，而是截断——大聚合列表是按行的
+            // 明文链接，前 2 MB 已经是几千条候选；base64 整段编码的源截断后解不开，下面会报错。
             if (total > 2 * 1024 * 1024) {
-                throw new IllegalStateException("订阅超过 2 MB，已中止");
+                truncated = true;
+                break;
             }
             bos.write(buf, 0, n);
         }
@@ -562,6 +609,11 @@ public final class ConfigBuilder {
             c.disconnect();
         }
         String body = bos.toString("UTF-8").trim();
+        if (truncated) {
+            if (!body.contains("://")) throw new IllegalStateException("订阅超过 2 MB 且是整段 base64，无法截断使用");
+            int nl = body.lastIndexOf('\n');
+            if (nl > 0) body = body.substring(0, nl); // 丢掉被截断的最后一行
+        }
         if (!body.contains("://")) {
             String dec = tryB64(body);
             if (dec != null) body = dec;
@@ -570,39 +622,68 @@ public final class ConfigBuilder {
     }
 
     /**
-     * 抓取全部公开源（必须在后台线程调用）。每个源先走 GitHub raw，失败再走 jsDelivr 镜像。
-     * log 收每个源的结果，供界面逐行显示；总数封顶 MAX_IMPORTED，单源封顶 PER_SOURCE。
-     * 只收 parseUri 能解析的链接，避免把注释/广告行灌进节点池。
+     * 抓取全部公开源（必须在后台线程调用）。v3.0：6 路并发、每个源依次试 raw → jsDelivr → ghfast
+     * 镜像，**所有源都抓**（v2.x 凑满 120 条就停，排在后面的大陆向源永远轮不到）。
+     * 按 server:port/协议 去重后最多返回 {@link #CANDIDATE_MAX} 条候选；单源最多 {@link #PER_SOURCE}。
+     * 返回的只是候选，是否入池由 {@link NodePool#refreshFromPublic} 的本机实测决定。
      */
     public static List<String> fetchPublicSources(List<String> log) {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String[] s : PUBLIC_SOURCES) {
-            if (out.size() >= MAX_IMPORTED) {
-                log.add("已够 " + MAX_IMPORTED + " 条，后面的源不再抓");
-                break;
-            }
-            String name = s[0];
-            String[] urls = (s.length > 2 && s[2] != null && !s[2].isEmpty())
-                    ? new String[]{s[1], s[2]} : new String[]{s[1]};
-            boolean done = false;
-            for (int i = 0; i < urls.length && !done; i++) {
-                String tag = name + (urls.length > 1 && i == 1 ? "（镜像）" : "");
-                try {
-                    List<String> got = fetchSubscription(urls[i]);
-                    int added = 0;
-                    for (String u : got) {
-                        if (added >= PER_SOURCE || out.size() >= MAX_IMPORTED) break;
-                        if (parseUri(u) == null) continue;
-                        if (out.add(u)) added++;
+        final int count = PUBLIC_SOURCES.length;
+        final List<List<String>> got = new ArrayList<>();
+        final String[] notes = new String[count];
+        for (int i = 0; i < count; i++) got.add(null);
+        ExecutorService pool = Executors.newFixedThreadPool(6);
+        for (int i = 0; i < count; i++) {
+            final int idx = i;
+            pool.execute(() -> {
+                String name = PUBLIC_SOURCES[idx][0];
+                List<String> urls = mirrorsOf(PUBLIC_SOURCES[idx][1]);
+                String err = "?";
+                for (int k = 0; k < urls.size(); k++) {
+                    try {
+                        List<String> list = fetchSubscription(urls.get(k));
+                        synchronized (got) {
+                            got.set(idx, list);
+                        }
+                        String via = k == 0 ? "" : (k == 1 ? "（jsDelivr）" : "（镜像）");
+                        notes[idx] = name + via + "：" + list.size() + " 条";
+                        return;
+                    } catch (Exception e) {
+                        err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
                     }
-                    log.add(tag + "：" + got.size() + " 条，收下 " + added);
-                    done = true;
-                } catch (Exception e) {
-                    log.add(tag + " 失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                }
+                notes[idx] = name + " 失败：" + err;
+            });
+        }
+        pool.shutdown();
+        try {
+            pool.awaitTermination(150, TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+        }
+        pool.shutdownNow();
+
+        LinkedHashMap<String, String> byKey = new LinkedHashMap<>();
+        for (int i = 0; i < count; i++) {
+            List<String> list;
+            synchronized (got) {
+                list = got.get(i);
+            }
+            int added = 0;
+            if (list != null) {
+                for (String u : list) {
+                    if (added >= PER_SOURCE || byKey.size() >= CANDIDATE_MAX) break;
+                    JSONObject ob = parseUri(u);
+                    if (ob == null) continue;
+                    String k = nodeKey(ob);
+                    if (byKey.containsKey(k)) continue;
+                    byKey.put(k, u);
+                    added++;
                 }
             }
+            String note = notes[i] != null ? notes[i] : PUBLIC_SOURCES[i][0] + " 超时";
+            log.add(list != null ? note + "，收下 " + added : note);
         }
-        return new ArrayList<>(out);
+        return new ArrayList<>(byKey.values());
     }
 
     // --------------------------------------------------------------- 配置
@@ -636,6 +717,19 @@ public final class ConfigBuilder {
             if (n.cg) cgTags.add(n.tag);
         }
         return NodeConfigCodec.fullConfig(proxies, cgTags, selected);
+    }
+
+    /** 同上，带 balancer 兜底出站（完整 tag，如 proxy-i3），见 NodeConfigCodec。 */
+    public static String fullConfig(List<Node> nodes, String selected, String fallbackTag)
+            throws Exception {
+        if (nodes == null || nodes.isEmpty()) throw new IllegalStateException("没有可用节点");
+        List<JSONObject> proxies = new ArrayList<>();
+        Set<String> cgTags = new HashSet<>();
+        for (Node n : nodes) {
+            proxies.add(n.outbound);
+            if (n.cg) cgTags.add(n.tag);
+        }
+        return NodeConfigCodec.fullConfig(proxies, cgTags, selected, fallbackTag);
     }
 
     // ---------------------------------------------------------- 分享链接解析

@@ -50,7 +50,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private final List<String> nodeLabels = new ArrayList<>();
     private final List<String> nodeTags = new ArrayList<>();
     private final List<ConfigBuilder.Node> nodeList = new ArrayList<>();
-    private final Map<String, Long> nodeMs = new HashMap<>();
+    private volatile boolean labelRefreshPending = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final StringBuilder logBuf = new StringBuilder();
@@ -79,7 +79,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("与电脑共用节点池 · 自动选线 · 国内外自动分流");
+        sub.setText("本机实测选线 · 死节点自动替换 · 国内直连");
         sub.setTextSize(13);
         sub.setTextColor(Color.parseColor("#888888"));
         sub.setPadding(0, dp(4), 0, dp(16));
@@ -198,7 +198,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
         // 公版不带任何内置节点；空池时给一次明确引导，别让用户点启动后只看到失败。
         if (nodeList.isEmpty()) {
-            appendLog("节点池为空：先点「导入节点 / 订阅」粘贴分享链接或订阅地址。");
+            appendLog("节点池为空：直接点「启动代理」会自动从公开源找节点；也可以导入自己的订阅。");
             ui.post(this::showEmptyHint);
         }
 
@@ -228,7 +228,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         nodeLabels.add("自动 · 智能选线（故障自动切换）");
         nodeTags.add("auto");
         try {
-            for (ConfigBuilder.Node n : ConfigBuilder.loadNodes(this)) {
+            // v3.0：按本机实测排序——能用的（延迟升序）在最上面，未测的居中，不可用的沉底
+            for (ConfigBuilder.Node n : NodePool.sortedForDisplay(this, ConfigBuilder.loadNodes(this))) {
                 nodeList.add(n);
                 nodeTags.add(n.tag);
                 nodeLabels.add(labelFor(n));
@@ -247,9 +248,14 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     }
 
     private String labelFor(ConfigBuilder.Node n) {
-        Long ms = nodeMs.get(n.tag);
-        String suffix = "";
-        if (ms != null) suffix = ms < 0 ? " · 不可用" : " · " + ms + "ms";
+        // 状态来自 NodeHealth（按节点指纹持久化，重启 App 也在），不再只看本次会话
+        NodeHealth.Entry e = NodeHealth.get(this, n.key);
+        long now = System.currentTimeMillis();
+        String suffix;
+        if (e == null || e.testedAt == 0) suffix = " · 未测";
+        else if (e.ms > 0) suffix = " · " + e.ms + "ms"
+                + (now - e.testedAt > NodeHealth.FRESH_MS ? "（较早）" : "");
+        else suffix = " · 不可用";
         // AI✓ = 这个节点实测过得了 ChatGPT/Claude 的地区闸门（AI 域名只走这些）
         return n.name + (n.cg ? " · AI✓" : "") + suffix;
     }
@@ -268,8 +274,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
     private void showImportDialog() {
         final String[] items = {
-                "从公开源导入（自动抓取并测速）",
+                "从公开源导入（抓取后在本机逐个实测，只留能连上的）",
                 "粘贴分享链接 / 订阅地址",
+                "清理不可用的导入节点",
                 "清空已导入的节点"
         };
         new AlertDialog.Builder(this)
@@ -277,6 +284,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 .setItems(items, (d, which) -> {
                     if (which == 0) importFromPublicSources();
                     else if (which == 1) showPasteDialog();
+                    else if (which == 2) pruneDead();
                     else clearImported();
                 })
                 .setNegativeButton("取消", null)
@@ -288,36 +296,53 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
      * 所以公开版装完点这一下就能用，而仓库与安装包都不会泄露别人的节点。
      */
     private void importFromPublicSources() {
-        appendLog("从公开源抓取节点（只抓公开列表，不内置任何凭据）…");
+        appendLog("从公开源抓节点，并在本机网络逐个实测（1~4 分钟，只留能连上的；APK 不含任何凭据）…");
+        importBtn.setEnabled(false);
         new Thread(() -> {
             List<String> logs = new ArrayList<>();
             try {
-                List<String> uris = ConfigBuilder.fetchPublicSources(logs);
-                uris = ConfigBuilder.screenImports(this, uris, logs);
-                int added = ConfigBuilder.addImportedUris(this, uris);
-                int total = ConfigBuilder.loadImportedUris(this).size();
+                final int added = NodePool.refreshFromPublic(this, logs, 240000L, 0,
+                        (node, ms, done, all) -> {
+                            if (done == all || done % 40 == 0) appendLog("  实测 " + done + "/" + all);
+                        },
+                        () -> runOnUiThread(() -> {
+                            appendLog("后台实测收尾：又有新节点测通，已入池");
+                            rebuildSpinner();
+                        }));
+                final int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
+                    importBtn.setEnabled(true);
                     for (String l : logs) appendLog("  · " + l);
-                    appendLog("公开源结果：新增 " + added + " 个，池内共 " + total + " 个");
+                    appendLog("公开源结果：新增 " + added + " 个实测可用节点，导入池共 " + total + " 个");
+                    rebuildSpinner();
                     if (added > 0) {
-                        toast("抓到 " + added + " 个新节点，开始测速…");
-                        rebuildSpinner();
-                        startService(new Intent(this, ProxyVpnService.class)
-                                .setAction(ProxyVpnService.ACTION_MEASURE));
+                        toast("新增 " + added + " 个能连上的节点");
                         if (ProxyVpnService.state == ProxyVpnService.STATE_RUNNING) {
                             applyStart(pendingNode, true);
                         }
                     } else {
-                        toast("这次没抓到可用节点，稍后再试（公开源会抽风）");
+                        toast("这次没找到能连上的新节点，稍后或换个网络再试");
                     }
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 runOnUiThread(() -> {
+                    importBtn.setEnabled(true);
+                    for (String l : logs) appendLog("  · " + l);
                     toast("抓取失败：" + e.getMessage());
                     appendLog("抓取失败：" + e.getMessage());
                 });
             }
         }, "public-sources").start();
+    }
+
+    private void pruneDead() {
+        int n = NodePool.pruneDeadImports(this, 1);
+        toast(n > 0 ? "清理了 " + n + " 个不可用节点" : "没有可清理的（未实测的节点不会被删）");
+        appendLog("清理不可用导入节点：" + n + " 个");
+        rebuildSpinner();
+        if (n > 0 && ProxyVpnService.state == ProxyVpnService.STATE_RUNNING) {
+            applyStart(pendingNode, true);
+        }
     }
 
     private void showPasteDialog() {
@@ -365,13 +390,15 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                     uris = ConfigBuilder.splitUris(t);
                 }
                 uris = ConfigBuilder.screenImports(this, uris, logs);
-                int added = ConfigBuilder.addImportedUris(this, uris);
+                int added = NodePool.addUris(this, uris);
                 int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
                     for (String l : logs) appendLog("  · " + l);
-                    toast("导入 " + added + " 个新节点（共 " + total + "）");
-                    appendLog("导入 " + added + " 个新节点（共 " + total + "）");
+                    toast("导入 " + added + " 个新节点（共 " + total + "），开始实测…");
+                    appendLog("导入 " + added + " 个新节点（共 " + total + "）；自己的订阅不做筛除，只实测标注");
                     rebuildSpinner();
+                    startService(new Intent(this, ProxyVpnService.class)
+                            .setAction(ProxyVpnService.ACTION_MEASURE));
                     if (ProxyVpnService.state == ProxyVpnService.STATE_RUNNING) {
                         applyStart(pendingNode, true); // 强制重启使新节点生效
                     }
@@ -419,9 +446,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         }
         if (ProxyVpnService.state == ProxyVpnService.STATE_CONNECTING) return;
         if (nodeList.isEmpty()) {
-            appendLog("还没有节点，先导入再启动。");
-            showEmptyHint();
-            return;
+            appendLog("节点池为空：启动时会自动从公开源抓取并实测，约 1~3 分钟…");
         }
         Intent consent = VpnService.prepare(this);
         if (consent != null) {
@@ -441,8 +466,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         new AlertDialog.Builder(this)
                 .setTitle("还没有节点")
                 .setMessage("这个版本不自带任何节点，避免把别人的节点凭据公开。\n\n"
-                        + "点「导入节点 / 订阅」，粘贴分享链接（每行一条），"
-                        + "或 http(s) 订阅地址；导入后会自动连接。")
+                        + "直接点「启动代理」：App 会自动从公开源抓节点、在你当前的网络下逐个实测，"
+                        + "只用能连上的（约 1~3 分钟）。\n\n"
+                        + "也可以点「导入节点 / 订阅」粘贴自己的分享链接或订阅地址。")
                 .setPositiveButton("去导入", (d, w) -> showImportDialog())
                 .setNegativeButton("稍后", null)
                 .show();
@@ -529,10 +555,13 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
     @Override
     public void onMeasure(String tag, long ms) {
-        ui.post(() -> {
-            nodeMs.put(tag, ms);
+        // 实测几百个节点时回调很密，合并成每 400ms 刷一次标签
+        if (labelRefreshPending) return;
+        labelRefreshPending = true;
+        ui.postDelayed(() -> {
+            labelRefreshPending = false;
             refreshLabels();
-        });
+        }, 400);
     }
 
     @Override
