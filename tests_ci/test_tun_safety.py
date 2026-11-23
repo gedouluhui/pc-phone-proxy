@@ -278,6 +278,29 @@ class PoolPick(unittest.TestCase):
         got = [r["server"] for r in B.pick(rows + old, True, 300, 80, 10)]
         self.assertEqual(got[:4], ["10.0.1.1", "10.0.2.1", "10.0.3.1", "10.0.4.1"])
         self.assertEqual(len(got), 10)
+    def test_history_survives_a_thin_scan(self):
+        B = self.B
+        good = [self.row("10.0.%d.1" % i, 500, ul=0, ul_err="") for i in range(1, 4)]
+        h = B.merge_history({}, good, 1000.0, 300)
+        self.assertEqual(len(h), 3)
+        # 下一轮只测出 1 个新节点：上一轮的 3 个仍作为第 1 档候选，排在旧节点之前
+        thin = [self.row("10.0.9.1", 430, ul=100, ul_status=200)]
+        h2 = B.merge_history(h, thin, 2000.0, 300)
+        seen = {B._rkey(r) for r in thin}
+        hrows = B.history_rows(h2, seen)
+        self.assertEqual(sorted(r["server"] for r in hrows), ["10.0.1.1", "10.0.2.1", "10.0.3.1"])
+        old = [self.row("10.8.%d.1" % i, 400, ul=120, fallback=2) for i in range(9)]
+        got = [r["server"] for r in B.pick(thin + hrows + old, True, 300, 80, 10)]
+        self.assertEqual(got[0], "10.0.9.1")
+        self.assertEqual(sorted(got[1:4]), ["10.0.1.1", "10.0.2.1", "10.0.3.1"])
+
+    def test_history_expires_and_skips_bad(self):
+        B = self.B
+        h = B.merge_history({}, [self.row("10.0.1.1", 500, ul=200, ul_status=200)], 0.0, 300)
+        self.assertEqual(B.merge_history(h, [], B.HIST_TTL + 1.0, 300), {})
+        bad = [self.row("10.0.2.1", 100), self.row("10.0.3.1", 500, chatgpt_ok=False)]
+        self.assertEqual(B.merge_history({}, bad, 0.0, 300), {})
+
 
 
 if __name__ == "__main__":

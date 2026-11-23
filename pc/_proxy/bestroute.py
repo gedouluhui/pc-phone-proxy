@@ -134,7 +134,7 @@ def pick(rows, need_cg, min_dl, min_ul, k, max_per_prefix=2):
         cand = [r for r in cand if r.get("chatgpt_ok")]
     # 本轮实测过的节点一律排在「沿用上次的旧节点」前面：旧节点的 dl/ul 是填的假定值，
     # 以前它们的假分数（~525）比实测 400~500 KB/s 的新节点还高，把活节点挤出了池子。
-    cand.sort(key=lambda r: (bool(r.get("fallback")), -score(r)))
+    cand.sort(key=lambda r: (int(r.get("fallback") or 0), -score(r)))
     out, seen, pref = [], set(), {}
     for r in cand:
         key = r["server"].lower()
@@ -172,7 +172,53 @@ def pinned_fallback_rows():
                     "proto": ob.get("type") or "?", "uri": uri,
                     "dl_kbps": 400, "ul_kbps": 120, "github_ok": True,
                     "chatgpt_ok": True, "loc": "旧", "cg_ttfb_ms": 1500,
-                    "fallback": True})
+                    "fallback": 2})
+    return out
+
+
+HIST = os.path.join(HERE, "node_good_history.json")
+HIST_TTL = 24 * 3600
+HIST_CAP = 40
+
+
+def _rkey(r):
+    return (str(r.get("server", "")).lower(), str(r.get("port")))
+
+
+def merge_history(hist, rows, now, min_dl, ttl=HIST_TTL, cap=HIST_CAP):
+    """把本轮实测合格的节点并进「近期好节点」记录（纯函数，tests_ci 覆盖）。
+
+    2026-11-23 20:3x：19:47 那轮测出 4 个好节点（SE/FI/SG/IT），20:30 这轮只测出 1 个，而 bestroute
+    只看本轮 node_deep.json，上轮的好节点就此丢失；新池比当前隧道还差，被守护拒绝切换。
+    免费节点每轮能测通的就那几个、而且轮轮不同，所以记住 24 小时内实测合格过的，下一轮当候选
+    （排在本轮实测之后、沿用旧节点之前），死了的由闸门和 urltest 自然跳过。"""
+    out = {}
+    for k, v in (hist or {}).items():
+        try:
+            if now - float(v.get("seen_at") or 0) <= ttl and v.get("uri"):
+                out[k] = v
+        except (TypeError, ValueError):
+            continue
+    for r in rows or []:
+        if ((r.get("dl_kbps") or 0) >= min_dl and r.get("chatgpt_ok") and r.get("github_ok")
+                and r.get("uri")):
+            k = "%s:%s" % _rkey(r)
+            out[k] = {kk: vv for kk, vv in r.items() if kk != "fallback"}
+            out[k]["seen_at"] = now
+    keep = sorted(out.items(), key=lambda kv: -float(kv[1].get("seen_at") or 0))[:cap]
+    return dict(keep)
+
+
+def history_rows(hist, seen):
+    """记录里、本轮没测到的节点，标成第 1 档候选。"""
+    out = []
+    for v in (hist or {}).values():
+        if _rkey(v) in seen:
+            continue
+        r = dict(v)
+        r.pop("seen_at", None)
+        r["fallback"] = 1
+        out.append(r)
     return out
 
 
@@ -329,14 +375,27 @@ def main():
     args = ap.parse_args()
 
     rows = json.load(open(DEEP, encoding="utf-8"))["rows"]
-    fallback = pinned_fallback_rows()
-    seen = {(str(r.get("server", "")).lower(), str(r.get("port"))) for r in rows}
-    fallback = [r for r in fallback
-                if (str(r.get("server", "")).lower(), str(r.get("port"))) not in seen]
+    import time as _t
+    try:
+        hist = json.load(open(HIST, encoding="utf-8"))
+    except Exception:
+        hist = {}
+    hist = merge_history(hist, rows, _t.time(), args.min_dl)
+    try:
+        with open(HIST, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(hist, fh, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+    seen = {_rkey(r) for r in rows}
+    hrows = history_rows(hist, seen)
+    seen |= {_rkey(r) for r in hrows}
+    if hrows:
+        log("recent good nodes (24h) join the candidates: %d" % len(hrows))
+    fallback = [r for r in pinned_fallback_rows() if _rkey(r) not in seen]
     if fallback:
         log(f"deep pool thin; %d previously pinned URI(s) join the candidates"
             % len(fallback))
-    pool = rows + fallback
+    pool = rows + hrows + fallback
     gen = pick(pool, True, args.min_dl, args.min_ul, args.top)
     if not gen:
         log("no ChatGPT-capable node above thresholds; lowering to 80/20")
