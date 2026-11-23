@@ -673,9 +673,16 @@ GUARD_TASK = "PhoneProxyTunGuard"
 def register_guard_task():
     """注册一个每分钟跑一次的提权计划任务（比长驻进程更抗清理）。"""
     try:
+        # 必须用 pythonw：计划任务每分钟跑一次，python.exe 是控制台程序，
+        # 每次执行都会闪一个黑框。
         py = sys.executable
-        if not py.lower().endswith("python.exe"):
-            py = os.path.join(HERE, "..", "runtime", "python", "python.exe")
+        cand = os.path.join(os.path.dirname(py), "pythonw.exe")
+        if os.path.isfile(cand):
+            py = cand
+        elif not py.lower().endswith("pythonw.exe"):
+            guess = os.path.join(HERE, "..", "runtime", "python", "pythonw.exe")
+            if os.path.isfile(guess):
+                py = guess
         py = os.path.abspath(py)
         script = os.path.join(HERE, "tun_supervisor.py")
         cmd = '"%s" "%s" --once' % (py, script)
@@ -738,7 +745,7 @@ def main(argv):
         except OSError:
             pass
     ev = "--result" in argv
-    cmd = next((a for a in argv if a in ("start", "stop", "status")), "status")
+    cmd = next((a for a in argv if a in ("start", "stop", "status", "guard")), "status")
     if ev:
         i = argv.index("--result")
         globals()["RESULT"] = argv[i + 1]
@@ -772,6 +779,15 @@ def main(argv):
         rc, msg = elevate([cmd], wait=240 if cmd == "start" else 150)
         print(("[OK] " if rc == 0 else "[失败] ") + msg)
         return rc
+
+    if cmd == "guard":
+        # 只重写自愈计划任务（改解释器/周期时用），不动正在跑的隧道。
+        register_guard_task()
+        msg = "自愈计划任务已更新"
+        log(msg)
+        write_result(0, msg)
+        print(msg)
+        return 0
 
     rc, msg = (start_admin() if cmd == "start" else stop_admin())
     log(msg)
