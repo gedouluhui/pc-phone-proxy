@@ -23,6 +23,7 @@ CLI：python google_gate.py --tun    测 singbox_tun.json 里全部 g* 出口
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -41,10 +42,24 @@ PROBES = (
     ("https://notebooklm.google.com/", ("unsupported",)),
     ("https://aistudio.google.com/app/prompts/new_chat", ("available-regions", "unsupported")),
 )
+# 2026-11-23 17:5x 实测：上面两个跳转有一部分是页面 JS 做的，urllib 看不到——g4 被判 ok，
+# 浏览器里却是「不支持」。YouTube 首页 ytcfg 的 "GL" 是 Google 服务端按出口 IP 判定的国家，
+# 和 Gemini 用的是同一套地理库，作为主判据；判不出国家时才看上面两个跳转。
+YT_URL = "https://www.youtube.com/?hl=en"
+GL_RE = re.compile(rb'"GL"\s*:\s*"([A-Z]{2})"')
+# Gemini / AI Studio 不开放的地区（Google 官方可用地区列表之外、且免费节点常见的）
+UNSUPPORTED = {"CN", "HK", "MO", "IR", "KP", "SY", "CU", "RU", "BY"}
 
 
 def node_key(ob):
     return "%s:%s" % (str((ob or {}).get("server") or "").lower(), (ob or {}).get("server_port"))
+
+
+def country_verdict(gl):
+    """YouTube GL -> ok / bad / None（判不出）。纯函数。"""
+    if not gl:
+        return None
+    return "bad" if gl.upper() in UNSUPPORTED else "ok"
 
 
 def classify(results):
@@ -78,6 +93,20 @@ def _wait_port(port, proc, secs=8.0):
             s.close()
         time.sleep(0.2)
     return False
+
+
+def _fetch_gl(port, timeout):
+    op = urllib.request.build_opener(urllib.request.ProxyHandler(
+        {"http": "http://127.0.0.1:%d" % port, "https": "http://127.0.0.1:%d" % port}))
+    # SOCS/CONSENT 跳过欧盟出口的 consent.youtube.com 同意页（那一页不带 GL）
+    req = urllib.request.Request(YT_URL, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9",
+                                                  "Cookie": "SOCS=CAI; CONSENT=YES+1"})
+    try:
+        with op.open(req, timeout=timeout) as r:
+            m = GL_RE.search(r.read(1500000))
+            return m.group(1).decode() if m else None
+    except Exception:
+        return None
 
 
 def _fetch_final(url, port, timeout):
@@ -118,6 +147,9 @@ def check_outbound(ob, timeout=12.0):
                                 creationflags=0x08000000)
         if not _wait_port(port, proc):
             return "err"
+        cv = country_verdict(_fetch_gl(port, timeout))
+        if cv:
+            return cv
         results = []
         for url, marks in PROBES:
             final = _fetch_final(url, port, timeout)

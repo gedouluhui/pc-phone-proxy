@@ -203,6 +203,10 @@ class GoogleGate(unittest.TestCase):
                                      ("https://accounts.google.com/y", False)]), "ok")
         self.assertEqual(G.classify([(None, False), ("https://a", False)]), "err")
         self.assertEqual(G.classify([]), "err")
+        self.assertEqual(G.country_verdict("IR"), "bad")
+        self.assertEqual(G.country_verdict("US"), "ok")
+        self.assertIsNone(G.country_verdict(None))
+        self.assertEqual(G.GL_RE.search(b'ytcfg.set({"GL":"IR","HL":"en"})').group(1), b"IR")
 
     def test_needs_rebuild(self):
         import tun_supervisor as S
@@ -265,7 +269,10 @@ class GoogleGate(unittest.TestCase):
                 if os.path.exists(x):
                     os.remove(x)
         grp = next(o for o in cfg["outbounds"] if o.get("tag") == "grp-google")
-        self.assertEqual(sorted(grp["outbounds"]), ["g1", "g2"])
+        # 只有 2 个 ok：ok 排最前，后面补没结论的；被判 bad 的绝不进组
+        self.assertEqual(sorted(grp["outbounds"][:2]), ["g1", "g2"])
+        self.assertNotIn("g0", grp["outbounds"])
+        self.assertNotIn("g3", grp["outbounds"])
         rules = cfg["route"]["rules"]
         fam = [r for r in rules if r.get("domain_suffix") == tun_mode.GOOGLE_FAMILY and "port" not in r]
         self.assertEqual(len(fam), 1)

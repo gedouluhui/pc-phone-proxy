@@ -267,8 +267,11 @@ def build_config():
         _gate = {}
     _gate_ok = [o for o in google_ranked if _gate.get(google_gate.node_key(o)) == "ok"] if _gate else []
     _gate_not_bad = [o for o in google_ranked if _gate.get(google_gate.node_key(o)) != "bad"] if _gate else google_ranked
-    if _gate_ok:
+    if len(_gate_ok) >= 3:
         google_ranked = _gate_ok
+    elif _gate_ok:
+        # 只有一两个 ok 时别把组缩成单点：ok 的排前面，后面补上没测出结论的（排除 bad）
+        google_ranked = _gate_ok + [o for o in _gate_not_bad if o not in _gate_ok]
     elif _gate_not_bad:
         google_ranked = _gate_not_bad
     GATE_SUMMARY["ok"] = len(_gate_ok)
