@@ -88,3 +88,18 @@
 | 28 | 版本与发布 | 升到 **v2.7 / versionCode 9**：`host:port/` 链接不再被判不可用；公版 APK 重建进 `dist/`，`SHA256SUMS.txt` 同步；新增 `.github/workflows/release.yml`，打 tag 即构建并挂资产（需 `PROXY_KEYSTORE_BASE64` / `PROXY_KS_PASS` / `PROXY_KS_ALIAS` / `RELEASE_SIGNING_READY=1`） |
 
 未验证：`tun_supervisor` 只在代码层跑过导入与单测，真实"杀掉隧道再自动重建"需要一次重启才能观察；为避免打断正在使用的网络，本轮没有触发。
+
+## 第六轮（2026-11-23 14:00–14:15）：自愈上线后发现的真实故障
+
+上线 `tun_supervisor` 后按用户要求做了真实验证，顺带撞到并修掉三个线上问题：
+
+| # | 现象 | 根因 | 处理 |
+|---|---|---|---|
+| 29 | 重启后 Gemini / ChatGPT 解析超时，但 GitHub 能打开 | DoH 的 detour 是 `grp-dns`，urltest 卡在一颗"在组里但连不上 1.1.1.1"的节点上 | 新增 `dns_detour.txt` 覆盖：探活失败时写一颗实测可用的节点；`tun_supervisor` 每 60 秒验一次系统解析，连续两次失败就换下一颗并重建 |
+| 30 | DoH 出口挂掉时**整机** DNS 全灭（GitHub/B站都打不开） | `dns.final = "doh"`：任何不在 DOMESTIC 名单里的域名都要过 DoH | `final` 改成 `local`，只有被污染的域名（Google 系 + OpenAI/Anthropic/HF/x.ai 等）才走 DoH。DoH 挂了只影响那批站点，不再全盘断网 |
+| 31 | 守护进程不一定活到父进程之后 | 常驻进程会随作业对象/父进程一起被清掉 | 额外注册 `PhoneProxyTunGuard` 计划任务（每分钟 `tun_supervisor.py --once`，高权限），失败写日志；`stop` 时删除任务 |
+
+验证记录：
+- 杀掉 sing-box 后 **4 秒**由 supervisor 重建（`tun_supervisor.log`: `已重建隧道 pid=46180`）；
+- 14:10:17 守护自己发现 DNS 不通并轮换 DoH 出口（`换 DoH 出口 -> g3`）；
+- 修完 `final=local` 后：`github.com` 200 / 4.7s，`gemini` 7.4s，`chatgpt` 7.0s。

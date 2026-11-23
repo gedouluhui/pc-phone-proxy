@@ -17,6 +17,7 @@
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -57,7 +58,71 @@ def alive(pid):
         return False
 
 
+DETOUR = os.path.join(HERE, "dns_detour.txt")
+
+
+def dns_ok():
+    """系统解析走 TUN 的 DoH；解析不出来就说明 DNS 通道挂了。"""
+    old = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(6)
+        socket.getaddrinfo("www.google.com", 443)
+        return True
+    except Exception:
+        return False
+    finally:
+        socket.setdefaulttimeout(old)
+
+
+def candidate_tags():
+    try:
+        with io.open(tun_mode.CFG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return []
+    return [o.get("tag") for o in cfg.get("outbounds") or []
+            if (o.get("tag") or "").startswith("g")
+            and o.get("type") not in ("urltest", "direct")]
+
+
+def rotate_dns_detour():
+    """当前 DoH 出口解析不出东西时，换一颗节点重试。
+
+    免费节点"在组里但连不上 1.1.1.1"是常态，urltest 会卡住；这里直接把
+    dns_detour.txt 写成下一颗候选，restart() 会重新读它。
+    """
+    tags = candidate_tags()
+    if not tags:
+        return False
+    cur = ""
+    try:
+        with io.open(DETOUR, encoding="utf-8") as f:
+            cur = f.read().strip()
+    except Exception:
+        cur = ""
+    nxt = tags[(tags.index(cur) + 1) % len(tags)] if cur in tags else tags[0]
+    try:
+        with io.open(DETOUR, "w", encoding="utf-8", newline="\n") as f:
+            f.write(nxt)
+    except Exception:
+        return False
+    log("DNS 解析失败，换 DoH 出口 -> %s" % nxt)
+    return restart()
+
+
+def stop_current():
+    pid = read_pid(tun_mode.PID)
+    if alive(pid):
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, creationflags=0x08000000)
+        except Exception:
+            pass
+        time.sleep(1.0)
+
+
 def restart():
+    stop_current()
     cfg = tun_mode.build_config()
     with io.open(tun_mode.CFG, "w", encoding="utf-8", newline="\n") as f:
         f.write(cfg if isinstance(cfg, str) else json.dumps(cfg, ensure_ascii=False, indent=1))
@@ -83,28 +148,64 @@ def restart():
     return True
 
 
+def once():
+    """计划任务模式：检查一次就退出。
+
+    长驻进程会随父进程/作业对象被一起清掉（实测：由提权子进程拉起的守护在
+    某些情况下会消失），改成计划任务每 2 分钟跑一次更可靠——任务本身由系统
+    托管，不受启动脚本生死影响。
+    """
+    if not os.path.isfile(tun_mode.ACTIVE):
+        return
+    pid = read_pid(tun_mode.PID)
+    if alive(pid):
+        return
+    log("计划任务检查：隧道进程 %s 不在，重建" % (pid or "?"))
+    if not restart():
+        log("计划任务重建失败，等下一轮")
+        return
+    if not dns_ok():
+        log("重建后 DNS 仍不通，尝试换 DoH 出口")
+        rotate_dns_detour()
+
+
 def main():
+    if "--once" in sys.argv:
+        once()
+        return
     with io.open(SUP_PID, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
     log("supervisor 启动 pid=%d" % os.getpid())
     restarts = []
+    tick = 0
+    dns_fails = 0
     while True:
         time.sleep(10)
         if not os.path.isfile(tun_mode.ACTIVE):
             log("TUN_ACTIVE 已删除，退出")
             break
         pid = read_pid(tun_mode.PID)
-        if alive(pid):
+        if not alive(pid):
+            log("隧道进程 %s 已消失，开始重建" % (pid or "?"))
+            if restart():
+                restarts.append(time.time())
             continue
-        now = time.time()
-        restarts = [t for t in restarts if now - t < 600]
-        if len(restarts) >= 5:
-            log("10 分钟内已重启 5 次，退避 60 秒")
-            time.sleep(60)
-            continue
-        log("隧道进程 %s 已消失，开始重建" % (pid or "?"))
-        if restart():
-            restarts.append(now)
+
+        # 进程活着，但 DNS 通道可能已经废了：每 60 秒验一次解析。
+        tick += 1
+        if tick % 6 == 0:
+            if dns_ok():
+                dns_fails = 0
+            else:
+                dns_fails += 1
+                log("DNS 解析失败（第 %d 次）" % dns_fails)
+                if dns_fails >= 2:
+                    now = time.time()
+                    recent = [t for t in restarts if now - t < 600]
+                    if len(recent) < 5 and rotate_dns_detour():
+                        restarts.append(now)
+                        dns_fails = 0
+        continue
     try:
         os.remove(SUP_PID)
     except Exception:

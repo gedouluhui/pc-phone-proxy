@@ -47,7 +47,12 @@ AMAZON_DL = ["amazon.com", "amazonaws.com", "awsstatic.com", "awsstatic.net",
 
 GOOGLE_DNS = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
               "gvt1.com", "ggpht.com", "youtube.com", "ytimg.com", "googlevideo.com",
-              "withgoogle.com", "google.dev"]
+              "withgoogle.com", "google.dev",
+              # 这些域名和 Google 一样被污染（会解析成 Facebook 或 103.252.x 的地址），
+              # 必须走 DoH；不在名单里的域名则退回系统解析 —— 见下面 final 的取舍。
+              "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com",
+              "anthropic.com", "claude.ai", "huggingface.co", "hf.co",
+              "x.ai", "perplexity.ai", "antigravity.google"]
 PID = os.path.join(HERE, "tun.pid")
 ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
 RESULT = os.path.join(HERE, "tun_result.json")
@@ -308,7 +313,19 @@ def build_config():
     print("[rank] 深测样本 %d 条，入选 %s" % (len(deep), log_deep))
 
     # DoH 的出口：优先能自动故障转移的 grp-dns；没有成员时才退回 direct。
-    DNS_DETOUR = "grp-dns" if dns_members else "direct"
+    # 默认用 grp-dns（多节点故障转移）。但免费节点常见"还在组里、其实连不上
+    # 1.1.1.1"的情况，urltest 会卡在坏节点上，表现是 DNS 全超时、整机断网。
+    # tun_supervisor 探活失败时会写 dns_detour.txt 指定一颗实测可用的节点。
+    _pinned = ""
+    try:
+        with io.open(os.path.join(HERE, "dns_detour.txt"), encoding="utf-8") as f:
+            _pinned = f.read().strip()
+    except Exception:
+        _pinned = ""
+    if _pinned and any(o.get("tag") == _pinned for o in outbounds):
+        DNS_DETOUR = _pinned
+    else:
+        DNS_DETOUR = "grp-dns" if dns_members else "direct"
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
@@ -334,7 +351,11 @@ def build_config():
                 {"domain_suffix": pacroute.DOMESTIC, "server": "local"},
                 {"domain_suffix": GOOGLE_DNS, "server": "doh"},
             ],
-            "final": "doh",
+            # final 用 local 而不是 doh：DoH 依赖某个节点可达 1.1.1.1，免费池里
+            # 经常整组不可达。那时若 final=doh，整机 DNS 全灭；改成 local 后
+            # 只有上面那批被污染的域名解析不了，其余照常上网（2026-11-23 实测：
+            # DoH 出口挂掉时 GitHub/B站全部打不开，根因就在这一个默认值）。
+            "final": "local",
             "strategy": "prefer_ipv4",
         },
         "inbounds": [{
@@ -601,6 +622,7 @@ def start_admin():
         f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
     start_supervisor()
+    register_guard_task()
 
     log("[5/5] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
     t0 = time.time()
@@ -645,6 +667,37 @@ def start_supervisor():
         log("启动看门狗失败（不影响本次隧道）: %s" % exc)
 
 
+GUARD_TASK = "PhoneProxyTunGuard"
+
+
+def register_guard_task():
+    """注册一个每分钟跑一次的提权计划任务（比长驻进程更抗清理）。"""
+    try:
+        py = sys.executable
+        if not py.lower().endswith("python.exe"):
+            py = os.path.join(HERE, "..", "runtime", "python", "python.exe")
+        py = os.path.abspath(py)
+        script = os.path.join(HERE, "tun_supervisor.py")
+        cmd = '"%s" "%s" --once' % (py, script)
+        r = subprocess.run(["schtasks", "/Create", "/TN", GUARD_TASK, "/TR", cmd,
+                            "/SC", "MINUTE", "/MO", "1", "/RL", "HIGHEST", "/F"],
+                           capture_output=True, text=True, errors="replace",
+                           creationflags=0x08000000)
+        # 失败不影响本次隧道（还有常驻 supervisor），但要留痕，别假装成功。
+        if r.returncode != 0:
+            log("注册自愈计划任务失败（rc=%s）：%s" % (r.returncode, (r.stderr or r.stdout).strip()[:160]))
+    except Exception as exc:
+        log("注册自愈计划任务失败: %s" % exc)
+
+
+def unregister_guard_task():
+    try:
+        subprocess.run(["schtasks", "/Delete", "/TN", GUARD_TASK, "/F"],
+                       capture_output=True, creationflags=0x08000000)
+    except Exception:
+        pass
+
+
 def stop_supervisor():
     """停掉守护进程：先杀进程再删 pid，否则它可能把刚停的隧道又拉起来。"""
     try:
@@ -663,6 +716,7 @@ def stop_supervisor():
 
 def stop_admin():
     stop_supervisor()
+    unregister_guard_task()
     ok = stop_stack()
     return (0 if ok else 2), ("TUN 已停止，适配器随进程释放" if ok
                               else "仍有 sing-box 进程没退出，请看 logs/tun.log")
