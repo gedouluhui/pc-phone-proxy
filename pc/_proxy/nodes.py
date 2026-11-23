@@ -354,7 +354,88 @@ TUN_ACTIVE_FILE = os.path.join(HERE, "TUN_ACTIVE")
 PREFILTER_SOCKS = 29099
 
 
-def _start_direct_socks(port=PREFILTER_SOCKS):
+BYPASS_FILE = os.path.join(HERE, "logs", "bypass_mode.json")
+
+
+def physical_iface_names():
+    """Windows：带默认网关的网卡连接名（WLAN / 以太网 …），排除本项目 TUN 网卡。读注册表，不起子进程。
+
+    注册表可能留有断开网卡的旧 DHCP 租约，所以返回全部候选，由守护自检逐个实测。"""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    base = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+    net = r"SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}"
+    out = []
+    try:
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+    except OSError:
+        return []
+    i = 0
+    while True:
+        try:
+            g = winreg.EnumKey(k, i)
+        except OSError:
+            break
+        i += 1
+        try:
+            sk = winreg.OpenKey(k, g)
+        except OSError:
+            continue
+
+        def q(n):
+            try:
+                v = winreg.QueryValueEx(sk, n)[0]
+            except OSError:
+                return None
+            if isinstance(v, (list, tuple)):
+                v = [x for x in v if x and x != "0.0.0.0"]
+                return v[0] if v else None
+            return v if v and v != "0.0.0.0" else None
+
+        if not (q("DhcpDefaultGateway") or q("DefaultGateway")):
+            continue
+        if not (q("DhcpIPAddress") or q("IPAddress")):
+            continue
+        for gg in (g, g.upper(), g.lower()):
+            try:
+                ck = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, net + "\\" + gg + "\\Connection")
+                name = winreg.QueryValueEx(ck, "Name")[0]
+            except OSError:
+                continue
+            if name and name != "pcproxy" and name not in out:
+                out.append(name)
+            break
+    return out
+
+
+def load_bypass_mode():
+    try:
+        with open(BYPASS_FILE, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def bypass_route(extra=None):
+    """测速 / 闸门 / 预筛用的临时 sing-box 的 route：让它自己的出站绕开 TUN。
+
+    TUN 开着时，临时 sing-box 连节点的流量会被隧道接管、经当前出口二次转发（「节点套节点」），
+    测出的可达性全是假的。以前靠 TUN 里的 process_name 直连规则，但那条规则在 stack=system 下
+    等于全局直连（2026-11-23 两次断网）。现在让临时进程自己绑物理网卡：以守护自检
+    （tun_supervisor.bypass_selftest，写 logs/bypass_mode.json）实测能绕开的方式为准，
+    没有自检结果时用 auto_detect_interface。"""
+    r = dict(extra or {})
+    m = load_bypass_mode()
+    if m.get("mode") == "iface" and m.get("iface"):
+        r["default_interface"] = m["iface"]
+    else:
+        r["auto_detect_interface"] = True
+    return r
+
+
+def _start_direct_socks(port=PREFILTER_SOCKS, route=None):
     """TUN 开着时给 TCP 预筛用的「直连 SOCKS」：一个只有 direct 出站的 sing-box。
 
     TUN 下 python 的 connect 会被隧道接管、经当前节点转发，对任何 IP 都「连得上」，
@@ -365,7 +446,8 @@ def _start_direct_socks(port=PREFILTER_SOCKS):
     cfg = {"log": {"level": "error"},
            "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1",
                          "listen_port": port}],
-           "outbounds": [{"type": "direct", "tag": "direct"}]}
+           "outbounds": [{"type": "direct", "tag": "direct"}],
+           "route": route if route is not None else bypass_route()}
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
     p = subprocess.Popen([BIN, "run", "-c", path], stdout=subprocess.DEVNULL,

@@ -77,6 +77,8 @@ def build_cfg(subset, socks, http, api):
                         "default": tags[0]}] + [n["outbound"] for n in subset]
                       + [{"type": "direct", "tag": "direct"}]),
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api}"}},
+        # 自己绕开 TUN（见 nodes.bypass_route），否则 TUN 下测到的是「节点套节点」
+        "route": N.bypass_route(),
     }
 
 

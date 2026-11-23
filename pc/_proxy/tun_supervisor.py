@@ -122,6 +122,13 @@ DNS_PROBE = "https://1.1.1.1/cdn-cgi/trace"
 GOOGLE_PROBE = "https://gemini.google.com/robots.txt"
 REBUILD_REQ = os.path.join(HERE, "REBUILD_REQUEST")
 RESCAN_REQ = os.path.join(HERE, "RESCAN_REQUEST")
+SELFTEST_REQ = os.path.join(HERE, "SELFTEST_REQUEST")
+BYPASS_EVERY = 6 * 3600       # 「测速进程能否绕开 TUN」自检结论的有效期
+# 国内对照地址：直连必须能连上，证明临时 sing-box 本身是好的（否则「被墙地址连不上」没有意义）
+BYPASS_CONTROL = [("110.242.68.66", 443), ("223.5.5.5", 443), ("120.232.145.144", 443)]
+# 2026-11-23：闸门判据还没和浏览器实测对上之前，不因闸门结果主动重建隧道（每次重建断流数秒）；
+# 闸门结论照样写 google_gate.json，下一次正常重建时用来筛 grp-google 成员。
+GATE_REBUILD = False
 RESCAN_LOCK = os.path.join(HERE, "rescan.lock")
 HEALTH = os.path.join(HERE, "logs", "pool_health.json")
 HEALTH_EVERY = 15 * 60        # 每 15 分钟量一次「能上 Google 的出口还剩几个」
@@ -232,7 +239,7 @@ def running_google_keys():
     except Exception:
         return []
     obs = {o.get("tag"): o for o in cfg.get("outbounds") or []}
-    grp = obs.get("grp-google") or {}
+    grp = obs.get("grp-google-auto") or obs.get("grp-google") or {}
     import google_gate
     return [google_gate.node_key(obs[t]) for t in grp.get("outbounds") or [] if t in obs]
 
@@ -248,6 +255,67 @@ def gate_needs_rebuild(member_keys, verdicts):
     return bool(ok_all) and (len(bad) > 0 and set(ok_members) != set(member_keys))
 
 
+PINNED_CFG = os.path.join(HERE, "singbox_pinned.json")
+PINNED_GOOD = os.path.join(HERE, "singbox_pinned.good.json")
+SWITCH_MIN_LIVE = 2   # 新节点池实测至少这么多出口能连上（ok/bad 都算连上）才允许切换
+
+
+def pool_switch_ok(verdicts, min_live=SWITCH_MIN_LIVE):
+    """新节点池能不能切过去（纯函数，tests_ci 覆盖）。
+
+    2026-11-23 17:34 事故：重扫在「没有直连规则的旧隧道」下跑完，深测数据被二次转发污染，
+    30 个新出口在本机直连全部连不上；闸门已经测出全部 err，但旧逻辑「继续重建」，
+    整机断网 30 分钟。现在：闸门有结论且能连上的不足 min_live 个，就拒绝切换。
+    闸门没跑出任何结论（空字典，比如 sing-box 缺失）时不拦，保持旧行为。
+    """
+    if not verdicts:
+        return True
+    live = sum(1 for v in verdicts.values() if v in ("ok", "bad"))
+    return live >= min_live
+
+
+def switch_min_live(prev_live):
+    """新池至少要有几个能连上的出口才允许切换（纯函数，tests_ci 覆盖）。
+
+    2026-11-23 19:0x：测速进程改为真实直连后，当前隧道实测只有 3 个出口能连上。新池哪怕只有
+    2 个活的也会被放行，等于越换越差。现在：当前隧道上一次闸门有 N 个能连上，新池至少要
+    min(N, GOOGLE_MIN) 个（且不少于 SWITCH_MIN_LIVE）。当前本来就很差时不设更高门槛。"""
+    try:
+        prev = int(prev_live or 0)
+    except (TypeError, ValueError):
+        prev = 0
+    return max(SWITCH_MIN_LIVE, min(prev, GOOGLE_MIN))
+
+
+def save_good_pinned():
+    """当前隧道实测健康时，把生成它的节点池存一份，切换失败时可以回退。"""
+    try:
+        if not os.path.isfile(PINNED_CFG):
+            return
+        # 只在「隧道是用当前这份节点池建的」时才存：节点池比隧道进程新，说明还没切过去
+        if os.path.getmtime(PINNED_CFG) > os.path.getmtime(tun_mode.PID) + 1:
+            return
+        import shutil
+        shutil.copy2(PINNED_CFG, PINNED_GOOD)
+    except Exception:
+        pass
+
+
+def restore_good_pinned():
+    """把 singbox_pinned.json 换回上一份实测能用的；没有备份就保持原样。"""
+    try:
+        if os.path.isfile(PINNED_GOOD):
+            import shutil
+            if os.path.isfile(PINNED_CFG):
+                shutil.copy2(PINNED_CFG, PINNED_CFG + ".rejected")
+            shutil.copy2(PINNED_GOOD, PINNED_CFG)
+            log("已恢复上一份可用节点池（被拒的新池存为 singbox_pinned.json.rejected）")
+            return True
+    except Exception as e:
+        log("恢复节点池失败: %r" % (e,))
+    return False
+
+
 def run_gate(h, now, source="tun"):
     import google_gate
     obs = google_gate.pinned_outbounds() if source == "pinned" else google_gate.tun_outbounds()
@@ -258,20 +326,106 @@ def run_gate(h, now, source="tun"):
     return v
 
 
+def bypass_verdict(blocked, control):
+    """临时 sing-box 绕开 TUN 了吗（纯函数）。blocked/control: [bool 连上了吗]。
+
+    国内对照至少一个连上（进程本身正常），且被墙地址连上不足 2 个（没被隧道转发）。"""
+    return any(control) and sum(1 for b in blocked if b) < 2
+
+
+def bypass_selftest():
+    """TUN 开着时实测：临时 sing-box 用哪种方式能绕开隧道。结论写 logs/bypass_mode.json。"""
+    import asyncio
+    import nodes as N
+    import rescan
+    modes = [("auto", None, {"auto_detect_interface": True})]
+    for name in N.physical_iface_names():
+        modes.append(("iface", name, {"default_interface": name}))
+    tried = []
+    chosen = {"mode": "none"}
+    for mode, iface, route in modes:
+        proc = N._start_direct_socks(route=route)
+        if proc is None:
+            tried.append([mode, iface, "起不来"])
+            continue
+        try:
+            async def run():
+                async def one(ip, port):
+                    try:
+                        return bool(await N.socks_connect(ip, port, 4.0))
+                    except Exception:
+                        return False
+                return await asyncio.gather(*[one(ip, pt) for ip, pt in rescan.CANARIES + BYPASS_CONTROL])
+            res = list(asyncio.run(run()))
+        finally:
+            try:
+                proc.kill()
+                proc.wait(3)
+            except Exception:
+                pass
+        nb = len(rescan.CANARIES)
+        ok = bypass_verdict(res[:nb], res[nb:])
+        tried.append([mode, iface, "被墙%s 国内%s" % (res[:nb], res[nb:])])
+        if ok:
+            chosen = {"mode": mode, "iface": iface}
+            break
+    chosen.update(at=time.time(), tried=tried)
+    try:
+        os.makedirs(os.path.dirname(N.BYPASS_FILE), exist_ok=True)
+        with io.open(N.BYPASS_FILE, "w", encoding="utf-8") as f:
+            json.dump(chosen, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+    log("测速进程绕开 TUN 自检：%s（%s）" % (
+        "可用：" + chosen["mode"] + (" " + chosen["iface"] if chosen.get("iface") else "")
+        if chosen["mode"] != "none" else "全部失败，TUN 开着时不重扫", tried))
+    return chosen["mode"] != "none"
+
+
+def bypass_ready(now):
+    """TUN 开着时，重扫前必须有新鲜且通过的绕开自检。"""
+    if not os.path.isfile(tun_mode.ACTIVE):
+        return True
+    import nodes as N
+    m = N.load_bypass_mode()
+    if m.get("mode") not in (None, "none") and now - float(m.get("at") or 0) <= BYPASS_EVERY:
+        return True
+    return bypass_selftest()
+
+
 def maintain(now=None):
     """计划任务每分钟调用一次：处理重建/重扫请求、Google 地区闸门、出口太少就自动重扫。"""
     now = now or time.time()
     h = _load_health()
+    if os.path.isfile(SELFTEST_REQ):
+        try:
+            os.remove(SELFTEST_REQ)
+        except OSError:
+            pass
+        try:
+            bypass_selftest()
+        except Exception as e:
+            log("绕开 TUN 自检出错: %r" % (e,))
+        return
     if os.path.isfile(REBUILD_REQ):
         try:
             os.remove(REBUILD_REQ)
         except OSError:
             pass
         # 新节点池（bestroute 刚写的 singbox_pinned.json）先过 Google 地区闸门，再按它重建
+        verdicts = {}
+        # 当前隧道上一次闸门的「能连上」数：新池不能比它差（run_gate 会覆盖这两个字段，先取出来）
+        need = switch_min_live(int(h.get("gate_ok") or 0) + int(h.get("gate_bad") or 0))
         try:
-            run_gate(h, now, source="pinned")
+            verdicts = run_gate(h, now, source="pinned")
         except Exception as e:
             log("新节点池地区闸门出错（继续重建）: %r" % (e,))
+        if not pool_switch_ok(verdicts, need):
+            live = sum(1 for v in verdicts.values() if v in ("ok", "bad"))
+            log("新节点池实测只有 %d/%d 个出口能连上（需要 >= %d），拒绝切换，当前隧道保持不动"
+                % (live, len(verdicts), need))
+            restore_good_pinned()
+            return
         log("收到重建请求（新节点池就绪），按新配置重建隧道")
         if not restart():
             log("重建失败，旧隧道已保留")
@@ -285,7 +439,7 @@ def maintain(now=None):
             log("地区闸门出错: %r" % (e,))
             verdicts = {}
         members = running_google_keys()
-        if gate_needs_rebuild(members, verdicts):
+        if GATE_REBUILD and gate_needs_rebuild(members, verdicts):
             if now - float(h.get("last_gate_rebuild") or 0) >= 1800:
                 h["last_gate_rebuild"] = now
                 _save_health(h)
@@ -293,6 +447,8 @@ def maintain(now=None):
                 restart()
         h["google_live"] = h.get("gate_ok", 0)
         _save_health(h)
+        if sum(1 for v in (verdicts or {}).values() if v in ("ok", "bad")) >= SWITCH_MIN_LIVE:
+            save_good_pinned()
     google_live = h.get("google_live")
     try:
         deep_mtime = os.path.getmtime(os.path.join(HERE, "node_deep.json"))
@@ -307,13 +463,18 @@ def maintain(now=None):
             os.remove(RESCAN_REQ)
         except OSError:
             pass
-    if not running_has_direct_rule():
-        # 当前隧道是旧配置：深测子进程会被它二次转发。先按新代码重建一次（约 2 秒断流）。
-        log("重扫前先重建隧道，让测速进程直连")
-        if not restart():
-            log("重建失败，本轮不重扫")
-            return
-        time.sleep(5)
+    # 2026-11-23：以前这里检查 TUN 配置里有没有 process_name 直连规则；那条规则本身会让整机外网全断，
+    # 已删除。现在改为：测速进程能自己绕开 TUN（自检通过）才重扫，否则测出的是「节点套节点」假数据。
+    try:
+        ready = bypass_ready(now)
+    except Exception as e:
+        log("绕开 TUN 自检出错: %r" % (e,))
+        ready = False
+    if not ready:
+        h["last_rescan"] = now          # 3 小时后再试，别每分钟都自检
+        _save_health(h)
+        log("测速进程无法绕开 TUN，本轮不重扫，节点池保持不动")
+        return
     h["last_rescan"] = now
     _save_health(h)
     start_rescan(reason.replace("能上 Gemini 的出口", "过 Google 地区闸门的出口"))
@@ -330,11 +491,90 @@ def stop_current():
         time.sleep(1.0)
 
 
-def restart():
+# 重建后的外网自检（2026-11-23 19:0x）：17:34、18:13 两次都是「新配置能过 sing-box check、进程也活着，
+# 但外网全断」（process_name 规则 = 全局直连）。check 和进程存活都拦不住这类问题，只有实测能拦。
+EXTERNAL_PROBES = ["www.google.com", "github.com", "www.cloudflare.com"]
+DOMESTIC_PROBES = ["www.baidu.com", "www.qq.com"]
+POST_SWITCH_ROUNDS = 3        # 最多测 3 轮
+POST_SWITCH_WAIT = 4.0        # 每轮前等几秒（网卡/路由刚建好）
+VERIFY_SWITCH = True
+
+
+def tls_probe(host, port=443, timeout=5.0):
+    """经系统网络（TUN 开着就是经隧道）做一次 DNS + TCP + TLS 握手。
+
+    只做 TCP 不够：TUN 的 system stack 对任何地址都会先「连上」，TLS 握手成功才说明真的出去了。"""
+    import ssl
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            with ctx.wrap_socket(s, server_hostname=host):
+                return True
+    except Exception:
+        return False
+
+
+def _probe_all(hosts, timeout=5.0):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, len(hosts))) as ex:
+        return list(ex.map(lambda h: tls_probe(h, timeout=timeout), hosts))
+
+
+def switch_verdict(external, domestic):
+    """重建后连通性结论（纯函数，tests_ci 覆盖）。
+
+    ok      = 至少一个境外站点握手成功；
+    broken  = 境外全不通、国内能通 —— 正是 17:34 / 18:13 的现象，应回滚到上一份配置；
+    unknown = 国内也不通，多半是本机网络本身断了，回滚也没用，不动。"""
+    if any(external):
+        return "ok"
+    if any(domestic):
+        return "broken"
+    return "unknown"
+
+
+def post_switch_check(rounds=None, wait=None):
+    rounds = POST_SWITCH_ROUNDS if rounds is None else rounds
+    wait = POST_SWITCH_WAIT if wait is None else wait
+    ext = []
+    for _ in range(max(1, rounds)):
+        time.sleep(wait)
+        ext = _probe_all(EXTERNAL_PROBES)
+        if any(ext):
+            return "ok", ext, []
+    dom = _probe_all(DOMESTIC_PROBES)
+    return switch_verdict(ext, dom), ext, dom
+
+
+def _launch(path):
+    """用 path 启动 TUN 的 sing-box；2 秒内退出返回 (None, returncode)。"""
+    logf = io.open(tun_mode.SB_LOG, "ab")
+    try:
+        p = subprocess.Popen([P.SING_EXE, "run", "-c", path], cwd=HERE,
+                             stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL,
+                             creationflags=(0x00000008 | 0x00000200))
+    finally:
+        logf.close()
+    time.sleep(2.0)
+    if p.poll() is not None:
+        return None, p.returncode
+    return p, None
+
+
+def _write_pid(pid):
+    with io.open(tun_mode.PID, "w", encoding="utf-8") as f:
+        f.write(str(pid))
+
+
+def restart(verify=None):
     # 2026-11-23：先生成 + 校验新配置，再停旧进程。新配置过不了 sing-box check 时
     # 改用上一份能用的配置（singbox_tun.json），而不是直接放弃——以前 DNS 换出口时
     # 会先停掉活着的隧道，新配置一坏就整机断网。
+    verify = VERIFY_SWITCH if verify is None else verify
     new_path = tun_mode.CFG + ".new"
+    prev_path = tun_mode.CFG + ".prev"
     use = None
     try:
         cfg = tun_mode.build_config()
@@ -353,29 +593,81 @@ def restart():
         else:
             log("新旧配置都不可用，放弃本轮重建")
             return False
+    # 切新配置前把正在用的那份留作回滚点（只在旧配置本身能过 check 时）
+    have_prev = False
+    if use == new_path and os.path.isfile(tun_mode.CFG):
+        try:
+            if tun_mode.check_config(tun_mode.CFG)[0] == 0:
+                import shutil
+                shutil.copyfile(tun_mode.CFG, prev_path)
+                have_prev = True
+        except Exception:
+            have_prev = False
     stop_current()
-    if use == new_path:
-        os.replace(new_path, tun_mode.CFG)
-    logf = io.open(tun_mode.SB_LOG, "ab")
-    try:
-        p = subprocess.Popen([P.SING_EXE, "run", "-c", tun_mode.CFG], cwd=HERE,
-                             stdout=logf, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL,
-                             creationflags=(0x00000008 | 0x00000200))
-    finally:
-        logf.close()
-    time.sleep(2.0)
-    if p.poll() is not None:
+    # 2026-11-23：先用 .new 启动，进程活下来才改名成 singbox_tun.json。以前先改名再启动，
+    # 新进程立刻退出时磁盘上的配置已经是新的，running_has_direct_rule() 就会误以为
+    # 「正在跑的隧道已有直连规则」，在旧隧道下开始重扫（17:09 事故的一环）。
+    p, rc = _launch(use)
+    if p is None:
         # 计划任务与常驻守护可能同时重建（2026-11-23 17:09 实测）：对方先起来、占住网卡和
         # 控制端口，我们这份就会立刻退出。此时隧道其实是好的，不算失败。
         other = read_pid(tun_mode.PID)
-        if other and other != p.pid and alive(other):
+        if other and alive(other):
             log("另一个守护已完成重建（pid=%d），本次不再重复" % other)
             return True
-        log("重建后立即退出 (%s)，见 tun_singbox.log" % p.returncode)
+        log("重建后立即退出 (%s)，见 tun_singbox.log" % rc)
+        if use == new_path:
+            try:
+                os.remove(new_path)
+            except OSError:
+                pass
+            if have_prev:
+                p2, _ = _launch(tun_mode.CFG)
+                if p2 is not None:
+                    _write_pid(p2.pid)
+                    log("新配置起不来，已用原配置恢复隧道 pid=%d" % p2.pid)
+                    return False
         return False
-    with io.open(tun_mode.PID, "w", encoding="utf-8") as f:
-        f.write(str(p.pid))
+    _write_pid(p.pid)
+    if use == new_path and have_prev and verify:
+        verdict, ext, dom = post_switch_check()
+        if verdict == "broken":
+            log("重建后外网不通（境外 %s 国内 %s），回滚到上一份配置" % (ext, dom))
+            try:
+                p.kill()
+                p.wait(5)
+            except Exception:
+                pass
+            time.sleep(1.0)
+            p2, rc2 = _launch(tun_mode.CFG)
+            if p2 is not None:
+                _write_pid(p2.pid)
+                try:
+                    import shutil
+                    shutil.copyfile(new_path, tun_mode.CFG + ".broken")
+                    os.remove(new_path)
+                except OSError:
+                    pass
+                log("已回滚隧道 pid=%d（坏配置存为 singbox_tun.json.broken）" % p2.pid)
+                return False
+            log("回滚配置也起不来 (%s)，改回新配置继续跑" % rc2)
+            p, rc = _launch(new_path)
+            if p is None:
+                log("新配置也起不来 (%s)，等下一轮" % rc)
+                return False
+            _write_pid(p.pid)
+        elif verdict == "unknown":
+            log("重建后境外、国内都不通（%s / %s），像是本机网络断了，保留新隧道" % (ext, dom))
+    if use == new_path:
+        try:
+            os.replace(new_path, tun_mode.CFG)
+        except OSError:
+            # 运行中的 sing-box 不锁配置文件，正常不会到这里；万一失败就复制一份
+            try:
+                import shutil
+                shutil.copyfile(new_path, tun_mode.CFG)
+            except OSError:
+                pass
     log("已重建隧道 pid=%d" % p.pid)
     return True
 
