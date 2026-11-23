@@ -316,6 +316,12 @@ def restart():
         logf.close()
     time.sleep(2.0)
     if p.poll() is not None:
+        # 计划任务与常驻守护可能同时重建（2026-11-23 17:09 实测）：对方先起来、占住网卡和
+        # 控制端口，我们这份就会立刻退出。此时隧道其实是好的，不算失败。
+        other = read_pid(tun_mode.PID)
+        if other and other != p.pid and alive(other):
+            log("另一个守护已完成重建（pid=%d），本次不再重复" % other)
+            return True
         log("重建后立即退出 (%s)，见 tun_singbox.log" % p.returncode)
         return False
     with io.open(tun_mode.PID, "w", encoding="utf-8") as f:

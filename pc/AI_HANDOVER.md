@@ -34,6 +34,23 @@
 
 提交：`0035ed5` → `48e0bc3` → `7b9161c` → `fc43f9c` → `954272c`。
 
+### 2026-11-23 17:00：Gemini / AI Studio 打不开（出口池耗尽）+ TUN 自动重扫
+
+- 现场：TUN 10 个出口只剩 g2/g4 能上 Gemini（g0 超时，7 个全死）。节点池来自 05:11 那次在 TUN 下被二次转发
+  污染的深测；**TUN 模式没有看门狗，节点池从不自动刷新**；DoH 出口被钉在单节点 g2。g2 一抖 Google 就打不开。
+- `tun_supervisor.maintain()`（计划任务每分钟，隧道健在时才跑，异常只记日志）：每 15 分钟经 clash API
+  （127.0.0.1:19091）实测能上 `gemini.google.com/robots.txt` 的出口数，写 `logs/pool_health.json`；
+  `< 3` 个或 `node_deep.json` 超过 24 小时 → 自动重扫（3 小时最多一次，`rescan.lock` 防重入，日志
+  `logs/rescan_auto.log`）。当前隧道配置没有「测速进程直连」规则时先重建一次再扫。
+  也可手动放 `_proxy/RESCAN_REQUEST`（立即重扫）或 `_proxy/REBUILD_REQUEST`（按新池重建）。
+- `rescan.py`：TUN 开着时扫完写 `REBUILD_REQUEST`，1 分钟内自动换新节点（先 `sing-box check`，坏配置不生效）。
+- `rotate_dns_detour`：只在实测能到 1.1.1.1 的节点里挑。`restart()`：计划任务与常驻守护同时重建时，
+  对方先成功则视为成功（17:09 实测撞车过一次，隧道本身没问题）。
+- `nodes.tcp_prefilter`：TUN 开着时经「只有 direct 出站的 sing-box SOCKS（127.0.0.1:29099）」预筛。
+- `tun_mode`：`GOOGLE_DNS` 域名的 80 端口走 `grp-any`（以前直连必超时）。
+- 17:09 已在用户机器上自动重建（pid 100932，新配置含直连规则），17:10 自动开始重扫。
+- 回滚：`代理便携版/_proxy/_bak_20261123c/`（v3.2 版）或 `_bak_20261123b/`（原版），`rollback_pc_update_20261123.bat`。
+
 ### 2026-11-23 傍晚：Hysteria2 / 新源 / 隧道重建不再断网
 
 - `nodes.py`：新增 `parse_hysteria2`（`hysteria2://` / `hy2://` → sing-box `hysteria2` 出站，含 salamander、
