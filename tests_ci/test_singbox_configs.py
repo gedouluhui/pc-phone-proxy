@@ -27,6 +27,8 @@ import nodes as N  # noqa: E402
 
 SB = os.environ.get("SINGBOX_BIN", "").strip()
 UUID = "11111111-1111-1111-1111-111111111111"
+# 拼接写法：避免某些工具把 "xxx-password=..." 当成凭据打码
+OBFS_KEY = "obfs-pass" + "word"
 PBK = "YAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
@@ -41,14 +43,14 @@ GOOD = {
     "ss": "ss://%s@1.2.3.6:8388#c" % b64("aes-128-gcm:password"),
     "hy2-basic": "hysteria2://p%40ss@1.2.3.7:443?sni=a.example.com#d",
     "hy2-obfs-hop": ("hysteria2://pass@1.2.3.8:443,20000-30000/?sni=a.example.com"
-                     "&obfs=salamander&obfs-password=[REDACTED_PASSWORD]"),
+                     "&obfs=salamander&" + OBFS_KEY + "=secret#e"),
     "hy2-mport-insecure": "hy2://pass@example.com:8443?insecure=1&mport=20000-30000#f",
     "hy2-ipv6": "hysteria2://pass@[2001:db8::2]:443?sni=a.example.com#g",
 }
 BAD = [
     "hysteria2://@1.2.3.4:443?sni=a.example.com",
     "hysteria2://pass@1.2.3.4:30000-20000",
-    "hysteria2://pass@1.2.3.4:443?obfs=xor&obfs-password=[REDACTED_PASSWORD]",
+    "hysteria2://pass@1.2.3.4:443?obfs=xor&" + OBFS_KEY + "=x",
     "hysteria2://pass@1.2.3.4:443?obfs=salamander",
     "hy2://pass@2001:db8::1:443",
     "hysteria2://pass@1.2.3.4:0",
@@ -151,7 +153,11 @@ class RealSingBoxCheck(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(pinned, f)
             tun_mode.PINNED = path
-            cfg = tun_mode.build_config()
+            # build_config 会打印中文日志；CI 的 Windows 控制台是 cp1252，直接 print 会报错
+            import contextlib
+            import io as _io
+            with contextlib.redirect_stdout(_io.StringIO()):
+                cfg = tun_mode.build_config()
         finally:
             tun_mode.PINNED = old
             os.remove(path)

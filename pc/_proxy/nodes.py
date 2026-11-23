@@ -376,6 +376,10 @@ async def tcp_prefilter(nodes, timeout=2.5, conc=400):
     async def one(n):
         ob = n["outbound"]
         tag = ob["tag"]
+        if is_udp_outbound(ob):
+            # QUIC 节点没法用 TCP connect 预筛，原样交给后面的 sing-box 实测
+            ok[tag] = (True, 999.0)
+            return
         async with sem:
             host, port = ob["server"], int(ob["server_port"])
             ip = host
