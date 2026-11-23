@@ -122,3 +122,14 @@ git push -f origin main   # 仅在还没别人克隆时使用
 - 校验：见 `dist/SHA256SUMS.txt`
 - 变更：`host:port/` 形式分享链接不再被判为不可用；CI 增加完整打包校验
 - 发布：把该 APK 作为 `v2.7` 的资产上传，标题沿用 `PhoneProxy-public.apk` 命名习惯
+
+## 自动发布（可选，替代手工上传）
+
+`.github/workflows/release.yml` 会在推送 `v*` tag 时构建公版并挂到 Release。
+启用需要两样东西（仓库 Settings → Secrets/Variables）：
+
+1. `secrets.PROXY_KEYSTORE_BASE64`：`base64 -w0 phone/phoneproxy.keystore`
+2. `secrets.PROXY_KS_PASS` 与 `vars.PROXY_KS_ALIAS`
+3. `vars.RELEASE_SIGNING_READY=1`（没设置时 workflow 直接跳过，避免产出未签名的假包）
+
+之后发布只要：`git tag v2.7 && git push origin v2.7`。
