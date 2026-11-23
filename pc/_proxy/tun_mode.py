@@ -409,6 +409,10 @@ def build_config():
                 # TCP，页面就"一直转圈"。直接拒绝，让它立刻走 TCP。
                 {"network": "udp", "port": 443, "action": "reject"},
                 {"network": "udp", "outbound": "direct"},
+                # 被墙站点的明文 HTTP（Google 的 http:// 跳转、连通性检查等）直连必然超时
+                # （2026-11-23 日志：142.251.x:80 走 direct 全部 i/o timeout），交给代理；
+                # 其余明文 HTTP 仍按下一条直连，不经过免费节点。
+                {"domain_suffix": GOOGLE_DNS, "port": 80, "outbound": "grp-any"},
                 # 明文 HTTP 不经免费节点（与分流模式一致）
                 {"port": 80, "outbound": "direct"},
                 {"domain_suffix": pacroute.DIRECT, "outbound": "direct"},

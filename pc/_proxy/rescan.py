@@ -54,6 +54,16 @@ def main():
     if run("bestroute.py", "--apply") != 0:
         print("[失败] 没能从深测结果里组出可用出口。", flush=True)
         return 1
+    # TUN 开着且是自愈任务发起的重扫：请它用新节点池重建隧道（先校验再切换）。
+    # 手动双击「重新扫描节点」时也一样，省得用户再点一次启动。
+    if os.path.isfile(os.path.join(HERE, "TUN_ACTIVE")):
+        try:
+            with open(os.path.join(HERE, "REBUILD_REQUEST"), "w", encoding="utf-8") as f:
+                f.write("rescan")
+            print("\n[OK] 节点已重扫，TUN 会在 1 分钟内自动换用新节点（先校验，坏配置不会生效）。", flush=True)
+        except OSError:
+            print("\n[OK] 节点已重扫；TUN 模式请双击 启动代理.bat 选 2 换用新节点。", flush=True)
+        return 0
     print("\n[OK] 节点已重扫并重建出口，双击 启动代理.bat 完成 PAC 安装。", flush=True)
     return 0
 

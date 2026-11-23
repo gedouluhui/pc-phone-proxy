@@ -164,6 +164,9 @@ class RealSingBoxCheck(unittest.TestCase):
         rules = cfg["route"]["rules"]
         self.assertEqual(rules[0].get("process_name"), ["sing-box.exe", "xray.exe"])
         self.assertEqual(rules[0].get("outbound"), "direct")
+        i80 = next(i for i, r in enumerate(rules) if r.get("port") == 80 and r.get("outbound") == "direct")
+        self.assertEqual(rules[i80 - 1].get("port"), 80)
+        self.assertEqual(rules[i80 - 1].get("outbound"), "grp-any")
         sb_check(self, cfg)
 
     def test_latency_config(self):
@@ -187,6 +190,82 @@ class RealSingBoxCheck(unittest.TestCase):
         subset = [n for n in subset if deep_test.sanitize(n)]
         self.assertEqual(len(subset), len(GOOD))
         sb_check(self, deep_test.build_cfg(subset, 29080, 29081, 29091))
+
+
+class RescanDecision(unittest.TestCase):
+    """tun_supervisor.decide_rescan：何时自动重扫（纯函数）。"""
+
+    def setUp(self):
+        import tun_supervisor as S
+        self.S = S
+        self.now = 1_800_000_000.0
+
+    def d(self, **kw):
+        base = dict(now=self.now, deep_mtime=self.now - 3600, google_live=5,
+                    last_rescan=0, running=False, requested=False)
+        base.update(kw)
+        return self.S.decide_rescan(**base)
+
+    def test_healthy_pool_no_rescan(self):
+        self.assertIsNone(self.d())
+
+    def test_few_google_exits_triggers(self):
+        self.assertIn("2", self.d(google_live=2))
+
+    def test_stale_pool_triggers(self):
+        self.assertIsNotNone(self.d(deep_mtime=self.now - 25 * 3600))
+
+    def test_gap_and_running_block(self):
+        self.assertIsNone(self.d(google_live=0, last_rescan=self.now - 600))
+        self.assertIsNone(self.d(google_live=0, running=True))
+        self.assertIsNone(self.d(requested=True, running=True))
+
+    def test_request_bypasses_gap(self):
+        self.assertIsNotNone(self.d(requested=True, last_rescan=self.now - 60))
+
+    def test_unknown_health_not_trigger(self):
+        self.assertIsNone(self.d(google_live=None))
+
+
+class DirectSocksPrefilter(unittest.TestCase):
+    """TUN 下 TCP 预筛走「只有 direct 出站的 sing-box SOCKS」：必须分得清开着/关着的端口。"""
+
+    def test_open_vs_closed(self):
+        need_singbox(self)
+        import socket
+        import threading
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        open_port = srv.getsockname()[1]
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        closed_port = closed.getsockname()[1]
+        closed.close()
+
+        def accept_loop():
+            for _ in range(4):
+                try:
+                    c, _ = srv.accept()
+                    c.close()
+                except OSError:
+                    return
+        threading.Thread(target=accept_loop, daemon=True).start()
+        old_bin = N.BIN
+        N.BIN = SB
+        p = None
+        try:
+            p = N._start_direct_socks(port=29199)
+            self.assertIsNotNone(p, "direct socks sing-box did not start")
+            ok_open = asyncio.run(N.socks_connect("127.0.0.1", open_port, 3.0, sport=29199))
+            ok_closed = asyncio.run(N.socks_connect("127.0.0.1", closed_port, 3.0, sport=29199))
+        finally:
+            N.BIN = old_bin
+            if p:
+                p.kill()
+            srv.close()
+        self.assertTrue(ok_open)
+        self.assertFalse(ok_closed)
 
 
 if __name__ == "__main__":

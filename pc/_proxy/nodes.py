@@ -350,10 +350,84 @@ def write_config(nodes):
     return cfg
 
 
+TUN_ACTIVE_FILE = os.path.join(HERE, "TUN_ACTIVE")
+PREFILTER_SOCKS = 29099
+
+
+def _start_direct_socks(port=PREFILTER_SOCKS):
+    """TUN 开着时给 TCP 预筛用的「直连 SOCKS」：一个只有 direct 出站的 sing-box。
+
+    TUN 下 python 的 connect 会被隧道接管、经当前节点转发，对任何 IP 都「连得上」，
+    预筛形同虚设（2026-11-23 手机端整池不可用的根因之一）。sing-box.exe 在 TUN 规则里
+    直连，它的 SOCKS 握手结果就是真实的大陆直连结果（失败时回 SOCKS 错误码）。
+    """
+    path = os.path.join(HERE, "singbox_prefilter.json")
+    cfg = {"log": {"level": "error"},
+           "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1",
+                         "listen_port": port}],
+           "outbounds": [{"type": "direct", "tag": "direct"}]}
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(cfg, f)
+    p = subprocess.Popen([BIN, "run", "-c", path], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=0x08000000)
+    import socket as _s
+    for _ in range(40):
+        if p.poll() is not None:
+            return None
+        s = _s.socket()
+        s.settimeout(0.25)
+        try:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return p
+        finally:
+            s.close()
+        time.sleep(0.25)
+    p.kill()
+    return None
+
+
+async def socks_connect(ip, port, timeout, sport=PREFILTER_SOCKS):
+    """经本地直连 SOCKS5 做一次 CONNECT；回复码 0 = 目标端口真的连上了。"""
+    r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", sport), timeout)
+    try:
+        w.write(b"\x05\x01\x00")
+        await w.drain()
+        if await asyncio.wait_for(r.readexactly(2), timeout) != b"\x05\x00":
+            return False
+        a = ipaddress.ip_address(ip)
+        atyp = b"\x01" if a.version == 4 else b"\x04"
+        w.write(b"\x05\x01\x00" + atyp + a.packed + int(port).to_bytes(2, "big"))
+        await w.drain()
+        rep = await asyncio.wait_for(r.readexactly(4), timeout + 1.0)
+        return rep[1] == 0
+    finally:
+        w.close()
+        try:
+            await w.wait_closed()
+        except Exception:
+            pass
+
+
 async def tcp_prefilter(nodes, timeout=2.5, conc=400):
     """Keep only nodes whose server:port actually accepts a TCP connection.
     Bulk delay-testing 6k nodes deadlocks sing-box's clash API; a cheap connect
     screen cuts the set by an order of magnitude first."""
+    via = None
+    if os.path.isfile(TUN_ACTIVE_FILE) and os.path.isfile(BIN):
+        via = _start_direct_socks()
+        print("tcp prefilter: TUN active -> %s" % ("via direct sing-box socks" if via
+              else "direct socks unavailable, results may be optimistic"), flush=True)
+    try:
+        return await _tcp_prefilter(nodes, timeout, conc, bool(via))
+    finally:
+        if via:
+            try:
+                via.kill()
+            except Exception:
+                pass
+
+
+async def _tcp_prefilter(nodes, timeout, conc, via_socks):
     sem = asyncio.Semaphore(conc)
     dns = {}
     lock = asyncio.Lock()
@@ -390,12 +464,16 @@ async def tcp_prefilter(nodes, timeout=2.5, conc=400):
                 return
             t0 = time.perf_counter()
             try:
-                r, w = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
-                w.close()
-                try:
-                    await w.wait_closed()
-                except Exception:
-                    pass
+                if via_socks:
+                    if not await socks_connect(ip, port, timeout):
+                        raise OSError("socks connect failed")
+                else:
+                    r, w = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+                    w.close()
+                    try:
+                        await w.wait_closed()
+                    except Exception:
+                        pass
                 ok[tag] = (True, round((time.perf_counter() - t0) * 1000, 1))
             except Exception:
                 ok[tag] = (False, 0.0)

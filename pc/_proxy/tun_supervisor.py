@@ -90,6 +90,8 @@ def rotate_dns_detour():
 
     免费节点"在组里但连不上 1.1.1.1"是常态，urltest 会卡住；这里直接把
     dns_detour.txt 写成下一颗候选，restart() 会重新读它。
+    2026-11-23：先经 clash API 实测哪些节点现在能到 1.1.1.1，只在活节点里挑最快的；
+    以前按顺序轮换，会连续换到死节点、每次都重建一次隧道（14:10~14:15 连重建 5 次）。
     """
     tags = candidate_tags()
     if not tags:
@@ -100,7 +102,11 @@ def rotate_dns_detour():
             cur = f.read().strip()
     except Exception:
         cur = ""
-    nxt = tags[(tags.index(cur) + 1) % len(tags)] if cur in tags else tags[0]
+    live = [t for _, t in live_tags(DNS_PROBE, tags) if t != cur]
+    if live:
+        nxt = live[0]
+    else:
+        nxt = tags[(tags.index(cur) + 1) % len(tags)] if cur in tags else tags[0]
     try:
         with io.open(DETOUR, "w", encoding="utf-8", newline="\n") as f:
             f.write(nxt)
@@ -108,6 +114,159 @@ def rotate_dns_detour():
         return False
     log("DNS 解析失败，换 DoH 出口 -> %s" % nxt)
     return restart()
+
+
+# ------------------------------------------------------------ 出口健康 / 自动重扫（2026-11-23）
+API = "http://127.0.0.1:%d" % tun_mode.CLASH_PORT
+DNS_PROBE = "https://1.1.1.1/cdn-cgi/trace"
+GOOGLE_PROBE = "https://gemini.google.com/robots.txt"
+REBUILD_REQ = os.path.join(HERE, "REBUILD_REQUEST")
+RESCAN_REQ = os.path.join(HERE, "RESCAN_REQUEST")
+RESCAN_LOCK = os.path.join(HERE, "rescan.lock")
+HEALTH = os.path.join(HERE, "logs", "pool_health.json")
+HEALTH_EVERY = 15 * 60        # 每 15 分钟量一次「能上 Google 的出口还剩几个」
+RESCAN_GAP = 3 * 3600         # 两次自动重扫至少间隔 3 小时
+RESCAN_STALE = 24 * 3600      # 节点池超过 24 小时没刷新就重扫
+GOOGLE_MIN = 3                # 能上 Gemini 的出口少于这个数就重扫
+
+
+def api_delay(tag, url, timeout_ms=5000):
+    """经 TUN 自己的 clash API 让某个出口实测一次 url；>0 = 毫秒，0 = 不通。"""
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
+    req = "%s/proxies/%s/delay?%s" % (API, urllib.parse.quote(tag), q)
+    try:
+        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with op.open(req, timeout=timeout_ms / 1000.0 + 3) as r:
+            d = json.loads(r.read().decode("utf-8", "replace") or "{}").get("delay")
+            return int(d) if isinstance(d, int) and d > 0 else 0
+    except Exception:
+        return 0
+
+
+def live_tags(url, tags):
+    """并发测一遍，返回 [(delay, tag), ...] 升序；clash API 不通时返回 []。"""
+    from concurrent.futures import ThreadPoolExecutor
+    tags = list(tags or [])
+    if not tags:
+        return []
+    with ThreadPoolExecutor(max_workers=min(12, len(tags))) as ex:
+        res = list(ex.map(lambda t: (api_delay(t, url), t), tags))
+    return sorted((d, t) for d, t in res if d > 0)
+
+
+def _load_health():
+    try:
+        with io.open(HEALTH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_health(h):
+    try:
+        os.makedirs(os.path.dirname(HEALTH), exist_ok=True)
+        with io.open(HEALTH, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(h, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def rescan_running(now=None):
+    now = now or time.time()
+    try:
+        with io.open(RESCAN_LOCK, encoding="utf-8") as f:
+            j = json.load(f)
+        pid, at = int(j.get("pid") or 0), float(j.get("at") or 0)
+    except Exception:
+        return False
+    return now - at < 2 * 3600 and bool(pid) and P.pid_alive(pid)
+
+
+def decide_rescan(now, deep_mtime, google_live, last_rescan, running, requested=False):
+    """返回重扫原因（字符串）或 None。纯函数，tests_ci 覆盖。"""
+    if running:
+        return None
+    if requested:
+        return "用户/维护请求重扫"
+    if now - (last_rescan or 0) < RESCAN_GAP:
+        return None
+    if google_live is not None and google_live < GOOGLE_MIN:
+        return "能上 Gemini 的出口只剩 %d 个" % google_live
+    if deep_mtime and now - deep_mtime > RESCAN_STALE:
+        return "节点池超过 24 小时没刷新"
+    return None
+
+
+def running_has_direct_rule():
+    """正在用的 TUN 配置里有没有「测速进程直连」规则；没有的话先重建再扫，否则测出假结果。"""
+    try:
+        with io.open(tun_mode.CFG, encoding="utf-8") as f:
+            rules = (json.load(f).get("route") or {}).get("rules") or []
+        return any("process_name" in r and r.get("outbound") == "direct" for r in rules)
+    except Exception:
+        return False
+
+
+def start_rescan(reason):
+    py = sys.executable
+    logf = io.open(os.path.join(HERE, "logs", "rescan_auto.log"), "ab")
+    try:
+        env = dict(os.environ, RESCAN_REBUILD="1", PYTHONIOENCODING="utf-8")
+        p = subprocess.Popen([py, os.path.join(HERE, "rescan.py")], cwd=HERE, env=env,
+                             stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             creationflags=(0x00000008 | 0x00000200 | 0x08000000))
+    finally:
+        logf.close()
+    with io.open(RESCAN_LOCK, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"pid": p.pid, "at": time.time(), "reason": reason}, f, ensure_ascii=False)
+    log("自动重扫节点：%s（pid=%d，日志 logs/rescan_auto.log）" % (reason, p.pid))
+
+
+def maintain(now=None):
+    """计划任务每分钟调用一次：处理重建/重扫请求，按出口健康度决定要不要自动重扫。"""
+    now = now or time.time()
+    if os.path.isfile(REBUILD_REQ):
+        try:
+            os.remove(REBUILD_REQ)
+        except OSError:
+            pass
+        log("收到重建请求（新节点池就绪），按新配置重建隧道")
+        if not restart():
+            log("重建失败，旧隧道已保留")
+        return
+    h = _load_health()
+    requested = os.path.isfile(RESCAN_REQ)
+    google_live = h.get("google_live")
+    if requested or now - float(h.get("checked_at") or 0) >= HEALTH_EVERY:
+        live = live_tags(GOOGLE_PROBE, candidate_tags())
+        google_live = len(live)
+        h.update(checked_at=now, google_live=google_live, google_tags=[t for _, t in live])
+        _save_health(h)
+    try:
+        deep_mtime = os.path.getmtime(os.path.join(HERE, "node_deep.json"))
+    except OSError:
+        deep_mtime = 0
+    reason = decide_rescan(now, deep_mtime, google_live, h.get("last_rescan"),
+                           rescan_running(now), requested)
+    if not reason:
+        return
+    if requested:
+        try:
+            os.remove(RESCAN_REQ)
+        except OSError:
+            pass
+    if not running_has_direct_rule():
+        # 当前隧道是旧配置：深测子进程会被它二次转发。先按新代码重建一次（约 2 秒断流）。
+        log("重扫前先重建隧道，让测速进程直连")
+        if not restart():
+            log("重建失败，本轮不重扫")
+            return
+        time.sleep(5)
+    h["last_rescan"] = now
+    _save_health(h)
+    start_rescan(reason)
 
 
 def stop_current():
@@ -176,6 +335,12 @@ def once():
         return
     pid = read_pid(tun_mode.PID)
     if alive(pid):
+        # 隧道健在：顺带做出口健康维护（重建/重扫请求、能上 Google 的出口太少就自动重扫）。
+        # 任何异常都只记日志，绝不影响正在跑的隧道。
+        try:
+            maintain()
+        except Exception as e:
+            log("维护检查出错（隧道未受影响）: %r" % (e,))
         return
     log("计划任务检查：隧道进程 %s 不在，重建" % (pid or "?"))
     if not restart():
