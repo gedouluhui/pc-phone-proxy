@@ -3,6 +3,19 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## 源清单实测 + 可远程更新 + 协议均衡取样（v3.2，2026-11-23）
+
+- **源清单逐条实测**：在用户的大陆网络下拉取了 39 个候选源。删掉 404 的 `aiboboxx/v2`、`mfuu`，
+  删掉与 peasoft 内容完全相同的 `chengaopan`；新增 `tony163`（自称湖北移动测速后上传）、
+  `Barabama/clashmeta.txt`（约 1800 条，含 166 条 hysteria2）、`free18`。实测时 peasoft 61 条、
+  ermaozi 68 条、barry Sub1 47 条 hysteria2，v3.1 加的 Hysteria2 支持在这些源上直接生效。
+- **远程源清单**：`phone/sources.json` 放在仓库里，App 补充节点时先经 jsDelivr / ghfast / raw 取这份清单
+  （≥3 条合法条目才采用；只接受 https 的 GitHub raw / jsDelivr / gist 地址），取不到才用 APK 内置表。
+  以后源失效只要改仓库里的 JSON，不用重新发 APK（jsDelivr 缓存最长约 12 小时）。
+- **协议均衡取样**：每个源按协议分桶轮流取候选（`interleaveBySchema`），大聚合源前几百条全是 vless 时
+  Hysteria2 也能被抽到；Hysteria2 候选每次最多 48 个（不能 TCP 预筛，死节点要等内核超时）。
+  内核实测线程 8 → 12。
+
 ## 带宽感知选线 / Hysteria2 / SNI 分片自救 / 自动 AI 闸门（v3.1，2026-11-23）
 
 v3.0 解决了「能不能连上」，v3.1 解决「连上之后快不快、稳不稳」：

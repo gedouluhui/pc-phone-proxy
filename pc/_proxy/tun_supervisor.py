@@ -122,14 +122,31 @@ def stop_current():
 
 
 def restart():
+    # 2026-11-23：先生成 + 校验新配置，再停旧进程。新配置过不了 sing-box check 时
+    # 改用上一份能用的配置（singbox_tun.json），而不是直接放弃——以前 DNS 换出口时
+    # 会先停掉活着的隧道，新配置一坏就整机断网。
+    new_path = tun_mode.CFG + ".new"
+    use = None
+    try:
+        cfg = tun_mode.build_config()
+        with io.open(new_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(cfg if isinstance(cfg, str) else json.dumps(cfg, ensure_ascii=False, indent=1))
+        rc, out = tun_mode.check_config(new_path)
+        if rc == 0:
+            use = new_path
+        else:
+            log("新配置校验失败，改用上一份配置: " + out[:300])
+    except BaseException as e:  # build_config 用 SystemExit 报错
+        log("生成新配置失败，改用上一份配置: %r" % (e,))
+    if use is None:
+        if os.path.isfile(tun_mode.CFG) and tun_mode.check_config(tun_mode.CFG)[0] == 0:
+            use = tun_mode.CFG
+        else:
+            log("新旧配置都不可用，放弃本轮重建")
+            return False
     stop_current()
-    cfg = tun_mode.build_config()
-    with io.open(tun_mode.CFG, "w", encoding="utf-8", newline="\n") as f:
-        f.write(cfg if isinstance(cfg, str) else json.dumps(cfg, ensure_ascii=False, indent=1))
-    rc, out = tun_mode.check_config(tun_mode.CFG)
-    if rc != 0:
-        log("配置校验失败，放弃本轮重建: " + out[:300])
-        return False
+    if use == new_path:
+        os.replace(new_path, tun_mode.CFG)
     logf = io.open(tun_mode.SB_LOG, "ab")
     try:
         p = subprocess.Popen([P.SING_EXE, "run", "-c", tun_mode.CFG], cwd=HERE,

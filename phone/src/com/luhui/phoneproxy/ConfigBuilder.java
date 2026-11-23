@@ -55,25 +55,72 @@ public final class ConfigBuilder {
      *
      * <p>v3.0 顺序：面向大陆用户、自称在国内测过速的源放前面，伊朗/俄罗斯向的大聚合放后面。
      * 顺序只影响去重时谁先占位——是否入池完全由本机实测决定，所以列表写宽一点没有坏处，
-     * 抓不到（404/被墙）的源只是在日志里显示失败。2026-11-23 改写时开发环境无法访问 GitHub，
-     * 这些路径没有逐个验证过，接手者请看 App 日志里每个源的「N 条，收下 M」。
+     * 抓不到（404/被墙）的源只是在日志里显示失败。
+     *
+     * <p>v3.2（2026-11-23 下午）：每条路径都在用户的大陆网络下实际拉取验证过（状态 200、内容非空）。
+     * 去掉了 404 的 aiboboxx/v2、mfuu 和与 peasoft 内容完全相同的 chengaopan；新增
+     * tony163（自称湖北移动测速后上传）、Barabama clashmeta.txt（约 1800 条，其中 166 条 hysteria2）、
+     * free18。这张表只是兜底：运行时会先读仓库里的 {@code phone/sources.json}（见 {@link #REMOTE_SOURCES}），
+     * 源失效时改仓库即可，不用重新发 APK。
      */
     public static final String[][] PUBLIC_SOURCES = {
-            // —— 面向大陆 ——
             {"peasoft", "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt"},
             {"ermaozi", "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"},
-            {"aiboboxx", "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2"},
+            {"tony163", "https://raw.githubusercontent.com/tony163/node_free/main/v2ray.txt"},
+            {"Barabama", "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.txt"},
+            {"free18", "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"},
             {"aiboboxx-sub", "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub"},
             {"Pawdroid", "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"},
             {"ripaojiedian", "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub"},
-            {"chengaopan", "https://raw.githubusercontent.com/chengaopan/AutoMergePublicNodes/master/list.txt"},
-            {"mfuu", "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray"},
             {"freefq", "https://raw.githubusercontent.com/freefq/free/master/v2"},
-            // —— 全球大聚合（大陆直连存活率低，靠实测筛） ——
-            {"mahdibland", "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt"},
             {"barry-far", "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt"},
+            {"mahdibland", "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt"},
             {"ALIILAPRO", "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt"},
     };
+
+    /**
+     * v3.2：仓库里的源清单（JSON 数组 {@code [{"name":..,"url":..}]}），jsDelivr / ghfast / raw 三路取，
+     * 4~8 秒超时；拿到 ≥3 条合法条目才替换内置表。只接受 https 的 GitHub raw / jsDelivr / gist 地址，
+     * 防止清单被篡改成指向内网或任意主机（抓取本身还要再过 SubscriptionGuard）。
+     */
+    static final String[] REMOTE_SOURCES = {
+            "https://cdn.jsdelivr.net/gh/gedouluhui/pc-phone-proxy@main/phone/sources.json",
+            "https://ghfast.top/https://raw.githubusercontent.com/gedouluhui/pc-phone-proxy/main/phone/sources.json",
+            "https://raw.githubusercontent.com/gedouluhui/pc-phone-proxy/main/phone/sources.json",
+    };
+
+    /** 远程清单 → 源表；失败返回内置 {@link #PUBLIC_SOURCES}。log 里写明用了哪份。 */
+    static String[][] resolveSources(List<String> log) {
+        for (String u : REMOTE_SOURCES) {
+            try {
+                List<String[]> got = new ArrayList<>();
+                JSONArray arr = new JSONArray(fetchText(u, 8000));
+                for (int i = 0; i < arr.length() && got.size() < 40; i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    String name = o.optString("name", "").trim();
+                    String url = o.optString("url", "").trim();
+                    if (name.isEmpty() || name.length() > 40 || !allowedSourceUrl(url)) continue;
+                    got.add(new String[]{name, url});
+                }
+                if (got.size() >= 3) {
+                    log.add("源清单：使用仓库最新版（" + got.size() + " 个源）");
+                    return got.toArray(new String[0][]);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        log.add("源清单：仓库清单拿不到，使用 App 内置的 " + PUBLIC_SOURCES.length + " 个源");
+        return PUBLIC_SOURCES;
+    }
+
+    static boolean allowedSourceUrl(String url) {
+        if (url == null || url.length() > 300 || !url.startsWith("https://")) return false;
+        if (url.matches(".*[\\s\\\\@].*")) return false;
+        return url.startsWith("https://raw.githubusercontent.com/")
+                || url.startsWith("https://cdn.jsdelivr.net/gh/")
+                || url.startsWith("https://gist.githubusercontent.com/");
+    }
 
     /** raw 地址 → [raw, jsDelivr, ghfast.top]。非 GitHub raw 的地址原样返回。 */
     static List<String> mirrorsOf(String raw) {
@@ -636,7 +683,8 @@ public final class ConfigBuilder {
      * 返回的只是候选，是否入池由 {@link NodePool#refreshFromPublic} 的本机实测决定。
      */
     public static List<String> fetchPublicSources(List<String> log) {
-        final int count = PUBLIC_SOURCES.length;
+        final String[][] sources = resolveSources(log);
+        final int count = sources.length;
         final List<List<String>> got = new ArrayList<>();
         final String[] notes = new String[count];
         for (int i = 0; i < count; i++) got.add(null);
@@ -644,8 +692,8 @@ public final class ConfigBuilder {
         for (int i = 0; i < count; i++) {
             final int idx = i;
             pool.execute(() -> {
-                String name = PUBLIC_SOURCES[idx][0];
-                List<String> urls = mirrorsOf(PUBLIC_SOURCES[idx][1]);
+                String name = sources[idx][0];
+                List<String> urls = mirrorsOf(sources[idx][1]);
                 String err = "?";
                 for (int k = 0; k < urls.size(); k++) {
                     try {
@@ -671,6 +719,7 @@ public final class ConfigBuilder {
         pool.shutdownNow();
 
         LinkedHashMap<String, String> byKey = new LinkedHashMap<>();
+        int hyTotal = 0;
         for (int i = 0; i < count; i++) {
             List<String> list;
             synchronized (got) {
@@ -678,20 +727,86 @@ public final class ConfigBuilder {
             }
             int added = 0;
             if (list != null) {
-                for (String u : list) {
+                // v3.2：按协议轮流取。大聚合源前几百条往往全是同一种协议（Barabama 前 700 条是
+                // vless），按顺序取 80 条就一条 Hysteria2 都轮不到。
+                for (String u : interleaveBySchema(list)) {
                     if (added >= PER_SOURCE || byKey.size() >= CANDIDATE_MAX) break;
                     JSONObject ob = parseUri(u);
                     if (ob == null) continue;
+                    boolean hy = "hysteria".equals(ob.optString("protocol", ""));
+                    // QUIC 节点不能 TCP 预筛，死节点要等内核超时（最长约 24 秒），限量放进候选
+                    if (hy && hyTotal >= HY_CANDIDATE_MAX) continue;
                     String k = nodeKey(ob);
                     if (byKey.containsKey(k)) continue;
                     byKey.put(k, u);
                     added++;
+                    if (hy) hyTotal++;
                 }
             }
-            String note = notes[i] != null ? notes[i] : PUBLIC_SOURCES[i][0] + " 超时";
+            String note = notes[i] != null ? notes[i] : sources[i][0] + " 超时";
             log.add(list != null ? note + "，收下 " + added : note);
         }
+        if (hyTotal > 0) log.add("其中 Hysteria2 候选 " + hyTotal + " 个");
         return new ArrayList<>(byKey.values());
+    }
+
+    /** 一次补充最多放进多少个 Hysteria2 候选。 */
+    private static final int HY_CANDIDATE_MAX = 48;
+
+    /** 按 scheme（vless/vmess/ss/trojan/hysteria2…）分桶后轮流取，保持各桶内原顺序。 */
+    static List<String> interleaveBySchema(List<String> uris) {
+        LinkedHashMap<String, List<String>> buckets = new LinkedHashMap<>();
+        for (String u : uris) {
+            int p = u.indexOf("://");
+            String k = p > 0 ? u.substring(0, p).toLowerCase(Locale.ROOT) : "";
+            if ("hy2".equals(k)) k = "hysteria2";
+            List<String> b = buckets.get(k);
+            if (b == null) {
+                b = new ArrayList<>();
+                buckets.put(k, b);
+            }
+            b.add(u);
+        }
+        List<String> out = new ArrayList<>(uris.size());
+        int i = 0;
+        boolean any = true;
+        while (any) {
+            any = false;
+            for (List<String> b : buckets.values()) {
+                if (i < b.size()) {
+                    out.add(b.get(i));
+                    any = true;
+                }
+            }
+            i++;
+        }
+        return out;
+    }
+
+    /** 小文本 GET（源清单用）：过 SubscriptionGuard、不跟随重定向、最多 64 KB。 */
+    static String fetchText(String url, int timeoutMs) throws Exception {
+        java.net.URI target = SubscriptionGuard.check(url);
+        SubscriptionGuard.checkResolved(target.getHost());
+        HttpURLConnection c = (HttpURLConnection) target.toURL().openConnection();
+        c.setConnectTimeout(Math.min(timeoutMs, 4000));
+        c.setReadTimeout(timeoutMs);
+        c.setInstanceFollowRedirects(false);
+        c.setRequestProperty("User-Agent", "PhoneProxy");
+        try {
+            if (c.getResponseCode() != 200) throw new IllegalStateException("HTTP " + c.getResponseCode());
+            InputStream in = c.getInputStream();
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+                if (bos.size() > 65536) throw new IllegalStateException("too large");
+            }
+            in.close();
+            return bos.toString("UTF-8");
+        } finally {
+            c.disconnect();
+        }
     }
 
     // --------------------------------------------------------------- 配置

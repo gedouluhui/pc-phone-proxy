@@ -92,6 +92,15 @@ SOURCES = [
     ("roosterkid_v2ray", "sub", "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_BASE64.txt"),
     ("peasoft_all", "sub", "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt"),
     ("lalatina_all", "sub", "https://raw.githubusercontent.com/LalatinaHub/Mineral/master/result/nodes"),
+    # ---- 2026-11-23：经本机网络实测存在、且含大量 Hysteria2 / 面向大陆的源 ----
+    # ermaozi/NoMoreWalls/Barabama/barry Sub1 每天合计约 300 条 hysteria2（以前不解析，全丢）；
+    # tony163 自称在湖北移动测速后上传，是目前少见的「国内测过」的源。
+    ("tony163_v2", "sub", "https://raw.githubusercontent.com/tony163/node_free/main/v2ray.txt"),
+    ("barabama_meta", "sub", "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.txt"),
+    ("free18_v2", "sub", "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"),
+    ("aiboboxx_sub", "sub", "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub"),
+    ("barry_sub1", "sub", "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt"),
+    ("chengaopan_all", "sub", "https://raw.githubusercontent.com/chengaopan/AutoMergePublicNodes/master/list.txt"),
     # ---- 2026-11-10 expansion: extra plain proxy lists ----
     ("vakhov_https", "http", "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt"),
     ("shifty_socks4", "socks4", "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt"),

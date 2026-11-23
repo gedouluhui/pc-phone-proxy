@@ -34,6 +34,21 @@
 
 提交：`0035ed5` → `48e0bc3` → `7b9161c` → `fc43f9c` → `954272c`。
 
+### 2026-11-23 傍晚：Hysteria2 / 新源 / 隧道重建不再断网
+
+- `nodes.py`：新增 `parse_hysteria2`（`hysteria2://` / `hy2://` → sing-box `hysteria2` 出站，含 salamander、
+  端口跳跃 `server_ports`、`insecure=1`），`tcp_prefilter` 对 UDP 节点直接放行交给 sing-box 实测。
+  公开源里每天约 300 条 hysteria2，以前全部被当成「无法解析」丢掉。
+- `harvest.py`：新增 6 个在本机网络实测存在的源（tony163 / Barabama clashmeta / free18 / aiboboxx sub /
+  barry Sub1 / chengaopan）。
+- `tun_mode.start_admin`：**先生成并 `sing-box check` 新配置，通过才停旧隧道**；以前先停再建，新配置一坏就断网。
+- `tun_supervisor.restart`：先生成+校验新配置再停旧进程；新配置不过就回退到上一份能用的 `singbox_tun.json`。
+- `tun_mode.build_config`：路由第一条 `process_name: sing-box.exe/xray.exe → direct`（TUN 开着扫描也测真实直连结果）。
+- CI：`tests_ci/test_singbox_configs.py` 用与便携版同版本的真 sing-box 1.14.4 校验 TUN / 深测 / 延迟测三套
+  生成配置（含 Hysteria2），任何生成器把配置写坏都会在 CI 失败，而不是在用户机器上重建时断网。
+- 部署：CI 通过后才复制进 `代理便携版/_proxy`（覆盖前备份到 `_proxy/_bak_20261123b/`，回滚见
+  `kaggle/PHONEPROXY_V3_HANDOVER_2026-11-23.md`）。正在运行的隧道进程不受影响，新代码在下次重建/扫描时生效。
+
 ### 2026-11-23 下午：TUN 开着扫描会测出假结果（手机端全灭的根因之一）
 
 - 手机端 24 个内置节点、144 个节点池全部不可用。查 `logs/tun.log`：TUN 从 04:46:56 一直接管，

@@ -45,7 +45,8 @@ public final class NodeTester {
 
     private static final int TCP_TIMEOUT_MS = 3000;
     private static final int TCP_THREADS = 32;
-    private static final int CORE_THREADS = 8;
+    // v3.2：12（Hysteria2 节点跳过 TCP 预筛，死节点会占住内核线程到超时）
+    private static final int CORE_THREADS = 12;
 
     private static final AtomicInteger RUNNING = new AtomicInteger();
 

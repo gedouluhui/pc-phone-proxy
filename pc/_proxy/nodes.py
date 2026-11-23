@@ -186,6 +186,8 @@ def parse_uri(uri):
                       "server_port": int(port), "method": method, "password": pwd}
                 return ob, {"proto": "ss", "net": "tcp", "tls": False}
             return None, None
+        if scheme in ("hysteria2", "hy2"):
+            return parse_hysteria2(uri)
         if scheme == "http":
             u = up.urlsplit(uri)
             if not u.hostname or not u.port or not 1 <= int(u.port) <= 65535:
@@ -202,6 +204,100 @@ def parse_uri(uri):
     except Exception:
         return None, None
     return None, None
+
+
+_PORT_SPEC = re.compile(r"^[0-9]{1,5}(-[0-9]{1,5})?(,[0-9]{1,5}(-[0-9]{1,5})?)*$")
+
+
+def _port_ranges(spec):
+    """'443' / '20000-30000' / '443,20000-30000' -> sing-box server_ports ['a:b', ...].
+    返回 None 表示写法非法。单个端口也写成 'p:p'（sing-box 只认区间格式）。"""
+    if not spec or len(spec) > 64 or not _PORT_SPEC.match(spec):
+        return None
+    out = []
+    for part in spec.split(","):
+        a, _, b = part.partition("-")
+        lo, hi = int(a), int(b or a)
+        if not (1 <= lo <= hi <= 65535):
+            return None
+        out.append("%d:%d" % (lo, hi))
+    return out
+
+
+def parse_hysteria2(uri):
+    """hysteria2:// 与 hy2:// -> sing-box hysteria2 出站（2026-11-23 起）。
+
+    QUIC/UDP 节点在大陆常比 TCP 节点快、稳；公开源里每天有一两百条（ermaozi /
+    NoMoreWalls / Barabama 实测），以前全部被当成「无法解析」丢掉。
+    写法：hysteria2://auth@host:port/?sni=&obfs=salamander&obfs-password=&insecure=1&mport=
+    端口可写成 443,20000-30000（端口跳跃）。insecure 沿用本文件 vless/trojan 的规则：
+    只有订阅显式写 insecure=1 才跳过证书校验。
+    """
+    body = uri.split("://", 1)[1].split("#", 1)[0]
+    query = ""
+    if "?" in body:
+        body, query = body.split("?", 1)
+    if "@" not in body:
+        return None, None
+    auth, hostport = body.rsplit("@", 1)
+    auth = up.unquote(auth).strip()
+    hostport = hostport.split("/", 1)[0].strip()
+    if not auth or len(auth) > 512:
+        return None, None
+    if hostport.startswith("["):
+        host, _, rest = hostport[1:].partition("]")
+        port_spec = rest[1:] if rest.startswith(":") else ("443" if not rest else None)
+    else:
+        host, sep, port_spec = hostport.rpartition(":")
+        if not sep:
+            host, port_spec = hostport, "443"
+        if ":" in host:
+            return None, None
+    if not host or port_spec is None:
+        return None, None
+    q = dict(up.parse_qsl(query, keep_blank_values=True))
+    ob = {"type": "hysteria2", "server": host, "password": auth}
+    if port_spec.isdigit():
+        port = int(port_spec)
+        if not 1 <= port <= 65535:
+            return None, None
+        ob["server_port"] = port
+        hop = q.get("mport", "").strip()
+        if hop:
+            ranges = _port_ranges(hop)
+            if not ranges:
+                return None, None
+            ob["server_ports"] = ranges
+            ob["hop_interval"] = "30s"
+    else:
+        ranges = _port_ranges(port_spec)
+        if not ranges:
+            return None, None
+        ob["server_ports"] = ranges
+        ob["hop_interval"] = "30s"
+        # 预筛/去重仍需要一个代表端口
+        ob["server_port"] = int(ranges[0].split(":")[0])
+    obfs = (q.get("obfs") or "").strip().lower()
+    if obfs and obfs != "none":
+        pw = q.get("obfs-password") or q.get("obfs_password") or ""
+        if obfs != "salamander" or not pw:
+            return None, None
+        ob["obfs"] = {"type": "salamander", "password": pw}
+    sni = q.get("sni") or q.get("peer") or ""
+    tls = {"enabled": True, "alpn": ["h3"]}
+    if sni:
+        tls["server_name"] = sni
+    elif not re.fullmatch(r"[0-9.]+|[0-9a-fA-F:]+", host):
+        tls["server_name"] = host
+    if q.get("insecure") == "1" or q.get("allowInsecure") == "1":
+        tls["insecure"] = True
+    ob["tls"] = tls
+    return ob, {"proto": "hysteria2", "net": "udp", "tls": True}
+
+
+def is_udp_outbound(ob):
+    """走 UDP 的出站（Hysteria2 / TUIC）：TCP 预筛对它们没有意义。"""
+    return (ob or {}).get("type") in ("hysteria2", "hysteria", "tuic")
 
 
 def build_inbounds():

@@ -22,6 +22,19 @@ jobs:
       - name: 语法检查（pc/_proxy）
         run: python -m compileall -q pc/_proxy
 
+      # 与用户便携版同版本的真 sing-box：tests_ci/test_singbox_configs.py 用它校验
+      # TUN / 深测 / 延迟测三套生成配置（含 Hysteria2），生成器出错会在这里拦下，
+      # 而不是在用户机器上重建隧道时断网。
+      - name: 取 sing-box 1.14.4（与便携版一致）
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "sb.zip"
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "sb")
+          $exe = Get-ChildItem -Recurse (Join-Path $env:RUNNER_TEMP "sb") -Filter sing-box.exe | Select-Object -First 1
+          & $exe.FullName version
+          "SINGBOX_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: PC 回归（PAC / SSRF / 发布闸门 / 脱敏）
         run: python -m unittest discover -s tests_ci -v
 

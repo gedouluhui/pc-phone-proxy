@@ -570,6 +570,27 @@ def adapter_present():
 
 
 def start_admin():
+    # 2026-11-23：先生成并校验新配置，校验通过才动正在跑的隧道。
+    # 以前是先停旧隧道（[0/6]、[2/5]）再生成配置，新配置一旦过不了 sing-box check，
+    # 用户就从「能上网」直接变成「断网」。现在校验失败时旧隧道原样保留。
+    try:
+        pre = build_config()
+        pre_path = CFG + ".precheck"
+        with io.open(pre_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(pre, f, ensure_ascii=False, indent=1)
+        rc0, out0 = check_config(pre_path)
+        try:
+            os.remove(pre_path)
+        except OSError:
+            pass
+        if rc0 != 0:
+            log("新配置没通过 sing-box check，保留当前隧道不动: " + out0[:300])
+            return 1, "新配置没通过 sing-box check（当前网络未改动）: " + out0[:300]
+    except SystemExit as e:
+        return 1, "生成配置失败（当前网络未改动）: %s" % e
+    except Exception as e:
+        log("预检新配置时出错（继续按原流程）: %r" % (e,))
+
     if alive(read_pid()):
         # 启动按钮的语义是"按当前配置生效"，不是"已经在跑就算了"：旧隧道可能
         # 还挂在死节点上（AI 出口就是这样失效的），所以先拆再建。
