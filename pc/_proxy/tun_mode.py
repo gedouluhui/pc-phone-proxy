@@ -65,6 +65,19 @@ TUN_ADDR = "172.19.0.1/30"
 # taken by Clash Verge / mihomo / an older TUN copy; sharing it made our exits
 # die at startup with a message that looked exactly like "every node is dead".
 CLASH_PORT = 19091
+# 本次 build_config 的 Google 闸门摘要（供日志/维护线程读）
+GATE_SUMMARY = {"ok": 0, "members": 0}
+# Google 全家（不含 AI 子站，它们在 pacroute.GOOGLE_APP）。2026-11-23：Gemini 页面会同时请求
+# accounts.google.com / www.google.com / gstatic 等，以前这些走 grp-any、和 gemini.google.com
+# 走的 grp-google 不是同一个出口；只要其中一个出口在 Google 眼里是「不支持地区」，账号会话
+# 和 Gemini 一起被判不支持。现在 Google 全家统一走 grp-google（已过地区闸门的出口）。
+GOOGLE_FAMILY = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
+                 "gvt1.com", "gvt2.com", "gvt3.com", "ggpht.com", "googlevideo.com",
+                 "youtube.com", "ytimg.com", "youtu.be", "youtube-nocookie.com",
+                 "withgoogle.com", "google.dev", "goo.gl", "g.co", "google",
+                 "google-analytics.com", "googletagmanager.com", "googlesyndication.com",
+                 "doubleclick.net", "recaptcha.net", "googleadservices.com",
+                 "gemini.google", "notebook.google", "labs.google", "antigravity.google"]
 GEOIP_SRS = os.path.join(HERE, "rulesets", "geoip-cn.srs")
 CREATE_NO_WINDOW = 0x08000000
 
@@ -244,6 +257,22 @@ def build_config():
                      if (o.get("server") or "").lower() not in google_bad]
     if not google_ranked:
         google_ranked = ranked
+    # 2026-11-23：Google 地区闸门（google_gate.py）。Google 用自己的地理库判地区，
+    # cloudflare 说 US 的免费节点在 Google 眼里可能是伊朗（Gemini「不支持你所在的地区」）。
+    # 有「ok」结论时 grp-google 只用 ok 的节点；没有就至少排除「bad」的。
+    try:
+        import google_gate
+        _gate = google_gate.load()
+    except Exception:
+        _gate = {}
+    _gate_ok = [o for o in google_ranked if _gate.get(google_gate.node_key(o)) == "ok"] if _gate else []
+    _gate_not_bad = [o for o in google_ranked if _gate.get(google_gate.node_key(o)) != "bad"] if _gate else google_ranked
+    if _gate_ok:
+        google_ranked = _gate_ok
+    elif _gate_not_bad:
+        google_ranked = _gate_not_bad
+    GATE_SUMMARY["ok"] = len(_gate_ok)
+    GATE_SUMMARY["members"] = len(google_ranked)
 
     def _usable(pool):
         """深测吞吐前 4 颗，且不低于最快那颗的 1/4（低于这个没有实用价值）。"""
@@ -412,6 +441,8 @@ def build_config():
                 # 被墙站点的明文 HTTP（Google 的 http:// 跳转、连通性检查等）直连必然超时
                 # （2026-11-23 日志：142.251.x:80 走 direct 全部 i/o timeout），交给代理；
                 # 其余明文 HTTP 仍按下一条直连，不经过免费节点。
+                {"domain_suffix": GOOGLE_FAMILY, "port": 80,
+                 "outbound": "grp-google" if gmembers else "grp-any"},
                 {"domain_suffix": GOOGLE_DNS, "port": 80, "outbound": "grp-any"},
                 # 明文 HTTP 不经免费节点（与分流模式一致）
                 {"port": 80, "outbound": "direct"},
@@ -420,6 +451,9 @@ def build_config():
                 # AI 站必须走合格出口；其余默认走合并组
                 {"domain_suffix": pacroute.GOOGLE_APP,
                  "outbound": "grp-google" if gmembers else "grp-general"},
+                # Google 全家与 AI 子站同一个出口（见 GOOGLE_FAMILY 注释）
+                {"domain_suffix": GOOGLE_FAMILY,
+                 "outbound": "grp-google" if gmembers else "grp-any"},
                 # Amazon 系下载走同源探针的 Amazon 组；没有成员时退回合并组。
                 {"domain_suffix": AMAZON_DL, "outbound": am_out},
                 {"domain_suffix": pacroute.GENERAL, "outbound": "grp-general"},

@@ -57,3 +57,8 @@ dist/*.apk
 pc/_proxy/route_map.json
 phone/手机代理.apk
 phone/*.idsig
+pc/_proxy/google_gate.json
+pc/_proxy/singbox_prefilter.json
+pc/_proxy/REBUILD_REQUEST
+pc/_proxy/RESCAN_REQUEST
+pc/_proxy/rescan.lock

@@ -224,26 +224,76 @@ def start_rescan(reason):
     log("自动重扫节点：%s（pid=%d，日志 logs/rescan_auto.log）" % (reason, p.pid))
 
 
+def running_google_keys():
+    """当前隧道 grp-google 成员的 server:port 列表。"""
+    try:
+        with io.open(tun_mode.CFG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return []
+    obs = {o.get("tag"): o for o in cfg.get("outbounds") or []}
+    grp = obs.get("grp-google") or {}
+    import google_gate
+    return [google_gate.node_key(obs[t]) for t in grp.get("outbounds") or [] if t in obs]
+
+
+def gate_needs_rebuild(member_keys, verdicts):
+    """grp-google 里有被 Google 判「不支持地区」的成员，且换了能变好 -> True（纯函数）。"""
+    bad = [k for k in member_keys if verdicts.get(k) == "bad"]
+    if not bad:
+        return False
+    ok_all = [k for k, v in verdicts.items() if v == "ok"]
+    ok_members = [k for k in member_keys if verdicts.get(k) == "ok"]
+    # 有 ok 的节点却没全部用上，或组里混着 bad 的：按闸门结果重建
+    return bool(ok_all) and (len(bad) > 0 and set(ok_members) != set(member_keys))
+
+
+def run_gate(h, now, source="tun"):
+    import google_gate
+    obs = google_gate.pinned_outbounds() if source == "pinned" else google_gate.tun_outbounds()
+    v = google_gate.check_many(obs, log=log)
+    h.update(gate_at=now, gate_ok=sum(1 for x in v.values() if x == "ok"),
+             gate_bad=sum(1 for x in v.values() if x == "bad"))
+    _save_health(h)
+    return v
+
+
 def maintain(now=None):
-    """计划任务每分钟调用一次：处理重建/重扫请求，按出口健康度决定要不要自动重扫。"""
+    """计划任务每分钟调用一次：处理重建/重扫请求、Google 地区闸门、出口太少就自动重扫。"""
     now = now or time.time()
+    h = _load_health()
     if os.path.isfile(REBUILD_REQ):
         try:
             os.remove(REBUILD_REQ)
         except OSError:
             pass
+        # 新节点池（bestroute 刚写的 singbox_pinned.json）先过 Google 地区闸门，再按它重建
+        try:
+            run_gate(h, now, source="pinned")
+        except Exception as e:
+            log("新节点池地区闸门出错（继续重建）: %r" % (e,))
         log("收到重建请求（新节点池就绪），按新配置重建隧道")
         if not restart():
             log("重建失败，旧隧道已保留")
         return
-    h = _load_health()
     requested = os.path.isfile(RESCAN_REQ)
-    google_live = h.get("google_live")
     if requested or now - float(h.get("checked_at") or 0) >= HEALTH_EVERY:
-        live = live_tags(GOOGLE_PROBE, candidate_tags())
-        google_live = len(live)
-        h.update(checked_at=now, google_live=google_live, google_tags=[t for _, t in live])
+        h["checked_at"] = now
+        try:
+            verdicts = run_gate(h, now)
+        except Exception as e:
+            log("地区闸门出错: %r" % (e,))
+            verdicts = {}
+        members = running_google_keys()
+        if gate_needs_rebuild(members, verdicts):
+            if now - float(h.get("last_gate_rebuild") or 0) >= 1800:
+                h["last_gate_rebuild"] = now
+                _save_health(h)
+                log("Google 出口里有被判「不支持地区」的节点，按闸门结果重建隧道")
+                restart()
+        h["google_live"] = h.get("gate_ok", 0)
         _save_health(h)
+    google_live = h.get("google_live")
     try:
         deep_mtime = os.path.getmtime(os.path.join(HERE, "node_deep.json"))
     except OSError:
@@ -266,7 +316,7 @@ def maintain(now=None):
         time.sleep(5)
     h["last_rescan"] = now
     _save_health(h)
-    start_rescan(reason)
+    start_rescan(reason.replace("能上 Gemini 的出口", "过 Google 地区闸门的出口"))
 
 
 def stop_current():

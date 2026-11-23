@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -190,6 +191,87 @@ class RealSingBoxCheck(unittest.TestCase):
         subset = [n for n in subset if deep_test.sanitize(n)]
         self.assertEqual(len(subset), len(GOOD))
         sb_check(self, deep_test.build_cfg(subset, 29080, 29081, 29091))
+
+
+class GoogleGate(unittest.TestCase):
+    """Google 地区闸门：判定、重建决策、grp-google 只用 ok 节点（真 sing-box 校验）。"""
+
+    def test_classify(self):
+        import google_gate as G
+        self.assertEqual(G.classify([("https://notebook.google/?location=unsupported", True)]), "bad")
+        self.assertEqual(G.classify([("https://accounts.google.com/x", False),
+                                     ("https://accounts.google.com/y", False)]), "ok")
+        self.assertEqual(G.classify([(None, False), ("https://a", False)]), "err")
+        self.assertEqual(G.classify([]), "err")
+
+    def test_needs_rebuild(self):
+        import tun_supervisor as S
+        self.assertTrue(S.gate_needs_rebuild(["a:1", "b:1"], {"a:1": "bad", "b:1": "ok"}))
+        self.assertFalse(S.gate_needs_rebuild(["b:1"], {"a:1": "bad", "b:1": "ok"}))
+        # 全是 bad：重建也换不出好节点，交给重扫
+        self.assertFalse(S.gate_needs_rebuild(["a:1"], {"a:1": "bad"}))
+        self.assertFalse(S.gate_needs_rebuild(["a:1"], {}))
+
+    def test_store_roundtrip_keeps_verdicts(self):
+        import google_gate as G
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)
+        old = G.STORE
+        try:
+            G.STORE = path
+            G.save({"1.2.3.4:443": "ok", "5.6.7.8:443": "bad"})
+            G.save({"1.2.3.4:443": "err"})          # err 不覆盖已有结论
+            self.assertEqual(G.load(), {"1.2.3.4:443": "ok", "5.6.7.8:443": "bad"})
+            self.assertEqual(G.load(now=time.time() + 7 * 3600), {})
+        finally:
+            G.STORE = old
+            if os.path.exists(path):
+                os.remove(path)
+
+    def test_tun_google_group_uses_only_ok(self):
+        need_singbox(self)
+        import contextlib
+        import io as _io
+        import google_gate as G
+        import tun_mode
+        nodes = []
+        for i, name in enumerate(GOOD):
+            ob, _ = parsed(name)
+            nodes.append(dict(ob, tag="g%d" % i))
+        tags = [o["tag"] for o in nodes]
+        pinned = {"outbounds": nodes + [
+            {"type": "urltest", "tag": t, "outbounds": tags,
+             "url": "https://www.gstatic.com/generate_204", "interval": "60s", "tolerance": 400}
+            for t in ("grp-general", "grp-fast", "grp-any")] + [{"type": "direct", "tag": "direct"}]}
+        verdicts = {G.node_key(nodes[0]): "bad", G.node_key(nodes[1]): "ok",
+                    G.node_key(nodes[2]): "ok", G.node_key(nodes[3]): "bad"}
+        fd, ppath = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        fd, gpath = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(gpath)
+        old_p, old_g = tun_mode.PINNED, G.STORE
+        try:
+            with open(ppath, "w", encoding="utf-8") as f:
+                json.dump(pinned, f)
+            tun_mode.PINNED, G.STORE = ppath, gpath
+            G.save(verdicts)
+            with contextlib.redirect_stdout(_io.StringIO()):
+                cfg = tun_mode.build_config()
+        finally:
+            tun_mode.PINNED, G.STORE = old_p, old_g
+            for x in (ppath, gpath):
+                if os.path.exists(x):
+                    os.remove(x)
+        grp = next(o for o in cfg["outbounds"] if o.get("tag") == "grp-google")
+        self.assertEqual(sorted(grp["outbounds"]), ["g1", "g2"])
+        rules = cfg["route"]["rules"]
+        fam = [r for r in rules if r.get("domain_suffix") == tun_mode.GOOGLE_FAMILY and "port" not in r]
+        self.assertEqual(len(fam), 1)
+        self.assertEqual(fam[0]["outbound"], "grp-google")
+        self.assertIn("google.com", tun_mode.GOOGLE_FAMILY)
+        sb_check(self, cfg)
 
 
 class RescanDecision(unittest.TestCase):
