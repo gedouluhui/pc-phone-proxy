@@ -44,6 +44,11 @@ public final class NodeHealth {
         public long okAt;
         /** 连续失败次数，成功一次清零。 */
         public int fails;
+        /** v3.1：最近一次实测下行带宽（KB/s），0 = 没测过。 */
+        public long kbps;
+        public long speedAt;
+        /** v3.1：普通 TLS 直连不通、ClientHello 分片后能通（SNI 被封）。 */
+        public boolean frag;
 
         Entry copy() {
             Entry e = new Entry();
@@ -51,6 +56,9 @@ public final class NodeHealth {
             e.testedAt = testedAt;
             e.okAt = okAt;
             e.fails = fails;
+            e.kbps = kbps;
+            e.speedAt = speedAt;
+            e.frag = frag;
             return e;
         }
     }
@@ -80,6 +88,9 @@ public final class NodeHealth {
                 e.testedAt = a.optLong(1, 0);
                 e.okAt = a.optLong(2, 0);
                 e.fails = a.optInt(3, 0);
+                e.kbps = a.optLong(4, 0);       // v3.0 存的是 4 元素，缺省为 0
+                e.speedAt = a.optLong(5, 0);
+                e.frag = a.optInt(6, 0) == 1;
                 MAP.put(k, e);
             }
         } catch (Throwable ignored) {
@@ -107,6 +118,35 @@ public final class NodeHealth {
             e.fails++;
         }
         dirty = true;
+    }
+
+    /** 记一次带宽实测（KB/s，&gt;0）。 */
+    public static synchronized void recordSpeed(Context ctx, String key, long kbps) {
+        if (key == null || key.isEmpty() || kbps <= 0) return;
+        ensureLoaded(ctx);
+        Entry e = MAP.get(key);
+        if (e == null) {
+            e = new Entry();
+            MAP.put(key, e);
+        }
+        e.kbps = kbps;
+        e.speedAt = System.currentTimeMillis();
+        dirty = true;
+    }
+
+    /** 记下这个节点需要 ClientHello 分片才能连通。 */
+    public static synchronized void setFrag(Context ctx, String key, boolean frag) {
+        if (key == null || key.isEmpty()) return;
+        ensureLoaded(ctx);
+        Entry e = MAP.get(key);
+        if (e == null) {
+            e = new Entry();
+            MAP.put(key, e);
+        }
+        if (e.frag != frag) {
+            e.frag = frag;
+            dirty = true;
+        }
     }
 
     /** 拷贝一份；没测过返回 null。 */
@@ -139,7 +179,8 @@ public final class NodeHealth {
             Entry e = me.getValue();
             try {
                 o.put(me.getKey(), new JSONArray()
-                        .put(e.ms).put(e.testedAt).put(e.okAt).put(e.fails));
+                        .put(e.ms).put(e.testedAt).put(e.okAt).put(e.fails)
+                        .put(e.kbps).put(e.speedAt).put(e.frag ? 1 : 0));
             } catch (Exception ignored) {
             }
         }

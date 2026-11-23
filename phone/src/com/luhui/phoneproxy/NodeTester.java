@@ -90,14 +90,29 @@ public final class NodeTester {
         for (final ConfigBuilder.Node n : nodes) {
             try {
                 tcpPool.execute(() -> {
-                    long tcp = tcpProbe(n);
+                    final long tcp = tcpProbe(n);
                     if (tcp < 0) {
                         finish(app, n, -1, results, done, alive, total, cb);
                         return;
                     }
                     try {
-                        corePool.execute(() ->
-                                finish(app, n, coreProbe(n), results, done, alive, total, cb));
+                        corePool.execute(() -> {
+                            long ms = coreProbe(n.outbound);
+                            // v3.1：TCP 能连上、TLS 却不通，多半是 SNI 被封。拆分 ClientHello 再试一次，
+                            // 通了就记下来，之后这个节点一律带分片（ConfigBuilder.loadNodes 负责套上）。
+                            if (ms <= 0 && tcp > 0 && NodeConfigCodec.canFragment(n.outbound)
+                                    && !NodeConfigCodec.hasFragment(n.outbound)) {
+                                try {
+                                    long m2 = coreProbe(NodeConfigCodec.withTlsFragment(n.outbound));
+                                    if (m2 > 0) {
+                                        NodeHealth.setFrag(app, n.key, true);
+                                        ms = m2;
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            finish(app, n, ms, results, done, alive, total, cb);
+                        });
                     } catch (RejectedExecutionException e) {
                         finish(app, n, -1, results, done, alive, total, cb);
                     }
@@ -191,18 +206,73 @@ public final class NodeTester {
     }
 
     /** 内核真实请求一次；只认 200/204（libv2ray measureInstDelay 的规则）。 */
-    static long coreProbe(ConfigBuilder.Node n) {
+    static long coreProbe(JSONObject outbound) {
+        return coreFetch(outbound, PROBE_URL);
+    }
+
+    private static long coreFetch(JSONObject outbound, String url) {
         try {
-            long ms = Libv2ray.measureOutboundDelay(ConfigBuilder.measureConfig(n), PROBE_URL);
+            long ms = Libv2ray.measureOutboundDelay(ConfigBuilder.measureConfigOf(outbound), url);
             return ms > 0 ? ms : -1;
         } catch (Throwable t) {
             return -1;
         }
     }
 
+    /** KCP 与 Hysteria（QUIC）走 UDP，TCP 预筛没有意义，直接交给内核测。 */
     private static boolean isUdpTransport(JSONObject ob) {
-        JSONObject st = ob == null ? null : ob.optJSONObject("streamSettings");
+        if (ob == null) return false;
+        if ("hysteria".equalsIgnoreCase(ob.optString("protocol", ""))) return true;
+        JSONObject st = ob.optJSONObject("streamSettings");
         String net = st == null ? "" : st.optString("network", "");
-        return "kcp".equalsIgnoreCase(net) || "mkcp".equalsIgnoreCase(net);
+        return "kcp".equalsIgnoreCase(net) || "mkcp".equalsIgnoreCase(net)
+                || "hysteria".equalsIgnoreCase(net);
+    }
+
+    // ------------------------------------------------------------ 带宽实测（v3.1）
+
+    private static final String SPEED_URL = "https://speed.cloudflare.com/__down?bytes=";
+
+    /**
+     * 对给定节点实测下行带宽，结果写入 {@link NodeHealth#recordSpeed}。阻塞调用，2 并发。
+     *
+     * <p>libv2ray 的 measureInstDelay 会把响应体读完再计时、取两次里较快的一次（第二次复用连接），
+     * 所以「下载耗时 − 204 延迟」≈ 纯传输时间，bytes/传输时间就是可用带宽。
+     * 计费网络（移动数据）只下 128 KB，Wi-Fi 下 256 KB。下载失败不判节点死，只记成很慢。
+     */
+    public static int speedTest(Context ctx, List<ConfigBuilder.Node> nodes, boolean metered) {
+        if (nodes == null || nodes.isEmpty()) return 0;
+        final Context app = ctx.getApplicationContext();
+        final int bytes = metered ? 131072 : 262144;
+        final AtomicInteger ok = new AtomicInteger();
+        RUNNING.incrementAndGet();
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (final ConfigBuilder.Node n : nodes) {
+                pool.execute(() -> {
+                    NodeHealth.Entry e = NodeHealth.get(app, n.key);
+                    long base = e != null && e.ms > 0 ? e.ms : 0;
+                    long ms = coreFetch(n.outbound, SPEED_URL + bytes);
+                    long kbps;
+                    if (ms <= 0) {
+                        kbps = 8; // 12 秒内没下完：当作极慢，排到后面
+                    } else {
+                        long transfer = ms - base;
+                        if (transfer < 60) transfer = Math.max(60, ms / 2);
+                        kbps = Math.max(1, (bytes / 1024L) * 1000L / transfer);
+                        ok.incrementAndGet();
+                    }
+                    NodeHealth.recordSpeed(app, n.key, kbps);
+                });
+            }
+            pool.shutdown();
+            pool.awaitTermination(5, TimeUnit.MINUTES);
+        } catch (Throwable ignored) {
+        } finally {
+            pool.shutdownNow();
+            NodeHealth.flush(app);
+            RUNNING.decrementAndGet();
+        }
+        return ok.get();
     }
 }

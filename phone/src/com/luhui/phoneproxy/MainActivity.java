@@ -79,7 +79,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("本机实测选线 · 死节点自动替换 · 国内直连");
+        sub.setText("本机实测延迟+带宽选线 · 死节点自动替换 · 国内直连");
         sub.setTextSize(13);
         sub.setTextColor(Color.parseColor("#888888"));
         sub.setPadding(0, dp(4), 0, dp(16));
@@ -256,6 +256,13 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         else if (e.ms > 0) suffix = " · " + e.ms + "ms"
                 + (now - e.testedAt > NodeHealth.FRESH_MS ? "（较早）" : "");
         else suffix = " · 不可用";
+        // v3.1：实测带宽（12 小时内）与「需要分片才通」标记
+        if (e != null && e.ms > 0 && e.kbps > 0 && now - e.speedAt <= NodePool.SPEED_USE_MS) {
+            suffix += e.kbps >= 1024
+                    ? String.format(Locale.US, " · %.1fMB/s", e.kbps / 1024.0)
+                    : " · " + e.kbps + "KB/s";
+        }
+        if (e != null && e.frag && e.ms > 0) suffix += " · 分片";
         // AI✓ = 这个节点实测过得了 ChatGPT/Claude 的地区闸门（AI 域名只走这些）
         return n.name + (n.cg ? " · AI✓" : "") + suffix;
     }
@@ -347,7 +354,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
     private void showPasteDialog() {
         EditText et = new EditText(this);
-        et.setHint("粘贴 vless:// vmess:// ss:// trojan:// 链接\n或 http(s) 订阅链接；支持多行");
+        et.setHint("粘贴 vless:// vmess:// ss:// trojan:// hysteria2:// 链接\n或 http(s) 订阅链接；支持多行");
         et.setMinLines(3);
         et.setGravity(Gravity.TOP | Gravity.START);
         String clip = clipboardText();

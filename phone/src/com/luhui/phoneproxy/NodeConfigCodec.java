@@ -87,6 +87,8 @@ public final class NodeConfigCodec {
             if (lower.startsWith("vmess://")) return parseVmess(uri.substring(8));
             if (lower.startsWith("trojan://")) return parseTrojan(uri.substring(9));
             if (lower.startsWith("ss://")) return parseSs(uri.substring(5));
+            if (lower.startsWith("hysteria2://")) return parseHysteria2(uri.substring(12));
+            if (lower.startsWith("hy2://")) return parseHysteria2(uri.substring(6));
             if (lower.startsWith("socks://")) return parseSocksHttp(uri.substring(8), "socks");
             if (lower.startsWith("socks5://")) return parseSocksHttp(uri.substring(9), "socks");
             if (lower.startsWith("http://")) return parseSocksHttp(uri.substring(7), "http");
@@ -284,6 +286,192 @@ public final class NodeConfigCodec {
         }
     }
 
+    /**
+     * v3.1：Hysteria2（{@code hysteria2://auth@host:port/?sni=&obfs=salamander&obfs-password=&mport=}）。
+     *
+     * <p>Xray 26 的写法是 {@code protocol=hysteria}（version 2）+ {@code network=hysteria} 传输 +
+     * 强制 TLS（ALPN h3）；salamander 混淆放在 {@code finalmask.udp}，端口跳跃放在
+     * {@code finalmask.quicParams.udpHop}。QUIC 走 UDP，在大陆的可达性和速度经常比 TCP 节点好。
+     *
+     * <p>{@code insecure=1} 与 {@code pinSHA256} 不采纳：与其它导入节点一致，证书必须能校验，
+     * 自签名节点会在本机实测阶段被筛掉，而不是静默放行中间人。
+     */
+    private static JSONObject parseHysteria2(String body) {
+        body = stripFragment(body);
+        String query = null;
+        int qi = body.indexOf('?');
+        if (qi >= 0) {
+            query = body.substring(qi + 1);
+            body = body.substring(0, qi);
+        }
+        int at = body.lastIndexOf('@');
+        if (at <= 0) return null;
+        String auth = percentDecode(body.substring(0, at).trim());
+        if (auth == null || auth.isEmpty() || auth.length() > 512 || hasControl(auth)) return null;
+        String hostPort = body.substring(at + 1).trim();
+        int slash = hostPort.indexOf('/');
+        if (slash >= 0) hostPort = hostPort.substring(0, slash);
+        String host;
+        String portSpec;
+        if (hostPort.startsWith("[")) {
+            int e = hostPort.indexOf(']');
+            if (e < 0) return null;
+            host = hostPort.substring(1, e);
+            String rest = hostPort.substring(e + 1);
+            if (rest.isEmpty()) portSpec = "443";
+            else if (rest.startsWith(":")) portSpec = rest.substring(1);
+            else return null;
+        } else {
+            int c = hostPort.lastIndexOf(':');
+            if (c < 0) {
+                host = hostPort;
+                portSpec = "443";
+            } else {
+                host = hostPort.substring(0, c);
+                portSpec = hostPort.substring(c + 1);
+            }
+            if (host.indexOf(':') >= 0) return null; // 裸 IPv6 必须带方括号
+        }
+        host = host.trim();
+        portSpec = portSpec.trim();
+        if (host.isEmpty() || !isAllowedNodeHost(host)) return null;
+        Map<String, String> q = parseQuery(query);
+        if (q == null) return null;
+
+        String hop = null;
+        int port;
+        if (portSpec.matches("\\d{1,5}")) {
+            port = Integer.parseInt(portSpec);
+        } else if (validPortSpec(portSpec)) {
+            // 443,20000-30000 这种写法：先连第一个端口，其余交给端口跳跃
+            port = Integer.parseInt(portSpec.split("[,-]")[0]);
+            hop = portSpec;
+        } else {
+            return null;
+        }
+        if (port < 1 || port > 65535) return null;
+        String mport = qstr(q, "mport", "").trim();
+        if (hop == null && !mport.isEmpty()) {
+            if (!validPortSpec(mport)) return null;
+            hop = mport;
+        }
+
+        String sni = qstr(q, "sni", "").trim();
+        if (sni.isEmpty()) sni = qstr(q, "peer", "").trim();
+        if (hasControl(sni) || sni.length() > 253) return null;
+        String obfs = lower(qstr(q, "obfs", "").trim());
+        String obfsPassword = qstr(q, "obfs-password", "");
+        boolean salamander = false;
+        if (!obfs.isEmpty() && !"none".equals(obfs)) {
+            if (!"salamander".equals(obfs)) return null;
+            if (obfsPassword.isEmpty() || obfsPassword.length() > 512 || hasControl(obfsPassword)) {
+                return null;
+            }
+            salamander = true;
+        }
+        try {
+            JSONObject tls = new JSONObject();
+            if (!sni.isEmpty()) tls.put("serverName", sni);
+            else if (!isIpLiteral(host)) tls.put("serverName", host);
+            tls.put("alpn", new JSONArray().put("h3"));
+            tls.put("allowInsecure", false);
+            JSONObject stream = new JSONObject()
+                    .put("network", "hysteria")
+                    .put("security", "tls")
+                    .put("tlsSettings", tls)
+                    .put("hysteriaSettings", new JSONObject().put("version", 2).put("auth", auth));
+            JSONObject mask = null;
+            if (salamander) {
+                mask = new JSONObject().put("udp", new JSONArray().put(new JSONObject()
+                        .put("type", "salamander")
+                        .put("settings", new JSONObject().put("password", obfsPassword))));
+            }
+            if (hop != null) {
+                if (mask == null) mask = new JSONObject();
+                mask.put("quicParams", new JSONObject().put("udpHop",
+                        new JSONObject().put("ports", hop).put("interval", 30)));
+            }
+            if (mask != null) stream.put("finalmask", mask);
+            return new JSONObject()
+                    .put("protocol", "hysteria")
+                    .put("settings", new JSONObject()
+                            .put("version", 2).put("address", host).put("port", port))
+                    .put("streamSettings", stream);
+        } catch (Exception error) {
+            return null;
+        }
+    }
+
+    /** "443" / "20000-30000" / "443,20000-30000"：每段都在 1..65535，区间左小右大。 */
+    private static boolean validPortSpec(String spec) {
+        if (spec == null || spec.isEmpty() || spec.length() > 64) return false;
+        if (!spec.matches("[0-9]{1,5}(-[0-9]{1,5})?(,[0-9]{1,5}(-[0-9]{1,5})?)*")) return false;
+        for (String part : spec.split(",")) {
+            String[] ab = part.split("-");
+            int a = Integer.parseInt(ab[0]);
+            int b = ab.length > 1 ? Integer.parseInt(ab[1]) : a;
+            if (a < 1 || b > 65535 || a > b) return false;
+        }
+        return true;
+    }
+
+    private static boolean isIpLiteral(String host) {
+        return host.indexOf(':') >= 0 || host.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}");
+    }
+
+    // ------------------------------------------------------------ TLS 分片（v3.1）
+
+    /**
+     * 能不能对这条出站做 ClientHello 分片：只对 TCP 上的普通 TLS（不含 REALITY / QUIC）。
+     * 大陆按 SNI 封锁（workers.dev 等）时，把 ClientHello 拆成几段能让 DPI 认不出域名。
+     */
+    public static boolean canFragment(JSONObject ob) {
+        if (ob == null) return false;
+        if ("hysteria".equals(ob.optString("protocol", ""))) return false;
+        JSONObject st = ob.optJSONObject("streamSettings");
+        if (st == null || !"tls".equals(st.optString("security", ""))) return false;
+        String net = lower(st.optString("network", "tcp"));
+        return !("kcp".equals(net) || "mkcp".equals(net) || "hysteria".equals(net));
+    }
+
+    public static boolean hasFragment(JSONObject ob) {
+        JSONObject st = ob == null ? null : ob.optJSONObject("streamSettings");
+        JSONObject fm = st == null ? null : st.optJSONObject("finalmask");
+        JSONArray tcp = fm == null ? null : fm.optJSONArray("tcp");
+        if (tcp == null) return false;
+        for (int i = 0; i < tcp.length(); i++) {
+            JSONObject m = tcp.optJSONObject(i);
+            if (m != null && "fragment".equals(m.optString("type", ""))) return true;
+        }
+        return false;
+    }
+
+    /** 原地加上 ClientHello 分片（finalmask.tcp fragment）。不适用的出站原样返回。 */
+    public static JSONObject applyTlsFragment(JSONObject ob) throws Exception {
+        if (!canFragment(ob) || hasFragment(ob)) return ob;
+        JSONObject st = ob.getJSONObject("streamSettings");
+        JSONObject fm = st.optJSONObject("finalmask");
+        if (fm == null) {
+            fm = new JSONObject();
+            st.put("finalmask", fm);
+        }
+        JSONArray tcp = fm.optJSONArray("tcp");
+        if (tcp == null) {
+            tcp = new JSONArray();
+            fm.put("tcp", tcp);
+        }
+        tcp.put(new JSONObject().put("type", "fragment").put("settings", new JSONObject()
+                .put("packets", "tlshello")
+                .put("lengths", new JSONArray().put("100-200"))
+                .put("delays", new JSONArray().put("10-20"))));
+        return ob;
+    }
+
+    /** 拷贝一份再加分片，不改原对象。 */
+    public static JSONObject withTlsFragment(JSONObject ob) throws Exception {
+        return applyTlsFragment(new JSONObject(ob.toString()));
+    }
+
     private static JSONObject parseSocksHttp(String body, String proto) {
         body = stripFragment(body);
         int qi = body.indexOf('?');
@@ -458,6 +646,17 @@ public final class NodeConfigCodec {
      */
     public static String fullConfig(List<JSONObject> proxies, Set<String> cgTags,
                                     String selectedTag, String fallbackTag) throws Exception {
+        return fullConfig(proxies, cgTags, selectedTag, fallbackTag, null);
+    }
+
+    /**
+     * v3.1：再加每个出站的代价系数（完整 tag → 系数 ≥1）。balancer 用 leastLoad，
+     * 比较的是「探测延迟（含抖动）× 系数」，系数由 App 侧实测带宽换算——
+     * 延迟差不多时优先带宽大的节点，而不是像 leastPing 那样只看握手快不快。
+     */
+    public static String fullConfig(List<JSONObject> proxies, Set<String> cgTags,
+                                    String selectedTag, String fallbackTag,
+                                    Map<String, Double> costs) throws Exception {
         if (proxies == null || proxies.isEmpty()) {
             throw new IllegalStateException("没有可用节点");
         }
@@ -555,7 +754,7 @@ public final class NodeConfigCodec {
             JSONObject mainBalancer = new JSONObject()
                     .put("tag", "balancer")
                     .put("selector", new JSONArray().put("proxy-"))
-                    .put("strategy", new JSONObject().put("type", "leastPing"));
+                    .put("strategy", leastLoad(costs, false));
             if (hasFallback) mainBalancer.put("fallbackTag", fallbackTag);
             JSONArray balancers = new JSONArray().put(mainBalancer);
             if (cgCount > 0) {
@@ -563,21 +762,22 @@ public final class NodeConfigCodec {
                 JSONObject cgBalancer = new JSONObject()
                         .put("tag", "cg-balancer")
                         .put("selector", new JSONArray().put("cg-"))
-                        .put("strategy", new JSONObject().put("type", "leastPing"));
+                        .put("strategy", leastLoad(costs, true));
                 if (hasFallback) cgBalancer.put("fallbackTag", fallbackTag);
                 balancers.put(cgBalancer);
             }
-            // v3.0：探针改回 generate_204、间隔 10 分钟 → 3 分钟。
-            // 旧值（16KB/600s）意味着当前出口死掉后最长 10 分钟才切走，用户看到的就是
-            // 「已连接但图片都加载不出来」。节点池现在只放本机实测可用的 ≤30 个节点，
-            // 3 分钟一轮 204 探测约 2~3 MB/小时，换来分钟级故障切换。
-            // 带宽差异由 App 侧的实测排序（NodeTester）和 fallbackTag 负责。
-            cfg.put("observatory", new JSONObject()
+            // v3.1：observatory+leastPing → burstObservatory+leastLoad。
+            // burst 每个节点保留最近 3 次探测，leastLoad 比较「平均延迟+抖动」再乘代价系数，
+            // 一次偶发超时不会把稳定节点踢掉，忽快忽慢的节点也不会被选中；expected=1 保证
+            // 出口固定（不随机换 IP，ChatGPT 等站不会因为出口跳动而风控）。
+            // 3 分钟一轮 204 探测，≤30 个出口约 2~3 MB/小时。
+            cfg.put("burstObservatory", new JSONObject()
                     .put("subjectSelector", subjects)
-                    .put("probeUrl", "https://www.gstatic.com/generate_204")
-                    .put("probeInterval", "180s")
-                    .put("probeTimeout", "6s")
-                    .put("enableConcurrency", true));
+                    .put("pingConfig", new JSONObject()
+                            .put("destination", "https://www.gstatic.com/generate_204")
+                            .put("interval", "3m")
+                            .put("sampling", 3)
+                            .put("timeout", "6s")));
             routing.put("balancers", balancers);
             if (cgCount > 0) {
                 rules.put(rule().put("network", "tcp,udp")
@@ -600,6 +800,33 @@ public final class NodeConfigCodec {
         routing.put("rules", rules);
         cfg.put("routing", routing);
         return cfg.toString();
+    }
+
+    /**
+     * leastLoad：expected=1（只挑一个，出口稳定）、maxRTT 5s、最近 3 次里失败超过 1 次就不选。
+     * costs 用锚定正则（^tag$）：非正则匹配是子串包含，proxy-i1 会误伤 proxy-i10~i19。
+     */
+    private static JSONObject leastLoad(Map<String, Double> costs, boolean cgCopy) throws Exception {
+        JSONObject settings = new JSONObject()
+                .put("expected", 1)
+                .put("maxRTT", "5s")
+                .put("tolerance", 0.34);
+        if (costs != null && !costs.isEmpty()) {
+            JSONArray arr = new JSONArray();
+            List<String> tags = new ArrayList<>(costs.keySet());
+            java.util.Collections.sort(tags);
+            for (String tag : tags) {
+                Double v = costs.get(tag);
+                if (v == null || v.isNaN() || v <= 0) continue;
+                if (!tag.matches("proxy-[A-Za-z0-9_-]{1,32}")) continue;
+                String t = cgCopy ? "cg-" + tag.substring(6) : tag;
+                double rounded = Math.round(Math.min(20.0, Math.max(1.0, v)) * 100.0) / 100.0;
+                arr.put(new JSONObject().put("regexp", true)
+                        .put("match", "^" + t + "$").put("value", rounded));
+            }
+            if (arr.length() > 0) settings.put("costs", arr);
+        }
+        return new JSONObject().put("type", "leastLoad").put("settings", settings);
     }
 
     private static JSONObject rule() {
@@ -850,6 +1077,8 @@ public final class NodeConfigCodec {
                 if (arr == null) arr = st.optJSONArray("servers");
                 if (arr != null && arr.length() > 0) {
                     host = arr.getJSONObject(0).optString("address", "?");
+                } else if (st.has("address")) {
+                    host = st.optString("address", "?"); // hysteria：地址直接在 settings 里
                 }
             }
             return proto + " " + host;

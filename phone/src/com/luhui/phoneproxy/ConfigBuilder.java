@@ -143,6 +143,7 @@ public final class ConfigBuilder {
             JSONObject ep = null;
             if (v != null && v.length() > 0) ep = v.optJSONObject(0);
             else if (sv != null && sv.length() > 0) ep = sv.optJSONObject(0);
+            else if (s != null && s.has("address")) ep = s; // hysteria：地址直接在 settings 里
             if (ep != null) {
                 id = ep.optString("address", "") + ":" + ep.optInt("port", 0)
                         + "/" + ob.optString("protocol", "");
@@ -229,6 +230,12 @@ public final class ConfigBuilder {
         Set<String> gated = loadGateKeys(ctx);
         for (Node n : out) {
             if (!n.cg && gated.contains(n.key)) n.cg = true;
+            // v3.1：本机实测发现要分片才能连通的节点（SNI 被封），运行与后续测试都带上分片
+            try {
+                NodeHealth.Entry h = NodeHealth.get(ctx, n.key);
+                if (h != null && h.frag) NodeConfigCodec.applyTlsFragment(n.outbound);
+            } catch (Throwable ignored) {
+            }
         }
         return out;
     }
@@ -265,6 +272,7 @@ public final class ConfigBuilder {
             JSONObject ep = null;
             if (v != null && v.length() > 0) ep = v.optJSONObject(0);
             else if (sv != null && sv.length() > 0) ep = sv.optJSONObject(0);
+            else if (s != null && s.has("address")) ep = s;
             if (ep == null) return null;
             String host = ep.optString("address", "").trim();
             int port = ep.optInt("port", 0);
@@ -730,6 +738,19 @@ public final class ConfigBuilder {
             if (n.cg) cgTags.add(n.tag);
         }
         return NodeConfigCodec.fullConfig(proxies, cgTags, selected, fallbackTag);
+    }
+
+    /** v3.1：再带 leastLoad 代价系数（完整 tag → 系数），见 NodePool.costsFor。 */
+    public static String fullConfig(List<Node> nodes, String selected, String fallbackTag,
+                                    java.util.Map<String, Double> costs) throws Exception {
+        if (nodes == null || nodes.isEmpty()) throw new IllegalStateException("没有可用节点");
+        List<JSONObject> proxies = new ArrayList<>();
+        Set<String> cgTags = new HashSet<>();
+        for (Node n : nodes) {
+            proxies.add(n.outbound);
+            if (n.cg) cgTags.add(n.tag);
+        }
+        return NodeConfigCodec.fullConfig(proxies, cgTags, selected, fallbackTag, costs);
     }
 
     // ---------------------------------------------------------- 分享链接解析

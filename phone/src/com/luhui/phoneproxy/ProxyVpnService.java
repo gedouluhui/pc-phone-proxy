@@ -103,6 +103,16 @@ public class ProxyVpnService extends VpnService {
     private volatile long lastReloadAt = 0;
     /** 当前内核里的出口（Node.key），维护线程据此判断要不要重建。 */
     private final Set<String> memberKeys = Collections.synchronizedSet(new HashSet<String>());
+    /** 当前配置的兜底出口（Node.key）与它当时的评分，测速后据此判断要不要换。 */
+    private volatile String fallbackKey = "";
+    private volatile long fallbackScore = Long.MAX_VALUE / 4;
+    /** 当前配置里是否有 AI 合格出口（cg-balancer）。 */
+    private volatile boolean configHasCg = false;
+    /** 每轮测速最多测几个节点（Wi-Fi / 计费网络）。 */
+    private static final int SPEED_TOP_WIFI = 10;
+    private static final int SPEED_TOP_METERED = 4;
+    /** 自动 AI 闸门验证的节点数（手动按钮仍是 24）。 */
+    private static final int AUTO_GATE_MAX = 12;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -190,7 +200,8 @@ public class ProxyVpnService extends VpnService {
             }
 
             List<ConfigBuilder.Node> members = NodePool.runtimeMembers(alive, nodes, selection);
-            String fallback = "proxy-" + alive.get(0).tag;
+            ConfigBuilder.Node best = alive.get(0);
+            String fallback = "proxy-" + best.tag;
 
             int gated = 0;
             for (ConfigBuilder.Node n : members) if (n.cg) gated++;
@@ -200,7 +211,8 @@ public class ProxyVpnService extends VpnService {
                 log("AI 出口：" + gated + " 个已验证节点，AI 域名只走它们");
             }
 
-            String config = ConfigBuilder.fullConfig(members, selection, fallback);
+            String config = ConfigBuilder.fullConfig(members, selection, fallback,
+                    NodePool.costsFor(this, members));
             tunFd = buildTun();
             if (tunFd == null) throw new IllegalStateException("VPN 建立失败（未授权？）");
 
@@ -230,7 +242,9 @@ public class ProxyVpnService extends VpnService {
                 log("剔除 " + (members.size() - builtin.size()) + " 个导入节点，只用内置节点重试…");
                 members = builtin;
                 if (ConfigBuilder.find(members, selection) == null) selection = "auto";
-                config = ConfigBuilder.fullConfig(members, selection, "proxy-" + members.get(0).tag);
+                best = members.get(0);
+                config = ConfigBuilder.fullConfig(members, selection, "proxy-" + best.tag,
+                        NodePool.costsFor(this, members));
 
                 tunFd = buildTun();
                 if (tunFd == null) throw new IllegalStateException("VPN 重建失败");
@@ -244,6 +258,11 @@ public class ProxyVpnService extends VpnService {
                 memberKeys.clear();
                 for (ConfigBuilder.Node n : members) memberKeys.add(n.key);
             }
+            boolean anyCg = false;
+            for (ConfigBuilder.Node n : members) if (n.cg) anyCg = true;
+            configHasCg = anyCg;
+            fallbackKey = best.key;
+            fallbackScore = NodePool.score(NodeHealth.get(this, best.key), System.currentTimeMillis());
             ConfigBuilder.Node sel = ConfigBuilder.find(members, selection);
             if (sel != null && !sel.cg) {
                 log("注意：固定节点 " + sel.name + " 没通过 AI 闸门，ChatGPT/Claude 可能 403");
@@ -255,13 +274,13 @@ public class ProxyVpnService extends VpnService {
                     : ("自动选线（" + members.size() + " 个可用节点）");
             registerUnderlyingNetwork();
             setState(STATE_RUNNING, "已连接 · " + runningNode);
-            ConfigBuilder.Node best = alive.get(0);
             log("VPN 已启动，国内外自动分流"
                     + ("auto".equals(selection)
-                    ? "；当前最快 " + best.name + " " + NodePool.msOf(this, best) + "ms"
+                    ? "；首选 " + best.name + " " + NodePool.msOf(this, best) + "ms" + speedText(best)
                     : "，固定节点 " + runningNode));
             startTrafficPoll();
             startMaintenance();
+            kickPostStart();
         } catch (Throwable e) {
             Log.e(TAG, "start failed", e);
             log("启动失败：" + e.getMessage());
@@ -306,6 +325,76 @@ public class ProxyVpnService extends VpnService {
     private void notifyNodesChanged() {
         Listener l = listener;
         if (l != null) l.onNodesChanged();
+    }
+
+    private String speedText(ConfigBuilder.Node n) {
+        NodeHealth.Entry e = NodeHealth.get(this, n.key);
+        if (e == null || e.kbps <= 0) return "";
+        return e.kbps >= 1024 ? String.format(java.util.Locale.US, " · %.1f MB/s", e.kbps / 1024.0)
+                : " · " + e.kbps + " KB/s";
+    }
+
+    private boolean metered() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            return cm == null || cm.isActiveNetworkMetered();
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /**
+     * v3.1：连上之后在后台做两件事，都不阻塞连接——
+     * ① 对最快的几个节点测下行带宽（2 小时内测过的跳过），换算成 leastLoad 代价系数；
+     *    测完发现明显更好的节点（评分好 1.8 倍以上）就重建一次出口；
+     * ② 当前出口里一个 AI 合格节点都没有、且今天还没自动验证过，就自动跑一次 AI 闸门，
+     *    验出合格节点后重建出口，ChatGPT/Claude 不用用户手动点就能走合格出口。
+     */
+    private void kickPostStart() {
+        final int gen = maintGen.get();
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(8000); // 先让用户的首批请求跑起来
+                if (gen != maintGen.get() || state != STATE_RUNNING) return;
+                speedAndMaybeReload(gen, "连接后测速");
+                if (gen != maintGen.get() || state != STATE_RUNNING) return;
+                if (!configHasCg && NodePool.autoGateDue(this) && !gating) {
+                    NodePool.markAutoGate(this);
+                    log("自动验证 AI 出口（ChatGPT / Claude），每天最多一次…");
+                    kickGate(false, true, AUTO_GATE_MAX);
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "post-start", e);
+            }
+        }, "post-start");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 测带宽；若发现评分明显更好的兜底节点就重建出口。返回是否已请求重建。 */
+    private boolean speedAndMaybeReload(int gen, String label) {
+        if (!"auto".equals(currentSelection)) return false;
+        List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
+        List<ConfigBuilder.Node> alive = NodePool.aliveFresh(this, nodes);
+        boolean m = metered();
+        List<ConfigBuilder.Node> todo = NodePool.speedCandidates(this, alive,
+                m ? SPEED_TOP_METERED : SPEED_TOP_WIFI);
+        if (todo.isEmpty()) return false;
+        log(label + "：测 " + todo.size() + " 个节点的下行带宽（" + (m ? "移动数据，每个 128 KB" : "Wi-Fi，每个 256 KB") + "）…");
+        int ok = NodeTester.speedTest(this, todo, m);
+        if (gen != maintGen.get() || state != STATE_RUNNING) return false;
+        alive = NodePool.aliveFresh(this, nodes);
+        notifyNodesChanged();
+        if (alive.isEmpty()) return false;
+        ConfigBuilder.Node top = alive.get(0);
+        long topScore = NodePool.score(NodeHealth.get(this, top.key), System.currentTimeMillis());
+        log("测速完成：" + ok + "/" + todo.size() + " 个下载成功；当前最优 " + top.name + speedText(top));
+        if (!top.key.equals(fallbackKey) && (double) topScore * 1.8 < (double) fallbackScore) {
+            requestReload("测速后找到明显更快的节点");
+            return true;
+        }
+        // 评分变化不大：不打断连接，下次重建时新系数自然生效
+        return false;
     }
 
     // ------------------------------------------------------------ 后台维护
@@ -377,8 +466,21 @@ public class ProxyVpnService extends VpnService {
         if (live == 0 && !alive.isEmpty()) why = "当前出口全部失效";
         else if (dead > live && alive.size() > live) why = "过半出口失效";
         else if (live < 3 && alive.size() >= 3) why = "可用出口太少";
+        if (why == null && !configHasCg) {
+            for (ConfigBuilder.Node n : alive) {
+                if (n.cg) {
+                    why = "AI 出口已验证，接入 ChatGPT/Claude 专用出口";
+                    break;
+                }
+            }
+        }
         log("后台维护：可用 " + alive.size() + " 个，当前出口 " + live + "/" + (live + dead) + " 可用");
-        if (why != null && "auto".equals(currentSelection)) requestReload(why);
+        if (why != null && "auto".equals(currentSelection)) {
+            requestReload(why);
+            return;
+        }
+        // 出口都还健康：顺带补测过期的带宽（2 小时一次），有明显更优的才重建
+        if (gen == maintGen.get() && state == STATE_RUNNING) speedAndMaybeReload(gen, "后台维护");
     }
 
     /** 用最新实测结果重建内核（短暂断流 1~2 秒）。只在维护线程判定需要时调用。 */
@@ -426,6 +528,11 @@ public class ProxyVpnService extends VpnService {
      * libv2ray 的 measureInstDelay 只把 200/204 当成功，地区封锁是 403 → 返回 -1。
      */
     private void kickGate(final boolean stopWhenIdle) {
+        kickGate(stopWhenIdle, false, GATE_MAX);
+    }
+
+    /** reloadOnSuccess：验出合格节点且当前配置没有 AI 出口时，重建出口让它们立刻生效。 */
+    private void kickGate(final boolean stopWhenIdle, final boolean reloadOnSuccess, final int max) {
         if (gating) {
             log("AI 闸门已经在跑了，等它出结果…");
             return;
@@ -441,7 +548,7 @@ public class ProxyVpnService extends VpnService {
                 // 只验本机实测能连上的；还没测过就按原顺序
                 List<ConfigBuilder.Node> cand = NodePool.aliveFresh(this, nodes);
                 if (cand.isEmpty()) cand = NodePool.sortedForDisplay(this, nodes);
-                final int total = Math.min(cand.size(), GATE_MAX);
+                final int total = Math.min(cand.size(), max);
                 log("AI 出口验证：" + total + "/" + nodes.size() + " 个节点 × "
                         + ConfigBuilder.AI_PROBES.length + " 个探针（ChatGPT / Claude）…");
                 final AtomicInteger done = new AtomicInteger();
@@ -469,6 +576,15 @@ public class ProxyVpnService extends VpnService {
                 }
                 pool.shutdown();
                 pool.awaitTermination(15, java.util.concurrent.TimeUnit.MINUTES);
+                if (ok.get() > 0 && state == STATE_RUNNING && !configHasCg
+                        && "auto".equals(currentSelection)) {
+                    if (reloadOnSuccess) {
+                        lastReloadAt = 0; // 这次重建是用户收益最大的一次，不受最小间隔限制
+                        requestReload("AI 出口已验证");
+                    } else {
+                        log("点「断开」再「启动」或等后台维护，AI 合格出口就会生效");
+                    }
+                }
             } catch (Throwable e) {
                 log("AI 闸门失败：" + e.getMessage());
             } finally {

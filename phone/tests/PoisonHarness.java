@@ -70,6 +70,21 @@ public final class PoisonHarness {
             if (i % 23 == 0 && cgTags.size() < 3) cgTags.add("p" + i);
         }
 
+        // v3.1：ClientHello 分片版本也必须能被内核接受（取第一条普通 TLS 出站加分片）
+        for (JSONObject ob : new ArrayList<>(proxies)) {
+            if (NodeConfigCodec.canFragment(ob)) {
+                JSONObject frag = NodeConfigCodec.withTlsFragment(ob);
+                frag.put("tag", "proxy-frag");
+                proxies.add(frag);
+                JSONObject item = new JSONObject();
+                item.put("case", "tls-fragment");
+                item.put("protocol", frag.optString("protocol", ""));
+                item.put("outbound", frag);
+                accepted.put(item);
+                break;
+            }
+        }
+
         JSONObject out = new JSONObject();
         out.put("total", CASES.size());
         out.put("accepted", accepted.length());
@@ -80,8 +95,13 @@ public final class PoisonHarness {
             out.put("full_auto", JSONObject.NULL);
             out.put("full_manual", JSONObject.NULL);
         } else {
-            out.put("full_auto", new JSONObject(
-                    NodeConfigCodec.fullConfig(proxies, cgTags, "auto")));
+            // v3.1：auto 走 leastLoad + 兜底出站 + 代价系数（与 App 运行时同一路径）
+            java.util.Map<String, Double> costs = new java.util.HashMap<>();
+            costs.put(proxies.get(0).optString("tag", ""), 2.5);
+            costs.put("proxy-frag", 1.0);
+            if (proxies.size() > 1) costs.put(proxies.get(1).optString("tag", ""), 7.25);
+            out.put("full_auto", new JSONObject(NodeConfigCodec.fullConfig(proxies, cgTags, "auto",
+                    proxies.get(0).optString("tag", ""), costs)));
             String firstTag = proxies.get(0).optString("tag", "").substring(6);
             out.put("full_manual", new JSONObject(
                     NodeConfigCodec.fullConfig(proxies, cgTags, firstTag)));
@@ -322,6 +342,27 @@ public final class PoisonHarness {
         for (int i = 0; i < 30; i++) {
             add("random-" + i, randomUri(i));
         }
+
+        // ---- v3.1：Hysteria2（加在末尾，前面用例的 tag 序号不变）----
+        add("hy2-basic", "hysteria2://p%40ss@1.2.3.4:443?sni=a.example.com#ok");
+        add("hy2-short-scheme", "hy2://pass@example.com:8443/?insecure=1#ok");
+        add("hy2-salamander", "hysteria2://pass@1.2.3.4:443/?sni=a.example.com"
+                + "&obfs=salamander&obfs-password=obfs%2Bpw#ok");
+        add("hy2-port-hop", "hysteria2://pass@1.2.3.4:20000-30000?sni=a.example.com#ok");
+        add("hy2-port-list", "hysteria2://pass@1.2.3.4:443,20000-30000?sni=a.example.com#ok");
+        add("hy2-mport", "hysteria2://pass@1.2.3.4:443?sni=a.example.com&mport=20000-30000#ok");
+        add("hy2-ipv6", "hysteria2://pass@[2001:db8::2]:443?sni=a.example.com#ok");
+        add("hy2-no-port", "hysteria2://pass@a.example.com#ok");
+        add("hy2-empty-auth", "hysteria2://@1.2.3.4:443?sni=a.example.com#x");
+        add("hy2-private", "hysteria2://pass@192.168.1.2:443?sni=a.example.com#x");
+        add("hy2-loopback", "hy2://pass@127.0.0.1:443#x");
+        add("hy2-bad-obfs", "hysteria2://pass@1.2.3.4:443?obfs=xor&obfs-password=x#x");
+        add("hy2-obfs-no-pw", "hysteria2://pass@1.2.3.4:443?obfs=salamander#x");
+        add("hy2-bad-hop", "hysteria2://pass@1.2.3.4:30000-20000#x");
+        add("hy2-bad-mport", "hysteria2://pass@1.2.3.4:443?mport=abc#x");
+        add("hy2-port-0", "hysteria2://pass@1.2.3.4:0#x");
+        add("hy2-crlf-sni", "hysteria2://pass@1.2.3.4:443?sni=a.com%0d%0aX#x");
+        add("hy2-bare-ipv6", "hysteria2://pass@2001:db8::2:443#x");
     }
 
     private static void add(String name, String uri) {

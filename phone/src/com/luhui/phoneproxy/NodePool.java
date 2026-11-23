@@ -38,20 +38,80 @@ public final class NodePool {
 
     // ------------------------------------------------------------ 查询
 
-    /** 30 分钟内实测可用的节点，按延迟升序。 */
+    // ------------------------------------------------------------ 综合评分（v3.1）
+
+    /** 带宽结论多久内参与评分；超过这个时间按「未知带宽」算。 */
+    public static final long SPEED_USE_MS = 12L * 3600 * 1000;
+    /** 带宽结论多久后需要重测。 */
+    public static final long SPEED_RETEST_MS = 2L * 3600 * 1000;
+    /** 没测过带宽时假定的 KB/s。 */
+    private static final long ASSUMED_KBPS = 200;
+
+    /**
+     * 评分（越小越好）≈ 加载一个 200 KB 资源要多少毫秒 = 延迟 + 200000/带宽(KB/s)。
+     * 100ms/100KB/s → 2100；300ms/1MB/s → 500：延迟略高但带宽大的节点胜出，
+     * 这正是「图片/视频加载快」的体感，而 v3.0 只按延迟排。
+     */
+    public static long score(NodeHealth.Entry e, long now) {
+        if (e == null || e.ms <= 0) return Long.MAX_VALUE / 4;
+        long kb = e.kbps > 0 && now - e.speedAt <= SPEED_USE_MS ? e.kbps : ASSUMED_KBPS;
+        return e.ms + 200000L / Math.max(1, kb);
+    }
+
+    /**
+     * leastLoad 代价系数：score/延迟，限制在 [1, 20]。内核按「探测延迟 × 系数」选，
+     * 等价于把带宽折算进延迟里。key 是完整出站 tag（proxy-xx）。
+     */
+    public static Map<String, Double> costsFor(Context ctx, List<ConfigBuilder.Node> members) {
+        long now = System.currentTimeMillis();
+        Map<String, Double> out = new HashMap<>();
+        for (ConfigBuilder.Node n : members) {
+            NodeHealth.Entry e = NodeHealth.get(ctx, n.key);
+            if (e == null || e.ms <= 0) continue;
+            double f = (double) score(e, now) / (double) e.ms;
+            out.put("proxy-" + n.tag, Math.min(20.0, Math.max(1.0, f)));
+        }
+        return out;
+    }
+
+    /** 需要（重新）测带宽的节点：alive 前 k 个里带宽结论缺失或超过 2 小时的。 */
+    public static List<ConfigBuilder.Node> speedCandidates(Context ctx, List<ConfigBuilder.Node> alive, int k) {
+        long now = System.currentTimeMillis();
+        List<ConfigBuilder.Node> out = new ArrayList<>();
+        for (ConfigBuilder.Node n : alive) {
+            if (out.size() >= k) break;
+            NodeHealth.Entry e = NodeHealth.get(ctx, n.key);
+            if (e == null || e.kbps <= 0 || now - e.speedAt > SPEED_RETEST_MS) out.add(n);
+        }
+        return out;
+    }
+
+    private static final String KEY_LAST_AUTO_GATE = "last_auto_gate";
+    private static final long AUTO_GATE_GAP_MS = 24L * 3600 * 1000;
+
+    /** 自动 AI 闸门一天最多一次（每次约 12 节点 × 2 个探针）。 */
+    public static boolean autoGateDue(Context ctx) {
+        return System.currentTimeMillis() - prefs(ctx).getLong(KEY_LAST_AUTO_GATE, 0) >= AUTO_GATE_GAP_MS;
+    }
+
+    public static void markAutoGate(Context ctx) {
+        prefs(ctx).edit().putLong(KEY_LAST_AUTO_GATE, System.currentTimeMillis()).apply();
+    }
+
+    /** 30 分钟内实测可用的节点，按综合评分升序（延迟 + 带宽，见 {@link #score}）。 */
     public static List<ConfigBuilder.Node> aliveFresh(Context ctx, List<ConfigBuilder.Node> nodes) {
         final long now = System.currentTimeMillis();
-        final Map<String, Long> ms = new HashMap<>();
+        final Map<String, Long> sc = new HashMap<>();
         List<ConfigBuilder.Node> out = new ArrayList<>();
         if (nodes == null) return out;
         for (ConfigBuilder.Node n : nodes) {
             NodeHealth.Entry e = NodeHealth.get(ctx, n.key);
             if (NodeHealth.aliveFresh(e, now)) {
                 out.add(n);
-                ms.put(n.tag, e.ms);
+                sc.put(n.tag, score(e, now));
             }
         }
-        Collections.sort(out, (a, b) -> Long.compare(ms.get(a.tag), ms.get(b.tag)));
+        Collections.sort(out, (a, b) -> Long.compare(sc.get(a.tag), sc.get(b.tag)));
         return out;
     }
 
@@ -69,7 +129,7 @@ public final class NodePool {
         for (ConfigBuilder.Node n : nodes) {
             NodeHealth.Entry e = NodeHealth.get(ctx, n.key);
             rank.put(n.tag, new int[]{NodeHealth.rank(e, now)});
-            ms.put(n.tag, e != null && e.ms > 0 ? e.ms : Long.MAX_VALUE / 4);
+            ms.put(n.tag, score(e, now));
         }
         List<ConfigBuilder.Node> out = new ArrayList<>(nodes);
         Collections.sort(out, (a, b) -> {
@@ -253,7 +313,7 @@ public final class NodePool {
             String k = keyOfUri(u);
             NodeHealth.Entry e = k == null ? null : NodeHealth.get(ctx, k);
             int r = NodeHealth.rank(e, now);
-            long ms = e != null && e.ms > 0 ? Math.min(e.ms, 999999L) : 999999L;
+            long ms = Math.min(score(e, now), 999999L);
             score.put(u, r * 1000000L + ms);
         }
         List<String> out = new ArrayList<>(uris);
