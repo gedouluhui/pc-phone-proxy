@@ -92,6 +92,9 @@ jobs:
           keytool -genkeypair -keystore /tmp/ci.keystore -alias ci -storepass android \
             -keypass android -dname "CN=CI" -keyalg RSA -keysize 2048 -validity 3650 \
             > /dev/null 2>&1
+          # build_apk.py 要求 phone/libs/libv2ray.aar 存在（二进制不入库），
+          # 复用上一步下载到 /tmp 的那份。
+          cp /tmp/libv2ray.aar phone/libs/libv2ray.aar
           echo '[]' > /tmp/empty-nodes.json
           PROXY_KEYSTORE=/tmp/ci.keystore PROXY_KS_ALIAS=ci PROXY_KS_PASS=android \
             PROXY_NODES_JSON=/tmp/empty-nodes.json PROXY_APK_OUT=/tmp/ci.apk \
