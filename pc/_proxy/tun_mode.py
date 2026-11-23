@@ -600,6 +600,8 @@ def start_admin():
     with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as f:
         f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
+    start_supervisor()
+
     log("[5/5] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
     t0 = time.time()
     while time.time() - t0 < 15 and p.poll() is None and not adapter_present():
@@ -610,7 +612,57 @@ def start_admin():
     return 0, "TUN 已接管全部流量 (pid=%d, %s)" % (p.pid, IFACE)
 
 
+SUP_PID = os.path.join(HERE, "tun_supervisor.pid")
+SUP_LOG = os.path.join(HERE, "logs", "tun_supervisor.log")
+
+
+def start_supervisor():
+    """拉起自愈守护：它监控 tun.pid，隧道进程消失时用同一份配置重建。
+
+    必须在成功建立网卡之后启动，且它自己也是 DETACHED —— 否则用户关掉启动
+    窗口，守护跟着一起死，等于没有。
+    """
+    try:
+        if os.path.isfile(SUP_PID):
+            old = 0
+            try:
+                with io.open(SUP_PID, encoding="utf-8") as f:
+                    old = int(f.read().strip() or 0)
+            except Exception:
+                old = 0
+            if old and P.pid_alive(old):
+                return
+        os.makedirs(os.path.dirname(SUP_LOG), exist_ok=True)
+        logf = io.open(SUP_LOG, "ab")
+        try:
+            subprocess.Popen([sys.executable, os.path.join(HERE, "tun_supervisor.py")],
+                             cwd=HERE, stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL,
+                             creationflags=(0x00000008 | 0x00000200))
+        finally:
+            logf.close()
+    except Exception as exc:
+        log("启动看门狗失败（不影响本次隧道）: %s" % exc)
+
+
+def stop_supervisor():
+    """停掉守护进程：先杀进程再删 pid，否则它可能把刚停的隧道又拉起来。"""
+    try:
+        sp = 0
+        if os.path.isfile(SUP_PID):
+            with io.open(SUP_PID, encoding="utf-8") as f:
+                sp = int(f.read().strip() or 0)
+        if sp and P.pid_alive(sp) and "tun_supervisor" in P.pid_cmdline(sp).lower():
+            subprocess.run(["taskkill", "/PID", str(sp), "/T", "/F"],
+                           capture_output=True, creationflags=0x08000000)
+        if os.path.isfile(SUP_PID):
+            os.remove(SUP_PID)
+    except Exception:
+        pass
+
+
 def stop_admin():
+    stop_supervisor()
     ok = stop_stack()
     return (0 if ok else 2), ("TUN 已停止，适配器随进程释放" if ok
                               else "仍有 sing-box 进程没退出，请看 logs/tun.log")

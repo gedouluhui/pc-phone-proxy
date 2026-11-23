@@ -79,3 +79,12 @@
 | 26 | Android 15 的 16 KB page size 要求（审查稿 item 16） | 已实测 `libgojni.so`（arm64）三个 PT_LOAD 段 `p_align = 0x4000`，满足要求，无需改构建；此处留记录，将来换 AAR 时按同一方法复验 |
 
 验证：`check_poison.py` 333 cases / 145 accepted 全过 `xray run -test`，golden 未变（定向断言不进语料）。
+
+## 第五轮（2026-11-23 下午，续）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 27 | TUN 模式没有自愈：sing-box 被系统收走后 `pcproxy` 网卡消失，用户只看到"网断了" | 新增 `tun_supervisor.py`：随隧道以同一提权进程拉起（DETACHED），每 10 秒检查 `tun.pid`；进程消失且 `TUN_ACTIVE` 仍在时，用 `build_config()` 现算配置、`sing-box check` 通过后重建；10 分钟最多 5 次，超限退避 60 秒。`stop_admin()` 先杀守护再停栈，避免"刚停又被拉起" |
+| 28 | 版本与发布 | 升到 **v2.7 / versionCode 9**：`host:port/` 链接不再被判不可用；公版 APK 重建进 `dist/`，`SHA256SUMS.txt` 同步；新增 `.github/workflows/release.yml`，打 tag 即构建并挂资产（需 `PROXY_KEYSTORE_BASE64` / `PROXY_KS_PASS` / `PROXY_KS_ALIAS` / `RELEASE_SIGNING_READY=1`） |
+
+未验证：`tun_supervisor` 只在代码层跑过导入与单测，真实"杀掉隧道再自动重建"需要一次重启才能观察；为避免打断正在使用的网络，本轮没有触发。
