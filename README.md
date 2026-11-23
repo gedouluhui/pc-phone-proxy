@@ -20,7 +20,11 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-**当前版本**：手机端 **v2.6**（2026-11-23）：导入与启动前先用**真 Xray 内核做零网络预检**，
+**当前版本**：手机端 **v2.7**（2026-11-23）：修掉 `host:port/` 形式的分享链接被整条判为不可用
+的问题（authority 后的路径不是传输参数）；CI 从"只做 javac"升级为**完整打包**——临时 debug 签名跑通
+`aapt2`/`d8`/Manifest，`specialUse` 前台类型、备份规则这类只在打包期校验的改动从此有兜底。
+
+v2.6：导入与启动前先用**真 Xray 内核做零网络预检**，
 过不了内核的节点直接隔离，不再出现「解析成功但一启动就整栈失败」；解析器抽成纯 JVM
 `NodeConfigCodec`，配 333 条投毒语料 + 每条被接受节点过 `xray run -test` 的 CI 闭环；
 AI 闸门缓存缩到 1 天，observatory 探针改为 16KB / 10 分钟。另含 v2.5 的 AI 出口闸门、

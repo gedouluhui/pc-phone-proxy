@@ -115,3 +115,10 @@ git push -f origin main   # 仅在还没别人克隆时使用
 以下文件已被 `.gitignore` 排除，**永远不要**用 `git add -f` 强行提交：
 `pinned.json`、`phone/assets/nodes.json`、`node_deep*.json`、`*.keystore`、`dist/*.apk`。
 节点 URI 里含 UUID/密码，keystore 是签名私钥；公开等于把节点和 APP 更新权一起送人。
+
+## v2.7（2026-11-23）
+
+- 公版：`dist/手机代理-公版.apk`（versionCode 9 / versionName 2.7，0 节点）
+- 校验：见 `dist/SHA256SUMS.txt`
+- 变更：`host:port/` 形式分享链接不再被判为不可用；CI 增加完整打包校验
+- 发布：把该 APK 作为 `v2.7` 的资产上传，标题沿用 `PhoneProxy-public.apk` 命名习惯
