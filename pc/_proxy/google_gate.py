@@ -71,6 +71,14 @@ def classify(results):
     return "err"
 
 
+def _route():
+    try:
+        import nodes
+        return nodes.bypass_route({"final": "node"})
+    except Exception:
+        return {"final": "node", "auto_detect_interface": True}
+
+
 def _free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -136,7 +144,7 @@ def check_outbound(ob, timeout=12.0):
     cfg = {"log": {"level": "error"},
            "inbounds": [{"type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": port}],
            "outbounds": [ob, {"type": "direct", "tag": "direct"}],
-           "route": {"final": "node"}}
+           "route": _route()}
     proc = None
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

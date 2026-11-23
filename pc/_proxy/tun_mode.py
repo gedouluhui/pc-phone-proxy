@@ -297,10 +297,19 @@ def build_config():
         # 探针必须用 Gemini 自己的地址：gstatic 谁都能过，但 Google 对
         # gemini.google.com 有独立的地区/IP 判定，用 gstatic 探出来的“最快”
         # 节点恰恰可能是被 Gemini 拒绝的那颗（实测 9 颗里有 2 颗是这种）。
-        outbounds = outbounds + [{"type": "urltest", "tag": "grp-google",
-                                  "outbounds": gmembers[:10],
-                                  "url": "https://gemini.google.com/robots.txt",
-                                  "interval": "60s", "tolerance": 300}]
+        # 2026-11-23：grp-google 改成 selector（默认 = 自动组 grp-google-auto）。这样 Clash API
+        # 可以临时把 Google 流量钉到某一个出口上（PUT /proxies/grp-google），用真实浏览器逐个
+        # 验证 Gemini 是否「不支持你所在的地区」——这是唯一与用户看到的一致的判据。
+        all_tags = [o.get("tag") for o in ranked if o.get("tag")]
+        outbounds = outbounds + [
+            {"type": "urltest", "tag": "grp-google-auto",
+             "outbounds": gmembers[:10],
+             "url": "https://gemini.google.com/robots.txt",
+             "interval": "60s", "tolerance": 300},
+            {"type": "selector", "tag": "grp-google",
+             "outbounds": ["grp-google-auto"] + all_tags,
+             "default": "grp-google-auto",
+             "interrupt_exist_connections": True}]
 
     # Amazon 单独一组，探针用 aws.amazon.com/robots.txt（13KB）。gstatic 探出来的
     # “最快”节点对 AWS 可能只有 10~17 KB/s，而同一时刻另一颗有 118 KB/s
@@ -338,7 +347,7 @@ def build_config():
     prefer = fast_tags + [o.get("tag") for o in ranked
                           if o.get("tag") and o.get("tag") not in fast_tags]
     for o in outbounds:
-        if o.get("type") == "urltest" and o.get("tag") != "grp-google":
+        if o.get("type") == "urltest" and o.get("tag") not in ("grp-google", "grp-google-auto"):
             members = [t for t in prefer if t in (o.get("outbounds") or [])]
             o["outbounds"] = members or sorted(o.get("outbounds") or [])
     log_deep = {t: round(_speed(by_tag.get(t) or {}), 0) for t in fast_tags}
@@ -418,12 +427,9 @@ def build_config():
                            "path": GEOIP_SRS}] if os.path.isfile(GEOIP_SRS) else []),
             "final": "grp-any",
             "rules": [
-                # 本项目自己的测速/探测内核必须直连。TUN 开着跑「重新扫描节点」时，
-                # 深测用的 sing-box 子进程会被 TUN 接管、经当前出口二次转发，测到的是
-                # 「节点套节点」的可达性——国内直连根本连不上的节点也会显示 1.8M/GPT。
-                # 2026-11-23 手机端 24 个内置节点全部不可用，根因就是这批数据。
-                # 主实例自己的出站走 auto_detect_interface，不受这条规则影响。
-                {"process_name": ["sing-box.exe", "xray.exe"], "outbound": "direct"},
+                # 2026-11-23：这里曾有 process_name: sing-box.exe/xray.exe -> direct。stack=system 时 Windows 上
+                # 所有 TUN 连接都归属 sing-box.exe 自己，这条规则等于全局直连（17:34-18:02、18:13-18:18 两次外网全断）。
+                # 测速/闸门/预筛进程改为自己绕开 TUN（nodes.bypass_route，守护自检通过才用），这里绝不能再加进程规则。
                 # 先嗅探域名：后面的 domain_suffix 才能命中 TLS/HTTP 目标
                 {"action": "sniff", "inbound": ["tun-in"],
                  "sniffer": ["http", "tls", "quic"], "timeout": "500ms"},

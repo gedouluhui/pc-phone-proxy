@@ -163,8 +163,8 @@ class RealSingBoxCheck(unittest.TestCase):
             tun_mode.PINNED = old
             os.remove(path)
         rules = cfg["route"]["rules"]
-        self.assertEqual(rules[0].get("process_name"), ["sing-box.exe", "xray.exe"])
-        self.assertEqual(rules[0].get("outbound"), "direct")
+        # process_name 规则在 stack=system 下等于全局直连（2026-11-23 两次断网），绝不能出现
+        self.assertFalse(any("process_name" in r for r in rules))
         i80 = next(i for i, r in enumerate(rules) if r.get("port") == 80 and r.get("outbound") == "direct")
         self.assertEqual(rules[i80 - 1].get("port"), 80)
         self.assertEqual(rules[i80 - 1].get("outbound"), "grp-any")
@@ -268,7 +268,11 @@ class GoogleGate(unittest.TestCase):
             for x in (ppath, gpath):
                 if os.path.exists(x):
                     os.remove(x)
-        grp = next(o for o in cfg["outbounds"] if o.get("tag") == "grp-google")
+        grp = next(o for o in cfg["outbounds"] if o.get("tag") == "grp-google-auto")
+        sel = next(o for o in cfg["outbounds"] if o.get("tag") == "grp-google")
+        self.assertEqual(sel["type"], "selector")
+        self.assertEqual(sel["default"], "grp-google-auto")
+        self.assertIn("g0", sel["outbounds"])      # 任何出口都能被临时钉上做浏览器验证
         # 只有 2 个 ok：ok 排最前，后面补没结论的；被判 bad 的绝不进组
         self.assertEqual(sorted(grp["outbounds"][:2]), ["g1", "g2"])
         self.assertNotIn("g0", grp["outbounds"])
@@ -279,6 +283,45 @@ class GoogleGate(unittest.TestCase):
         self.assertEqual(fam[0]["outbound"], "grp-google")
         self.assertIn("google.com", tun_mode.GOOGLE_FAMILY)
         sb_check(self, cfg)
+
+
+class TunBypass(unittest.TestCase):
+    """测速/闸门进程自己绕开 TUN（替代 process_name 规则）。"""
+
+    def test_bypass_verdict(self):
+        import tun_supervisor as S
+        self.assertTrue(S.bypass_verdict([False, False, False], [True, False, False]))
+        self.assertTrue(S.bypass_verdict([True, False, False], [True, True, True]))
+        self.assertFalse(S.bypass_verdict([True, True, False], [True, True, True]))   # 被隧道转发
+        self.assertFalse(S.bypass_verdict([False, False, False], [False, False, False]))  # 进程本身坏
+
+    def test_bypass_route_modes(self):
+        import nodes as N
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        old = N.BYPASS_FILE
+        try:
+            N.BYPASS_FILE = path + ".missing"
+            self.assertEqual(N.bypass_route({"final": "x"}), {"final": "x", "auto_detect_interface": True})
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"mode": "iface", "iface": "WLAN"}, f)
+            N.BYPASS_FILE = path
+            self.assertEqual(N.bypass_route(), {"default_interface": "WLAN"})
+        finally:
+            N.BYPASS_FILE = old
+            os.remove(path)
+
+    def test_deep_and_gate_configs_check(self):
+        need_singbox(self)
+        import deep_test
+        import google_gate as G
+        ob, _ = parsed(GOOD[0])
+        node = {"outbound": dict(ob, tag="n0")}
+        cfg = deep_test.build_cfg([node], 29501, 29502, 29503)
+        self.assertTrue(cfg["route"].get("auto_detect_interface") or cfg["route"].get("default_interface"))
+        sb_check(self, cfg)
+        r = G._route()
+        self.assertEqual(r.get("final"), "node")
 
 
 class RescanDecision(unittest.TestCase):
