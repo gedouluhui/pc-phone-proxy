@@ -27,6 +27,7 @@ import winreg
 from html import escape
 
 import diagnostics as D
+import process_identity as I
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KAGGLE = os.path.dirname(HERE)
@@ -150,27 +151,22 @@ def kill_port(port, expect=("sing-box.exe",), expect_cmd=None, log=print):
         img = pid_image(pid).lower()
         if img not in expect:
             continue
-        if expect_cmd:
-            cmd = pid_cmdline(pid).lower()
-            if not cmd.strip():
-                # An elevated process hides its command line from a non-admin
-                # caller.  Refusing here left the port owned by a zombie we
-                # started ourselves (TUN's 2098), and every later start failed
-                # with "command line is not ours".
+        record_path = I.find_record_for_pid(pid, HERE)
+        if not record_path:
+            try:
+                log("  skip pid=%d %s on %d (no process identity record)" % (pid, img, port))
+            except Exception:
                 pass
-            elif expect_cmd.lower() not in cmd:
-                try:
-                    log("  skip pid=%d %s on %d (command line is not ours)" % (pid, img, port))
-                except Exception:
-                    pass
-                continue
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True, creationflags=NOWIN)
-        killed.append(pid)
-        try:
-            log("  killed %s pid=%d (port %d)" % (img, pid, port))
-        except Exception:
-            pass
+            continue
+        record = I.load_record(record_path) or {}
+        if expect_cmd and expect_cmd.lower() not in (record.get("command_line") or "").lower():
+            try:
+                log("  skip pid=%d %s on %d (command line is not ours)" % (pid, img, port))
+            except Exception:
+                pass
+            continue
+        if I.terminate_if_owned(pid, record_path=record_path, log=log):
+            killed.append(pid)
     return killed
 
 
@@ -229,19 +225,21 @@ def _pin_records():
 
 
 def stop_pinned():
-    """Kill only the sing-box instances recorded by bestroute.py.
-
-    Image name alone is not proof: require the command line to point at our
-    singbox_pinned.json before killing (review C3/C9).
-    """
-    for pid in _pin_records():
-        img = pid_image(pid).lower()
-        if img != "sing-box.exe":
+    """Kill only sing-box instances with a complete, matching identity record."""
+    try:
+        with open(PIN_PIDS, encoding="utf-8") as stream:
+            raw = json.load(stream)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        raw = []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raw = []
+    for record in raw:
+        if not isinstance(record, dict) or not record.get("pid"):
+            continue  # Legacy PID-only records are not ownership proof.
+        if I.terminate_record(record, expected_config=os.path.join(HERE, "singbox_pinned.json")):
             continue
-        if "singbox_pinned.json" not in pid_cmdline(pid).lower():
-            continue
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True, creationflags=NOWIN)
     try:
         os.remove(PIN_PIDS)
     except OSError:
@@ -322,6 +320,7 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
                 time.sleep(0.5)
                 continue
             try:
+                I.record(proc.pid, path, os.path.join(HERE, "one_%d.identity.json" % int(http_port)))
                 with open(os.path.join(HERE, "one_%d.pid" % int(http_port)), "w") as f:
                     f.write(str(proc.pid))
             except OSError:
@@ -336,22 +335,21 @@ GATEWAY_PORT = 2087
 
 
 def stop_gateway():
-    """Kill the previous gateway by its recorded PID, after proving ownership."""
+    """Kill the previous gateway only through its complete identity record."""
     try:
-        pid = int(open(GATEWAY_PID).read().strip())
-    except Exception:
+        with open(GATEWAY_PID, encoding="utf-8") as stream:
+            pid = int(stream.read().strip())
+    except (OSError, ValueError):
         return
-    img = pid_image(pid).lower()
-    if img not in ("sing-box.exe", "python.exe", "pythonw.exe"):
-        return
-    if "gateway" not in pid_cmdline(pid).lower():
-        return
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                   capture_output=True, creationflags=NOWIN)
-    try:
-        os.remove(GATEWAY_PID)
-    except OSError:
-        pass
+    identity_path = GATEWAY_PID + ".identity.json"
+    killed = I.terminate_if_owned(pid, record_path=identity_path,
+                                  expected_config=os.path.join(HERE, "singbox_gateway.json"))
+    if killed or I.inspect(pid) is None:
+        for path in (GATEWAY_PID, identity_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def start_gateway(rec, port=GATEWAY_PORT):
@@ -378,6 +376,7 @@ def start_gateway(rec, port=GATEWAY_PORT):
                              creationflags=0x00000008 | 0x08000000)
     for _ in range(30):
         if listen_ok(port):
+            I.record(p.pid, path, GATEWAY_PID + ".identity.json")
             with open(GATEWAY_PID, "w") as f:
                 f.write(str(p.pid))
             return True

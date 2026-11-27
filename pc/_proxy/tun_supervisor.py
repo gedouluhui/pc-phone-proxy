@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 
+import process_identity as I
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -476,12 +478,8 @@ def maintain(now=None):
 
 def stop_current():
     pid = read_pid(tun_mode.PID)
-    if alive(pid):
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=0x08000000)
-        except Exception:
-            pass
+    if pid and I.terminate_if_owned(pid, record_path=tun_mode.IDENTITY,
+                                    expected_config=tun_mode.CFG):
         time.sleep(1.0)
 
 
@@ -554,6 +552,7 @@ def _launch(path):
     time.sleep(2.0)
     if p.poll() is not None:
         return None, p.returncode
+    I.record(p.pid, path, tun_mode.IDENTITY)
     return p, None
 
 

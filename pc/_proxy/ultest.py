@@ -12,6 +12,7 @@ import socket
 import subprocess
 import time
 
+import process_identity as I
 import nodes as N
 import proxyctl as P
 
@@ -102,8 +103,7 @@ def one(rec, timeout=45):
         try:
             p.wait(timeout=6)
         except Exception:
-            subprocess.run(["taskkill", "/PID", str(p.pid), "/F"],
-                           capture_output=True, creationflags=0x08000000)
+            I.terminate_record(I.record(p.pid, CFG) or {})
 
 
 def main():

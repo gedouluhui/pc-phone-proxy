@@ -31,6 +31,8 @@ import subprocess
 import sys
 import time
 
+import process_identity as I
+
 try:                                  # Windows-only; tests import this module elsewhere
     import winreg
 except ImportError:                   # pragma: no cover - non-Windows import path
@@ -480,6 +482,7 @@ def _spawn_watchdog():
                              stdout=logf, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL,
                              creationflags=0x00000008 | 0x00000200)
+    I.record(p.pid, None, WD_PID + ".identity.json")
     return p.pid
 
 
@@ -634,6 +637,7 @@ def start_server(port=None):
                          creationflags=0x00000008 | 0x00000200)  # DETACHED | NEW_GROUP
     with io.open(PID_PATH, "w", encoding="utf-8") as f:
         f.write(str(p.pid))
+    I.record(p.pid, None, PID_PATH + ".identity.json")
     for _ in range(40):
         if server_alive(base):
             return base
@@ -645,19 +649,18 @@ def stop_server():
     if not os.path.isfile(PID_PATH):
         return
     try:
-        pid = int(io.open(PID_PATH).read().strip())
-    except Exception:
+        with io.open(PID_PATH, encoding="utf-8") as stream:
+            pid = int(stream.read().strip())
+    except (OSError, ValueError):
         return
-    try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True, timeout=10,
-                       creationflags=0x08000000)
-    except Exception:
-        pass
-    try:
-        os.remove(PID_PATH)
-    except OSError:
-        pass
+    identity_path = PID_PATH + ".identity.json"
+    killed = I.terminate_if_owned(pid, record_path=identity_path)
+    if killed or I.inspect(pid) is None:
+        for path in (PID_PATH, identity_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 # ------------------------------------------------------------------ WinINET

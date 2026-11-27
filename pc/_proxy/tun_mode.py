@@ -23,6 +23,8 @@ import subprocess
 import sys
 import time
 
+import process_identity as I
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import pacroute            # noqa: E402
@@ -54,6 +56,7 @@ GOOGLE_DNS = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.
               "anthropic.com", "claude.ai", "huggingface.co", "hf.co",
               "x.ai", "perplexity.ai", "antigravity.google"]
 PID = os.path.join(HERE, "tun.pid")
+IDENTITY = os.path.join(HERE, "tun.identity.json")
 ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
 RESULT = os.path.join(HERE, "tun_result.json")
 STARTED = os.path.join(HERE, "tun_started.txt")
@@ -579,30 +582,37 @@ def _singbox_procs():
 
 
 def stop_stack():
-    pids = set(tun_pids()) | set(foreign_tun_pids())
-    # A split-mode Google-AI exit on 2098 has no TUN marker; collect it by port
-    # so it cannot outlive the tunnel when both modes were started in a row.
-    try:
-        for pid in P.port_pids(2098):
-            if P.pid_image(pid).lower().startswith("sing-box"):
-                pids.add(pid)
-    except Exception:
-        pass
-    if alive(read_pid()):
-        pids.add(read_pid())
-    for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, creationflags=CREATE_NO_WINDOW)
-    t0 = time.time()
-    while time.time() - t0 < 8 and any(P.pid_alive(x) for x in pids):
-        time.sleep(0.3)
-    for p in (PID, ACTIVE):
-        try:
-            os.remove(p)
-        except OSError:
+    pid = read_pid()
+    killed = []
+    if pid:
+        if I.terminate_if_owned(pid, record_path=IDENTITY, expected_config=CFG):
+            killed.append(pid)
+        elif I.inspect(pid) is None:
             pass
-    left = set(tun_pids())
-    return not left and not any(alive(x) for x in pids)
+        else:
+            log("TUN 进程身份无法确认，拒绝终止 pid=%d" % pid)
+    # Stop the split-mode Google-AI exit only through its identity record.
+    gai_pid_path = os.path.join(HERE, "one_2098.pid")
+    try:
+        with io.open(gai_pid_path, encoding="utf-8") as stream:
+            gai_pid = int(stream.read().strip())
+        if I.terminate_if_owned(gai_pid,
+                                record_path=os.path.join(HERE, "one_2098.identity.json"),
+                                expected_config=os.path.join(HERE, "singbox_gai.json")):
+            killed.append(gai_pid)
+    except (OSError, ValueError):
+        pass
+    t0 = time.time()
+    while time.time() - t0 < 8 and any(P.pid_alive(x) for x in killed):
+        time.sleep(0.3)
+    left = bool(pid and I.inspect(pid) is not None)
+    if not left:
+        for path in (PID, IDENTITY, ACTIVE):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return not left
 
 
 def adapter_present():
@@ -692,6 +702,7 @@ def start_admin():
         return 1, "sing-box 启动后立即退出 (%s)，见 logs/tun.log" % p.returncode
     with io.open(PID, "w", encoding="utf-8") as f:
         f.write(str(p.pid))
+    I.record(p.pid, CFG, IDENTITY)
     with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as f:
         f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
@@ -731,10 +742,11 @@ def start_supervisor():
         os.makedirs(os.path.dirname(SUP_LOG), exist_ok=True)
         logf = io.open(SUP_LOG, "ab")
         try:
-            subprocess.Popen([sys.executable, os.path.join(HERE, "tun_supervisor.py")],
-                             cwd=HERE, stdout=logf, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL,
-                             creationflags=(0x00000008 | 0x00000200))
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "tun_supervisor.py")],
+                                 cwd=HERE, stdout=logf, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL,
+                                 creationflags=(0x00000008 | 0x00000200))
+            I.record(p.pid, None, SUP_PID + ".identity.json")
         finally:
             logf.close()
     except Exception as exc:
@@ -780,17 +792,21 @@ def unregister_guard_task():
 
 
 def stop_supervisor():
-    """停掉守护进程：先杀进程再删 pid，否则它可能把刚停的隧道又拉起来。"""
+    """停掉守护进程：先杀进程再删 pid，避免它把刚停的隧道又拉起来。"""
     try:
         sp = 0
         if os.path.isfile(SUP_PID):
             with io.open(SUP_PID, encoding="utf-8") as f:
                 sp = int(f.read().strip() or 0)
-        if sp and P.pid_alive(sp) and "tun_supervisor" in P.pid_cmdline(sp).lower():
-            subprocess.run(["taskkill", "/PID", str(sp), "/T", "/F"],
-                           capture_output=True, creationflags=0x08000000)
-        if os.path.isfile(SUP_PID):
-            os.remove(SUP_PID)
+        identity_path = SUP_PID + ".identity.json"
+        if sp:
+            I.terminate_if_owned(sp, record_path=identity_path)
+        if I.inspect(sp) is None if sp else True:
+            for path in (SUP_PID, identity_path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
     except Exception:
         pass
 

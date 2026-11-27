@@ -7,6 +7,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import process_identity as I  # noqa: E402
 import proxyctl as P  # noqa: E402
 
 STOP = os.path.join(HERE, "STOP_WATCHDOG")
@@ -31,9 +32,8 @@ if pid and P.pid_alive(pid):
             break
         time.sleep(2)
     if P.pid_alive(pid):
-        print("still alive after sentinel; killing pid", pid)
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True, creationflags=0x08000000)
+        print("still alive after sentinel; identity-checked stop pid", pid)
+        I.terminate_if_owned(pid, record_path=PIDF + ".identity.json")
         time.sleep(1)
     print("old watchdog stopped" if not P.pid_alive(pid) else "old watchdog STILL ALIVE")
 try:
@@ -58,5 +58,6 @@ with open(LOG, "ab") as logf:
                          creationflags=0x00000008 | 0x00000200)
 with io.open(PIDF, "w", encoding="utf-8", newline="\n") as f:
     f.write(str(p.pid))
+I.record(p.pid, None, PIDF + ".identity.json")
 time.sleep(2.0)
 print("new watchdog pid=%d alive=%s exe=%s" % (p.pid, P.pid_alive(p.pid), pyw))

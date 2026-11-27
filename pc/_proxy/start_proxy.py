@@ -23,6 +23,8 @@ import sys
 import time
 import urllib.request
 
+import process_identity as I
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import pacroute            # noqa: E402
@@ -88,17 +90,15 @@ def best_hk_uri():
 
 
 def hk_ours():
-    """2086 is ours only when the recorded PID still owns it and its command
-    line points at our singbox_one.json (review C3)."""
+    """2086 is ours only when its complete identity still matches."""
     if not up(HK):
         return False
     try:
-        pid = int(io.open(os.path.join(HERE, "one_%d.pid" % HK)).read().strip())
-    except Exception:
+        with io.open(os.path.join(HERE, "one_%d.pid" % HK), encoding="utf-8") as stream:
+            pid = int(stream.read().strip())
+    except (OSError, ValueError):
         return False
-    if P.pid_image(pid).lower() != "sing-box.exe":
-        return False
-    return "singbox_one.json" in P.pid_cmdline(pid).lower()
+    return I.matches(I.load_record(os.path.join(HERE, "one_%d.identity.json" % HK)) or {})
 
 
 def ensure_hk():
@@ -137,31 +137,20 @@ def _steam_ok(port=STEAM, timeout=15):
 
 def _kill_one(port=STEAM):
     path = os.path.join(HERE, "one_%d.pid" % int(port))
+    identity_path = os.path.join(HERE, "one_%d.identity.json" % int(port))
     try:
-        pid = int(io.open(path).read().strip())
-    except Exception:
+        with io.open(path, encoding="utf-8") as stream:
+            pid = int(stream.read().strip())
+    except (OSError, ValueError):
         return
-    # 不裸 taskkill：先证明这个 PID 还是本目录拉起的 sing-box。
-    # PID 复用时会打到别人的进程上。
-    if P.pid_image(pid).lower() != "sing-box.exe":
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        return
-    cmd = P.pid_cmdline(pid)
-    if cmd and HERE.lower() not in cmd.lower():
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        return
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                   capture_output=True, creationflags=0x08000000)
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    killed = I.terminate_if_owned(pid, record_path=identity_path,
+                                  expected_config=os.path.join(HERE, "singbox_one.json"))
+    if killed or I.inspect(pid) is None:
+        for item in (path, identity_path):
+            try:
+                os.remove(item)
+            except OSError:
+                pass
 
 
 def ensure_steam():
@@ -271,6 +260,7 @@ def _start_gai(uris):
         if proc.poll() is not None:
             return False
         if up(GAI) and up(GAI + 1):
+            I.record(proc.pid, path, os.path.join(HERE, "one_%d.identity.json" % GAI))
             with io.open(os.path.join(HERE, "one_%d.pid" % GAI), "w") as f:
                 f.write(str(proc.pid))
             return True
@@ -420,13 +410,17 @@ def label(row):
 def ensure_watchdog():
     pid = None
     try:
-        pid = int(io.open(WATCH_PID).read().strip())
-    except Exception:
+        with io.open(WATCH_PID, encoding="utf-8") as stream:
+            pid = int(stream.read().strip())
+    except (OSError, ValueError):
         pass
     if pid and P.pid_alive(pid):
         img = P.pid_image(pid).lower()
-        if img.startswith("python") and "watchdog.py" in P.pid_cmdline(pid).lower():
+        record = I.load_record(WATCH_PID + ".identity.json") or {}
+        if img.startswith("python") and record.get("pid") == pid and I.matches(record):
             return pid, False
+        log("  [警告] watchdog.pid 指向存活进程但身份无法确认，拒绝再启动一个副本")
+        return pid, False
     try:
         os.remove(WATCH_STOP)
     except OSError:
@@ -446,6 +440,7 @@ def ensure_watchdog():
                              creationflags=0x00000008 | 0x00000200)
     with io.open(WATCH_PID, "w", encoding="utf-8", newline="\n") as f:
         f.write(str(p.pid))
+    I.record(p.pid, None, WATCH_PID + ".identity.json")
     time.sleep(1.0)
     return p.pid, True
 

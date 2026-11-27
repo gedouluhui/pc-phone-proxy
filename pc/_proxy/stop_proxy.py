@@ -20,6 +20,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import process_identity as I  # noqa: E402
 import pacroute            # noqa: E402
 import proxyctl as P       # noqa: E402
 import sysstate            # noqa: E402
@@ -39,16 +40,14 @@ def log(*a):
     print(*a, flush=True)
 
 
-def kill_tree(pid, expect_prefix=("python",)):
+def kill_tree(pid, expect_prefix=("python",), record_path=None):
     img = P.pid_image(pid).lower()
-    if not img:
-        return False
-    if not img.startswith(tuple(expect_prefix)):
+    if not img or not img.startswith(tuple(expect_prefix)):
         log("  [跳过] pid=%d 是 %s，不是本文件夹的进程" % (pid, img))
         return False
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                   capture_output=True, creationflags=0x08000000)
-    return True
+    if record_path is None:
+        record_path = I.find_record_for_pid(pid, HERE)
+    return I.terminate_if_owned(pid, record_path=record_path, log=log)
 
 
 # ---------------------------------------------------------- process scan
@@ -121,53 +120,29 @@ def _prio(img, cmd):
 
 
 def kill_foreign_copies():
-    """Kill copies of this project living outside THIS folder.
+    """Legacy cross-directory cleanup is intentionally disabled.
 
-    The desktop keeps a `代理便携版_backup_*` rollback copy.  Double-clicking
-    its 启动代理.bat starts a whole second stack; a per-folder kill would walk
-    right past it and its watchdog would keep re-installing the PAC after we
-    clean up — exactly the "关了又自己开" symptom.  Two rounds, because a
-    keeper can respawn a child in the milliseconds between scan and kill.
+    Generic script names are not ownership proof. Only identity records created
+    by this installation may be terminated; older copies must be stopped by
+    their own installation or manually after the user verifies them.
     """
-    me, parent = os.getpid(), os.getppid()
-    here = HERE.lower()
-    killed = []
-    for _ in range(2):
-        foreign = [(p, i, c) for p, i, c in our_processes()
-                   if p not in (me, parent) and here not in (c or "").lower()
-                   and p not in killed]
-        if not foreign:
-            break
-        foreign.sort(key=lambda t: _prio(t[1], t[2]))
-        for pid, img, cmd in foreign:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, creationflags=0x08000000)
-            killed.append(pid)
-        time.sleep(0.6)
-    return killed
+    return []
 
 
 def kill_our_stack(procs=None):
-    """Kill this folder's sing-box and helper scripts, whatever ports they use.
-
-    Catches the experimental leftovers (2160/2161/9089...) that a fixed port
-    list missed, without ever touching a user-owned sing-box.
-    """
-    me, parent = os.getpid(), os.getppid()
-    procs = procs if procs is not None else our_processes()
+    """Terminate only processes with complete identity records in this install."""
     killed = []
-    for pid, img, cmd in procs:
-        if pid in (me, parent):
+    records = []
+    for path in glob.glob(os.path.join(HERE, "*.identity.json")):
+        record = I.load_record(path)
+        if record:
+            records.append(record)
+    for record in records:
+        pid = int(record.get("pid") or 0)
+        if pid in (os.getpid(), os.getppid()):
             continue
-        ours = img == "sing-box.exe"
-        if not ours and img.startswith("python"):
-            low = cmd.lower()
-            ours = any(s in low for s in SCRIPTS_OURS)
-        if not ours:
-            continue
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, creationflags=0x08000000)
-        killed.append(pid)
+        if I.terminate_record(record, log=log):
+            killed.append(pid)
     return killed
 
 
@@ -185,15 +160,12 @@ def stop_watchdog():
         pass
     killed = False
     if pid:
-        killed = kill_tree(pid)
+        killed = kill_tree(pid, record_path=WATCH_PID + ".identity.json")
     # wait for the tree to die (a rebuild child may hold sing-box)
     t0 = time.time()
     while pid and P.pid_alive(pid) and time.time() - t0 < 6:
         time.sleep(0.3)
-    if pid and P.pid_alive(pid):
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, creationflags=0x08000000)
-    for name in (WATCH_PID, WATCH_STOP):
+    for name in (WATCH_PID, WATCH_PID + ".identity.json", WATCH_STOP):
         try:
             os.remove(name)
         except OSError:
@@ -241,35 +213,30 @@ def stop_tun():
 def stop_pinned():
     killed = []
     try:
-        pids = json.load(io.open(os.path.join(HERE, "pinned_pids.json"), encoding="utf-8"))
-    except Exception:
-        pids = []
-    for pid in pids:
-        try:
-            pid = int(pid)
-        except Exception:
+        with io.open(os.path.join(HERE, "pinned_pids.json"), encoding="utf-8") as stream:
+            records = json.load(stream)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        records = []
+    if isinstance(records, dict):
+        records = [records]
+    if not isinstance(records, list):
+        records = []
+    for record in records:
+        if not isinstance(record, dict) or not record.get("pid"):
             continue
-        # 三元组核验：镜像名 + 命令行含本目录。PID 会被内核复用，只比镜像名
-        # 可能把用户自己的 sing-box 或别的进程误杀。
-        if P.pid_image(pid).lower() == "sing-box.exe":
-            cmd = P.pid_cmdline(pid)
-            if cmd and HERE.lower() not in cmd.lower():
-                continue
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=0x08000000)
-            killed.append(pid)
+        if I.terminate_record(record,
+                              expected_config=os.path.join(HERE, "singbox_pinned.json"),
+                              log=log):
+            killed.append(int(record["pid"]))
+    for path in glob.glob(os.path.join(HERE, "one_*.identity.json")):
+        record = I.load_record(path)
+        if record and I.terminate_record(record, log=log):
+            killed.append(int(record["pid"]))
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     for path in glob.glob(os.path.join(HERE, "one_*.pid")):
-        try:
-            pid = int(io.open(path).read().strip())
-        except Exception:
-            continue
-        if P.pid_image(pid).lower() == "sing-box.exe":
-            cmd = P.pid_cmdline(pid)
-            if cmd and HERE.lower() not in cmd.lower():
-                continue
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, creationflags=0x08000000)
-            killed.append(pid)
         try:
             os.remove(path)
         except OSError:
@@ -418,6 +385,7 @@ def main():
         + (("；顺手清掉指向死端口的旧值: " + ", ".join(touched)) if touched else ""))
 
     for path in (START_LOCK, os.path.join(HERE, "pac_server.pid"),
+                 os.path.join(HERE, "pac_server.pid.identity.json"),
                  os.path.join(HERE, "watchdog_guard.json")):
         try:
             os.remove(path)

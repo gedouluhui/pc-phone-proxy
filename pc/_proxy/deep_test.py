@@ -20,6 +20,7 @@ import ssl
 import subprocess
 import time
 
+import process_identity as I
 import bench
 import nodes as N
 
@@ -38,18 +39,19 @@ def log(*a):
 
 
 def kill_stale():
-    try:
-        pids = json.load(open(PIDS))
-    except Exception:
-        return
-    for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                       capture_output=True, creationflags=0x08000000)
+    import glob
+    for path in glob.glob(os.path.join(HERE, "deep_*.identity.json")):
+        record = I.load_record(path)
+        if record:
+            I.terminate_record(record)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def save_pids(pids):
-    with open(PIDS, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(pids, f)
+    I.record_many([(pid, None) for pid in pids], PIDS)
 
 
 def sanitize(n):
@@ -117,6 +119,7 @@ def start_singbox(path, extra=0):
     with open(logp, "ab") as logf:
         p = subprocess.Popen([BIN, "run", "-c", path], stdout=logf, stderr=subprocess.STDOUT,
                              creationflags=0x08000000)
+    I.record(p.pid, path, os.path.join(HERE, "deep_%d.identity.json" % extra))
     return p
 
 

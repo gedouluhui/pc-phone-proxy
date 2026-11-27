@@ -21,6 +21,7 @@ import subprocess
 import time
 
 import diagnostics as D
+import process_identity as I
 import nodes as N
 import pacroute
 import proxyctl as P
@@ -478,10 +479,7 @@ def main():
         log("fast port failed the site gate; DEGRADING fast role to general gate (still applying)")
         fast_degraded = True
 
-    with open(PIN_PIDS, "w", encoding="utf-8", newline="\n") as fp:
-        # Record what the PID must look like; a recycled PID must not be killed.
-        json.dump([{"pid": proc.pid, "exe": "sing-box.exe",
-                    "cmd": "singbox_pinned.json"}], fp)
+    I.record_many([(proc.pid, CFG)], PIN_PIDS)
     general_ep = f"127.0.0.1:{GENERAL_HTTP}"
     fast_ep = f"127.0.0.1:{GENERAL_HTTP}" if fast_degraded else f"127.0.0.1:{FAST_HTTP}"
     pac_info = pacroute.apply_pac(general_ep, fast_ep)
