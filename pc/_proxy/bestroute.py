@@ -13,6 +13,7 @@ Usage:
   python bestroute.py --apply    # start the pinned process and install PAC
 """
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -137,7 +138,7 @@ def pick(rows, need_cg, min_dl, min_ul, k, max_per_prefix=2):
     cand.sort(key=lambda r: (int(r.get("fallback") or 0), -score(r)))
     out, seen, pref = [], set(), {}
     for r in cand:
-        key = r["server"].lower()
+        key = _rkey(r)
         if key in seen:
             continue
         p = _prefix(r["server"])
@@ -182,7 +183,10 @@ HIST_CAP = 40
 
 
 def _rkey(r):
-    return (str(r.get("server", "")).lower(), str(r.get("port")))
+    ob, _ = N.parse_uri(r.get("uri", ""))
+    identity = (N.outbound_identity(ob) if ob else
+                hashlib.sha256(r.get("uri", "").encode("utf-8")).hexdigest())
+    return (str(r.get("server", "")).lower(), str(r.get("port")), r.get("proto"), identity)
 
 
 def merge_history(hist, rows, now, min_dl, ttl=HIST_TTL, cap=HIST_CAP):

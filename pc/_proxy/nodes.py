@@ -7,6 +7,8 @@ node_speed.json (top-N with measured kB/s through a local SOCKS5 inbound).
 import argparse
 import asyncio
 import base64
+import copy
+import hashlib
 import ipaddress
 import json
 import os
@@ -38,25 +40,30 @@ def b64d(s):
 
 
 def redact_uri(uri):
-    """保留 scheme / host:port / #remark，打码 userinfo 与 base64 载荷。
-
-    订阅 URI 的凭据（uuid/password/token）几乎都在前 60 个字符内，日志和
-    状态 JSON 一律用这个函数，禁止直接落原文。
-    """
-    if not uri:
-        return ""
-    s = str(uri).strip()
-    if "://" not in s:
+    """Return only scheme and endpoint; never preserve credential-bearing parts."""
+    if not uri or "://" not in str(uri):
         return "***"
-    scheme, rest = s.split("://", 1)
-    frag = ""
-    if "#" in rest:
-        rest, frag = rest.split("#", 1)
-        frag = "#" + frag[:24]
-    if "@" in rest:
-        _, hostpart = rest.rsplit("@", 1)
-        return "%s://***@%s%s" % (scheme, hostpart[:60], frag)
-    return "%s://***%s" % (scheme, frag)
+    scheme, rest = str(uri).split("://", 1)
+    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    authority = authority.rsplit("@", 1)[-1]
+    return scheme + "://" + authority
+
+
+def outbound_identity(ob):
+    """Stable identity for the complete outbound, excluding its runtime tag."""
+    clean = {key: value for key, value in ob.items() if key != "tag"}
+    raw = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def sanitize_public_outbound(ob):
+    """Public nodes may not disable certificate verification."""
+    clean = copy.deepcopy(ob)
+    tls = clean.get("tls")
+    if isinstance(tls, dict):
+        tls.pop("insecure", None)
+        tls.pop("allow_insecure", None)
+    return clean
 
 
 def is_forbidden_server(host):
@@ -322,7 +329,8 @@ def load_nodes():
                 continue
             if ob["type"] == "shadowsocks" and ob["method"] not in SS_CIPHERS:
                 continue
-            k = (ob["type"], ob["server"], ob["server_port"])
+            ob = sanitize_public_outbound(ob)
+            k = outbound_identity(ob)
             if k in seen:
                 continue
             seen.add(k)
