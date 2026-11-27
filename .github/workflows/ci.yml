@@ -44,6 +44,9 @@ jobs:
       - name: DNS 固定订阅传输 PoC（HTTP / TLS）
         run: python phone/tests/run_http_poc.py
 
+      - name: Keystore AES/GCM 信封 PoC（JDK）
+        run: python phone/tests/run_secure_envelope_poc.py
+
       - name: 发布前防泄漏自检
         run: python phone/check_release.py
 

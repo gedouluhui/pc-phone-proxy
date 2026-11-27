@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  节点池与订阅地址都是明文凭据：allowBackup="false" 在部分 OEM 的 Android 12+
-  只关掉云备份，D2D 迁移通道仍然默认全开。这里把两条通道都显式排空。
+  节点池与订阅地址属于敏感凭据（当前使用 Android Keystore 加密）：allowBackup="false"
+  在部分 OEM 的 Android 12+ 只关掉云备份，D2D 迁移通道仍可能默认全开。两条通道都显式排空。
 -->
 <data-extraction-rules>
     <cloud-backup>

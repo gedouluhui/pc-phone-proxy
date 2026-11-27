@@ -203,6 +203,7 @@ Android UI / VpnService
 - 首次启动迁移旧 SharedPreferences 明文数据，迁移成功后删除旧键。
 - 日志与 UI 只显示脱敏节点名，不输出完整 URI。
 - 备份与设备迁移规则继续排除所有应用数据。
+- 当前实现使用 `SecureEnvelope`（版本 + 随机 IV + AES-256-GCM 密文）和 `SecureStore` 的 Android Keystore 包装；AAD 绑定逻辑存储键。密文持久化成功才删除旧键，Keystore 不可用时保留旧数据并告警，新写入失败而不回退明文。
 
 ### 5.5 生命周期与取消
 

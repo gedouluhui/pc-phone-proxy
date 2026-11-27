@@ -1,0 +1,10 @@
+{
+  "kind": "secure-envelope-poc",
+  "jdk": "jdk-12.0.2",
+  "source": "phone/src/com/luhui/phoneproxy/SecureEnvelope.java",
+  "cases": 7,
+  "passed": 7,
+  "failed": 0,
+  "failures": [],
+  "exit": 0
+}

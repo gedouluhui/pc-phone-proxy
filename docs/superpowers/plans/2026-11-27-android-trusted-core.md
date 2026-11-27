@@ -25,7 +25,8 @@
 - JVM verification passes 46 URL/address guard cases and 14 transport cases, including real TLS success for the correct hostname and failure for a wrong hostname. Full Android javac against the fixed Xray AAR passes (22 classes).
 - Task 2 is implemented: `sources.json` is versioned and signed as exact bytes with RSA/SHA-256; the APK embeds the public key, manifest, and raw signature. Remote mirrors are accepted only after signature/schema validation and a strictly newer version; failures fall back to the signed APK asset and then the compiled snapshot.
 - Repository verification passes 9 Python signature/embedding tests (including 4 tool-free verifier controls) and 9 JVM tamper/replay/schema tests. A real debug APK was built and its embedded manifest/signature bytes were extracted and re-verified successfully.
-- Tasks 3–5 remain in progress. Real Android Keystore, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
+- Task 3 is implemented at the code/compile level: `SecureEnvelope` provides versioned AES-256-GCM encryption with random IV and key-bound AAD; `SecureStore` wraps Android Keystore, migrates legacy plaintext only after durable encrypted persistence, and never writes new plaintext. Seven JVM envelope controls pass; all 13 Android sources compile against API 35 and the fixed AAR.
+- Tasks 4–5 remain in progress. Real Android Keystore generation/migration, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
 
 ## Tasks
 

@@ -383,8 +383,10 @@ public final class ConfigBuilder {
     public static List<String> loadImportedUris(Context ctx) {
         List<String> out = new ArrayList<>();
         try {
-            String raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .getString(KEY_URIS, "[]");
+            String raw = SecureStore.migrateLegacy(ctx, PREFS, KEY_URIS, KEY_URIS);
+            String warning = SecureStore.warning();
+            if (warning != null) lastSkips.add(warning);
+            if (raw == null) return out;
             JSONArray arr = new JSONArray(raw);
             for (int i = 0; i < arr.length(); i++) {
                 String u = arr.optString(i, "").trim();
@@ -552,8 +554,10 @@ public final class ConfigBuilder {
     public static void saveImportedUris(Context ctx, List<String> uris) {
         JSONArray arr = new JSONArray();
         for (String u : uris) arr.put(u);
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_URIS, arr.toString()).apply();
+        if (!SecureStore.put(ctx, KEY_URIS, arr.toString())) {
+            throw new IllegalStateException("安全凭据存储不可用，未写入明文");
+        }
+        SecureStore.deleteLegacy(ctx, PREFS, KEY_URIS);
     }
 
     // -------------------------------------------------- AI 出口闸门（本机实测结果）
