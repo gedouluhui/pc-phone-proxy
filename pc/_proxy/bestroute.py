@@ -206,7 +206,7 @@ def merge_history(hist, rows, now, min_dl, ttl=HIST_TTL, cap=HIST_CAP):
     for r in rows or []:
         if ((r.get("dl_kbps") or 0) >= min_dl and r.get("chatgpt_ok") and r.get("github_ok")
                 and r.get("uri")):
-            k = "%s:%s" % _rkey(r)
+            k = json.dumps(_rkey(r), ensure_ascii=False, separators=(",", ":"))
             out[k] = {kk: vv for kk, vv in r.items() if kk != "fallback"}
             out[k]["seen_at"] = now
     keep = sorted(out.items(), key=lambda kv: -float(kv[1].get("seen_at") or 0))[:cap]

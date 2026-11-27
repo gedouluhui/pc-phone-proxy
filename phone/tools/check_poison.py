@@ -148,6 +148,7 @@ def compile_harness(javac, jar, out):
     srcs = [
         SRC / "NodeConfigCodec.java",
         SRC / "SubscriptionGuard.java",
+        SRC / "RoutingPolicy.java",
         PHONE / "tests" / "PoisonHarness.java",
     ]
     cmd = [str(javac), "-encoding", "UTF-8", "-cp", str(jar), "-d", str(out)] + [str(s) for s in srcs]

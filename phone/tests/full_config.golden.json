@@ -47,7 +47,18 @@
             "domain:csrc.gov.cn",
             "domain:nfra.gov.cn",
             "domain:edu.cn",
-            "domain:si.12333.gov.cn"
+            "domain:si.12333.gov.cn",
+            "domain:pingan.com",
+            "domain:bankcomm.com",
+            "domain:citicbank.com",
+            "domain:spdb.com",
+            "domain:jdpay.com",
+            "domain:baifubao.com",
+            "domain:apple.com",
+            "domain:icloud.com",
+            "domain:icloud.com.cn",
+            "domain:microsoftonline.com",
+            "domain:live.com"
           ],
           "skipFallback": true
         },
@@ -4227,6 +4238,10 @@
       {
         "protocol": "blackhole",
         "tag": "block"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "ai-block"
       },
       {
         "protocol": "vless",
@@ -4356,7 +4371,7 @@
           "tag": "balancer"
         },
         {
-          "fallbackTag": "proxy-p0",
+          "fallbackTag": "cg-p0",
           "selector": [
             "cg-"
           ],
@@ -4442,7 +4457,18 @@
             "domain:csrc.gov.cn",
             "domain:nfra.gov.cn",
             "domain:edu.cn",
-            "domain:si.12333.gov.cn"
+            "domain:si.12333.gov.cn",
+            "domain:pingan.com",
+            "domain:bankcomm.com",
+            "domain:citicbank.com",
+            "domain:spdb.com",
+            "domain:jdpay.com",
+            "domain:baifubao.com",
+            "domain:apple.com",
+            "domain:icloud.com",
+            "domain:icloud.com.cn",
+            "domain:microsoftonline.com",
+            "domain:live.com"
           ],
           "outboundTag": "direct"
         },
@@ -4465,13 +4491,16 @@
         {
           "balancerTag": "cg-balancer",
           "domain": [
-            "domain:openai.com",
             "domain:chatgpt.com",
+            "domain:openai.com",
             "domain:oaistatic.com",
             "domain:oaiusercontent.com",
-            "domain:anthropic.com",
+            "domain:chatgpt.livekit.cloud",
+            "domain:sora.chatgpt.com",
+            "domain:platform.openai.com",
             "domain:claude.ai",
             "domain:claude.com",
+            "domain:anthropic.com",
             "domain:claudeusercontent.com"
           ],
           "network": "tcp,udp"
@@ -4520,7 +4549,18 @@
             "domain:csrc.gov.cn",
             "domain:nfra.gov.cn",
             "domain:edu.cn",
-            "domain:si.12333.gov.cn"
+            "domain:si.12333.gov.cn",
+            "domain:pingan.com",
+            "domain:bankcomm.com",
+            "domain:citicbank.com",
+            "domain:spdb.com",
+            "domain:jdpay.com",
+            "domain:baifubao.com",
+            "domain:apple.com",
+            "domain:icloud.com",
+            "domain:icloud.com.cn",
+            "domain:microsoftonline.com",
+            "domain:live.com"
           ],
           "skipFallback": true
         },
@@ -8700,6 +8740,10 @@
       {
         "protocol": "blackhole",
         "tag": "block"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "ai-block"
       }
     ],
     "policy": {
@@ -8765,7 +8809,18 @@
             "domain:csrc.gov.cn",
             "domain:nfra.gov.cn",
             "domain:edu.cn",
-            "domain:si.12333.gov.cn"
+            "domain:si.12333.gov.cn",
+            "domain:pingan.com",
+            "domain:bankcomm.com",
+            "domain:citicbank.com",
+            "domain:spdb.com",
+            "domain:jdpay.com",
+            "domain:baifubao.com",
+            "domain:apple.com",
+            "domain:icloud.com",
+            "domain:icloud.com.cn",
+            "domain:microsoftonline.com",
+            "domain:live.com"
           ],
           "outboundTag": "direct"
         },
@@ -8784,6 +8839,23 @@
             "geoip:cn"
           ],
           "outboundTag": "direct"
+        },
+        {
+          "domain": [
+            "domain:chatgpt.com",
+            "domain:openai.com",
+            "domain:oaistatic.com",
+            "domain:oaiusercontent.com",
+            "domain:chatgpt.livekit.cloud",
+            "domain:sora.chatgpt.com",
+            "domain:platform.openai.com",
+            "domain:claude.ai",
+            "domain:claude.com",
+            "domain:anthropic.com",
+            "domain:claudeusercontent.com"
+          ],
+          "network": "tcp,udp",
+          "outboundTag": "proxy-p0"
         },
         {
           "network": "tcp,udp",

@@ -175,30 +175,15 @@ public final class ConfigBuilder {
     }
 
     /**
-     * 节点身份：server:port/protocol 的哈希。
-     *
-     * 不能用 tag 当键：导入节点的 tag 是 i0/i1… 按位置生成，用户删掉一个或换一次源，
-     * 后面所有节点的 tag 都会平移，闸门结果就会张冠李戴（把能过 AI 的标记贴到
-     * 不能过的节点上，比没有标记更糟）。
+     * 节点身份：完整 outbound（去掉运行时 tag）的 SHA-256。
+     * 同端点不同凭据、传输或 TLS 参数不得共享健康度与 AI 闸门结果。
      */
     public static String nodeKey(JSONObject ob) {
-        String id = "";
         try {
-            JSONObject s = ob.optJSONObject("settings");
-            JSONArray v = s != null ? s.optJSONArray("vnext") : null;
-            JSONArray sv = s != null ? s.optJSONArray("servers") : null;
-            JSONObject ep = null;
-            if (v != null && v.length() > 0) ep = v.optJSONObject(0);
-            else if (sv != null && sv.length() > 0) ep = sv.optJSONObject(0);
-            else if (s != null && s.has("address")) ep = s; // hysteria：地址直接在 settings 里
-            if (ep != null) {
-                id = ep.optString("address", "") + ":" + ep.optInt("port", 0)
-                        + "/" + ob.optString("protocol", "");
-            }
+            return NodeConfigCodec.outboundIdentity(ob);
         } catch (Throwable ignored) {
+            return "";
         }
-        if (id.isEmpty()) id = ob.optString("tag", "");
-        return sha1hex(id);
     }
 
     private static String sha1hex(String s) {

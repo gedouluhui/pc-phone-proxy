@@ -5,15 +5,18 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.Charset;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * 分享链接 -> Xray 出站 / 完整配置的纯 Java 实现。
@@ -65,15 +68,6 @@ public final class NodeConfigCodec {
 
     private static final Set<String> XHTTP_MODES = new HashSet<>(Arrays.asList(
             "auto", "packet-up", "stream-up", "stream-one"));
-
-    private static final String[] SENSITIVE_DOMAINS = {
-            "icbc.com.cn", "ccb.com", "abchina.com", "boc.cn", "bankofchina.com",
-            "cmbchina.com", "bocom.cn", "psbc.com", "cmbc.com.cn", "spdb.com.cn",
-            "ecitic.com", "cib.com.cn", "hxb.com.cn", "cgbchina.com.cn", "cebbank.com",
-            "unionpay.com", "95516.com", "paypal.com", "alipay.com", "tenpay.com",
-            "gov.cn", "chinatax.gov.cn", "12333.gov.cn", "12366.gov.cn", "pbc.gov.cn",
-            "csrc.gov.cn", "nfra.gov.cn", "edu.cn", "si.12333.gov.cn",
-    };
 
     // ---------------------------------------------------------- 分享链接解析
 
@@ -622,6 +616,40 @@ public final class NodeConfigCodec {
 
     // --------------------------------------------------------------- 完整配置
 
+    /** Canonical identity of the complete outbound, excluding its runtime tag. */
+    public static String outboundIdentity(JSONObject outbound) throws Exception {
+        JSONObject copy = new JSONObject(outbound.toString());
+        copy.remove("tag");
+        return sha256hex(canonicalJson(copy).toString());
+    }
+
+    private static Object canonicalJson(Object value) throws Exception {
+        if (value instanceof JSONObject) {
+            JSONObject src = (JSONObject) value;
+            TreeMap<String, Object> sorted = new TreeMap<>();
+            Iterator<String> keys = src.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                sorted.put(key, canonicalJson(src.get(key)));
+            }
+            return new JSONObject(sorted);
+        }
+        if (value instanceof JSONArray) {
+            JSONArray src = (JSONArray) value;
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < src.length(); i++) out.put(canonicalJson(src.get(i)));
+            return out;
+        }
+        return JSONObject.NULL.equals(value) ? JSONObject.NULL : value;
+    }
+
+    private static String sha256hex(String text) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF8));
+        StringBuilder out = new StringBuilder();
+        for (byte b : digest) out.append(String.format("%02x", b & 0xff));
+        return out.toString();
+    }
+
     /**
      * 完整运行配置：TUN 入站 + 全部节点 + 直连 + DNS 出站。
      *
@@ -669,7 +697,7 @@ public final class NodeConfigCodec {
         // DNS：国内域名走阿里 DNS（直连），其余走 Cloudflare DoH（经代理，防污染）。
         // 敏感域（银行/支付/政务）也必须走国内 DNS，否则查询目标会暴露给节点。
         JSONArray cnDomains = new JSONArray().put("geosite:cn");
-        for (String d : SENSITIVE_DOMAINS) cnDomains.put("domain:" + d);
+        for (String d : RoutingPolicy.SENSITIVE) cnDomains.put("domain:" + d);
         JSONArray servers = new JSONArray();
         servers.put(new JSONObject()
                 .put("address", "223.5.5.5")
@@ -705,6 +733,7 @@ public final class NodeConfigCodec {
         // QUIC(udp/443) 与 Private DNS(853/tcp) 一律丢弃：QUIC 会绕过基于域名的
         // 分流，DoT 会让 DNS 查询逃出 VPN 的 dns-out 规则。
         outbounds.put(new JSONObject().put("tag", "block").put("protocol", "blackhole"));
+        outbounds.put(new JSONObject().put("tag", "ai-block").put("protocol", "blackhole"));
         cfg.put("outbounds", outbounds);
         cfg.put("stats", new JSONObject());
         cfg.put("policy", new JSONObject().put("system", new JSONObject()
@@ -722,7 +751,7 @@ public final class NodeConfigCodec {
         rules.put(rule().put("ip", new JSONArray().put("geoip:private"))
                 .put("outboundTag", "direct"));
         JSONArray sensitive = new JSONArray();
-        for (String d : SENSITIVE_DOMAINS) sensitive.put("domain:" + d);
+        for (String d : RoutingPolicy.SENSITIVE) sensitive.put("domain:" + d);
         rules.put(rule().put("domain", sensitive).put("outboundTag", "direct"));
         rules.put(rule().put("port", 80).put("outboundTag", "direct"));
         rules.put(rule().put("domain", new JSONArray().put("geosite:cn"))
@@ -740,6 +769,7 @@ public final class NodeConfigCodec {
             // cg-* 前缀，单独组成 cg-balancer。普通流量用全部节点求最快，
             // AI 域名只用合格池，两者都由 observatory 探活。
             int cgCount = 0;
+            String cgFallback = null;
             for (JSONObject ob : proxies) {
                 String tag = ob.optString("tag", "");
                 if (!tag.startsWith("proxy-")) continue;
@@ -748,6 +778,7 @@ public final class NodeConfigCodec {
                 JSONObject copy = new JSONObject(ob.toString());
                 copy.put("tag", "cg-" + base);
                 outbounds.put(copy);
+                if (cgFallback == null) cgFallback = "cg-" + base;
                 cgCount++;
             }
             JSONArray subjects = new JSONArray().put("proxy-");
@@ -763,7 +794,7 @@ public final class NodeConfigCodec {
                         .put("tag", "cg-balancer")
                         .put("selector", new JSONArray().put("cg-"))
                         .put("strategy", leastLoad(costs, true));
-                if (hasFallback) cgBalancer.put("fallbackTag", fallbackTag);
+                if (cgFallback != null) cgBalancer.put("fallbackTag", cgFallback);
                 balancers.put(cgBalancer);
             }
             // v3.1：observatory+leastPing → burstObservatory+leastLoad。
@@ -779,21 +810,25 @@ public final class NodeConfigCodec {
                             .put("sampling", 3)
                             .put("timeout", "6s")));
             routing.put("balancers", balancers);
+            JSONArray aiDomains = new JSONArray();
+            for (String d : RoutingPolicy.AI_DOMAINS) aiDomains.put("domain:" + d);
             if (cgCount > 0) {
                 rules.put(rule().put("network", "tcp,udp")
-                        .put("domain", new JSONArray()
-                                .put("domain:openai.com")
-                                .put("domain:chatgpt.com")
-                                .put("domain:oaistatic.com")
-                                .put("domain:oaiusercontent.com")
-                                .put("domain:anthropic.com")
-                                .put("domain:claude.ai")
-                                .put("domain:claude.com")
-                                .put("domain:claudeusercontent.com"))
+                        .put("domain", aiDomains)
                         .put("balancerTag", "cg-balancer"));
+            } else {
+                rules.put(rule().put("network", "tcp,udp")
+                        .put("domain", aiDomains)
+                        .put("outboundTag", "ai-block"));
             }
             rules.put(rule().put("network", "tcp,udp").put("balancerTag", "balancer"));
         } else {
+            JSONArray aiDomains = new JSONArray();
+            for (String d : RoutingPolicy.AI_DOMAINS) aiDomains.put("domain:" + d);
+            boolean selectedIsAi = cgTags != null && cgTags.contains(selectedTag);
+            rules.put(rule().put("network", "tcp,udp")
+                    .put("domain", aiDomains)
+                    .put("outboundTag", selectedIsAi ? "proxy-" + selectedTag : "ai-block"));
             rules.put(rule().put("network", "tcp,udp")
                     .put("outboundTag", "proxy-" + selectedTag));
         }
