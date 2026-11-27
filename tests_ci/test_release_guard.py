@@ -442,6 +442,11 @@ class BuildGuardTests(unittest.TestCase):
         self.phone.mkdir()
         for name in ("build_apk.py", "release_guard.py"):
             shutil.copyfile(PHONE / name, self.phone / name)
+        tools = self.root / "tools"
+        tools.mkdir()
+        shutil.copyfile(ROOT / "tools" / "verify_sources.py", tools / "verify_sources.py")
+        for name in ("sources.json", "sources.sig", "source_signing_public.pem"):
+            shutil.copyfile(PHONE / name, self.phone / name)
         (self.phone / "assets").mkdir()
         (self.phone / "assets/nodes.sample.json").write_bytes(b"[]")
         self.jdk = self.root / "fake-jdk"

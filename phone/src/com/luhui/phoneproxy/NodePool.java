@@ -239,7 +239,7 @@ public final class NodePool {
         final Context app = ctx.getApplicationContext();
         prefs(app).edit().putLong(KEY_LAST_REFRESH, System.currentTimeMillis()).apply();
 
-        List<String> fetched = ConfigBuilder.fetchPublicSources(logs);
+        List<String> fetched = ConfigBuilder.fetchPublicSources(app, logs);
         if (fetched.isEmpty()) {
             logs.add("公开源一个都没抓到：GitHub 与各镜像在当前网络都连不上。可以换个网络再试，或粘贴自己的订阅");
             return 0;

@@ -94,6 +94,11 @@ jobs:
       - name: 投毒语料闭环（纯 JVM 解析器 ↔ Xray）
         run: python3 phone/tools/check_poison.py
 
+      - name: 源清单 RSA 签名与版本 schema（OpenSSL / JVM）
+        run: |
+          python3 tools/verify_sources.py
+          python3 phone/tests/run_manifest_poc.py
+
       # 只做 javac 挡不住 aapt2/d8/Manifest 这类打包期错误（specialUse 属性、
       # dataExtractionRules 都只有真正打包时才会被校验）。这里用临时 debug 签名
       # 完整跑一遍 build_apk.py。

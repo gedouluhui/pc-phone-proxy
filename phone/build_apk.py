@@ -24,6 +24,10 @@ from pathlib import Path
 from release_guard import ReleaseCheckError, nodes_in_apk, read_nodes
 
 ROOT = Path(__file__).resolve().parent
+TOOLS = ROOT.parent / "tools"
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+from verify_sources import verify_bytes  # noqa: E402
 
 # Windows consoles may use GBK; tool stderr decoded with errors="replace"
 # contains U+FFFD, which GBK cannot encode. Logging must never kill a build.
@@ -191,6 +195,11 @@ def build(stage, nodes, public, keystore, alias, env, jdk, bt, android_jar, rele
             zout.write(dex, dex.name)
         # Use the validated in-memory snapshot, never re-open a mutable node input.
         zout.writestr("assets/nodes.json", json.dumps(nodes, ensure_ascii=False).encode("utf-8"))
+        for name in ("sources.json", "sources.sig"):
+            source = ROOT / name
+            if not source.is_file():
+                raise BuildError("missing signed source manifest asset: " + name)
+            zout.write(source, "assets/" + name)
         for name in ("geoip.dat", "geosite.dat"):
             zout.write(aar_dir / "assets" / name, "assets/" + name)
         for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
@@ -204,6 +213,17 @@ def build(stage, nodes, public, keystore, alias, env, jdk, bt, android_jar, rele
     run([exe(bt, "apksigner"), "verify", "--print-certs", signed], env, stage)
     nodes_in_apk(signed, require_empty=public)
     return signed
+
+
+def preflight_sources():
+    try:
+        valid = verify_bytes((ROOT / "sources.json").read_bytes(),
+                             (ROOT / "sources.sig").read_bytes(),
+                             (ROOT / "source_signing_public.pem").read_bytes())
+    except OSError:
+        valid = False
+    if not valid:
+        raise BuildError("signed source manifest verification failed")
 
 
 def preflight_nodes():
@@ -238,6 +258,7 @@ def main(argv=None):
 
     committed = False
     try:
+        preflight_sources()
         if not public:
             preflight_nodes()
         keystore, alias, password = signing_config(release)

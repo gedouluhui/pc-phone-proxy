@@ -1,0 +1,13 @@
+{
+  "kind": "source-manifest-poc",
+  "jdk": "jdk-12.0.2",
+  "sources": [
+    "phone/src/com/luhui/phoneproxy/SourceManifest.java",
+    "phone/src/com/luhui/phoneproxy/SubscriptionGuard.java"
+  ],
+  "cases": 9,
+  "passed": 9,
+  "failed": 0,
+  "failures": [],
+  "exit": 0
+}

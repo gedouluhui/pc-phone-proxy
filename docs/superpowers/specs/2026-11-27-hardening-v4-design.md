@@ -184,6 +184,7 @@ Android UI / VpnService
 - 运行时拉取清单与签名，验证 RSA/SHA-256 签名、版本单调与 schema。
 - 第三方镜像只提供可用性，不提供信任；签名失败则回退 APK 内置清单。
 - CI 在改动清单时重新签名并验证；私钥存 GitHub secret，不进仓库。
+- 当前实现对 `sources.json` 的原始字节签名，`sources.sig` 为 256 字节 RSA 签名；APK 同时打包清单、签名和公钥。运行时持久化已接受版本，只接受严格更高的版本，签名/schema/版本失败均回退 APK 内置签名清单。
 
 ### 5.3 AI 路由
 

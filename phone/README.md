@@ -9,9 +9,11 @@
   删掉与 peasoft 内容完全相同的 `chengaopan`；新增 `tony163`（自称湖北移动测速后上传）、
   `Barabama/clashmeta.txt`（约 1800 条，含 166 条 hysteria2）、`free18`。实测时 peasoft 61 条、
   ermaozi 68 条、barry Sub1 47 条 hysteria2，v3.1 加的 Hysteria2 支持在这些源上直接生效。
-- **远程源清单**：`phone/sources.json` 放在仓库里，App 补充节点时先经 jsDelivr / ghfast / raw 取这份清单
-  （≥3 条合法条目才采用；只接受 https 的 GitHub raw / jsDelivr / gist 地址），取不到才用 APK 内置表。
-  以后源失效只要改仓库里的 JSON，不用重新发 APK（jsDelivr 缓存最长约 12 小时）。
+- **签名远程源清单**：`phone/sources.json` 带 `schema/version/generated_at`，与原始 256 字节 RSA/SHA-256
+  签名 `phone/sources.sig` 一起提交；APK 内嵌公钥和同一份内置清单。App 先验证 APK 内置清单，再经
+  jsDelivr / ghfast / raw 拉取远程清单与签名；镜像只提供可用性，签名缺失、篡改、schema 非法或版本不升
+  都不采用，回退内置清单。以后源失效需同时递增 `version` 并用离线私钥重新签名，不用重新发 APK
+  （jsDelivr 缓存最长约 12 小时）。私钥不进仓库，CI 只执行 `tools/verify_sources.py` 验签。
 - **协议均衡取样**：每个源按协议分桶轮流取候选（`interleaveBySchema`），大聚合源前几百条全是 vless 时
   Hysteria2 也能被抽到；Hysteria2 候选每次最多 48 个（不能 TCP 预筛，死节点要等内核超时）。
   内核实测线程 8 → 12。
@@ -132,6 +134,7 @@ AI 打不开」。
 | Android SDK | 需要 build-tools（含 d8/aapt2/zipalign/apksigner）和一个 `android-35` platform；设置 `ANDROID_HOME` / `ANDROID_SDK_ROOT` |
 | AndroidLibXrayLite | 下载 `libv2ray.aar` 放到 `phone/libs/libv2ray.aar` |
 | Python 3.8+ | 仅用于运行构建脚本 |
+| OpenSSL | 只有更新清单并重新签名时需要；构建验签使用 Python 标准库实现的 RSA/SHA-256 |
 
 `libv2ray.aar` 下载地址：<https://github.com/2dust/AndroidLibXrayLite/releases>
 （选与 Xray-core v26.x 对应的版本；本项目验证过 v26.10.31 / Lib v40。）

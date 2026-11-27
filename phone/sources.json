@@ -1,14 +1,19 @@
-[
-  {"name": "peasoft", "url": "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt"},
-  {"name": "ermaozi", "url": "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"},
-  {"name": "tony163", "url": "https://raw.githubusercontent.com/tony163/node_free/main/v2ray.txt"},
-  {"name": "Barabama", "url": "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.txt"},
-  {"name": "free18", "url": "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"},
-  {"name": "aiboboxx-sub", "url": "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub"},
-  {"name": "Pawdroid", "url": "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"},
-  {"name": "ripaojiedian", "url": "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub"},
-  {"name": "freefq", "url": "https://raw.githubusercontent.com/freefq/free/master/v2"},
-  {"name": "barry-far", "url": "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt"},
-  {"name": "mahdibland", "url": "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt"},
-  {"name": "ALIILAPRO", "url": "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt"}
-]
+{
+  "schema": 1,
+  "version": 1,
+  "generated_at": "2026-11-27T00:00:00Z",
+  "sources": [
+    {"name": "peasoft", "url": "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt"},
+    {"name": "ermaozi", "url": "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"},
+    {"name": "tony163", "url": "https://raw.githubusercontent.com/tony163/node_free/main/v2ray.txt"},
+    {"name": "Barabama", "url": "https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.txt"},
+    {"name": "free18", "url": "https://raw.githubusercontent.com/free18/v2ray/main/v.txt"},
+    {"name": "aiboboxx-sub", "url": "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/sub"},
+    {"name": "Pawdroid", "url": "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"},
+    {"name": "ripaojiedian", "url": "https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub"},
+    {"name": "freefq", "url": "https://raw.githubusercontent.com/freefq/free/master/v2"},
+    {"name": "barry-far", "url": "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt"},
+    {"name": "mahdibland", "url": "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt"},
+    {"name": "ALIILAPRO", "url": "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt"}
+  ]
+}

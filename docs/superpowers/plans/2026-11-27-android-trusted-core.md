@@ -23,7 +23,9 @@
 
 - Task 1 is implemented: `ValidatedHttp` performs one validated DNS lookup per hop, pins the socket to that IP, preserves Host/SNI and endpoint-identification, enforces HTTPS in production, limits redirects/bytes, and supports cancellation. Both legacy `HttpURLConnection` fetch paths are removed.
 - JVM verification passes 46 URL/address guard cases and 14 transport cases, including real TLS success for the correct hostname and failure for a wrong hostname. Full Android javac against the fixed Xray AAR passes (22 classes).
-- Tasks 2–5 remain in progress. Real Android Keystore, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
+- Task 2 is implemented: `sources.json` is versioned and signed as exact bytes with RSA/SHA-256; the APK embeds the public key, manifest, and raw signature. Remote mirrors are accepted only after signature/schema validation and a strictly newer version; failures fall back to the signed APK asset and then the compiled snapshot.
+- Repository verification passes 9 Python signature/embedding tests (including 4 tool-free verifier controls) and 9 JVM tamper/replay/schema tests. A real debug APK was built and its embedded manifest/signature bytes were extracted and re-verified successfully.
+- Tasks 3–5 remain in progress. Real Android Keystore, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
 
 ## Tasks
 

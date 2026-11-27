@@ -88,37 +88,95 @@ public final class ConfigBuilder {
             "https://raw.githubusercontent.com/gedouluhui/pc-phone-proxy/main/phone/sources.json",
     };
 
-    /** 远程清单 → 源表；失败返回内置 {@link #PUBLIC_SOURCES}。log 里写明用了哪份。 */
-    static String[][] resolveSources(List<String> log) {
+    private static final String SOURCE_PREFS = "source_manifest";
+    private static final String KEY_SOURCE_VERSION = "accepted_version";
+
+    /** Signed APK manifest first, then signed remote mirrors; never trust a mirror alone. */
+    static String[][] resolveSources(Context ctx, List<String> log) {
+        String[][] fallback = PUBLIC_SOURCES;
+        int builtinVersion = SourceManifest.BUILTIN_VERSION;
+        try {
+            byte[] data = readAsset(ctx, "sources.json");
+            byte[] signature = readAsset(ctx, "sources.sig");
+            SourceManifest.Manifest builtin = SourceManifest.verify(data, signature);
+            fallback = builtin.sources;
+            builtinVersion = builtin.version;
+            log.add("源清单：APK 内置签名清单 v" + builtinVersion + "（" + fallback.length + " 个源）");
+        } catch (Exception ignored) {
+            log.add("源清单：APK 内置签名清单不可用，使用编译期快照");
+        }
+        int last = Math.max(builtinVersion, sourceVersion(ctx));
         for (String u : REMOTE_SOURCES) {
             try {
-                List<String[]> got = new ArrayList<>();
-                JSONArray arr = new JSONArray(fetchText(u, 8000));
-                for (int i = 0; i < arr.length() && got.size() < 40; i++) {
-                    JSONObject o = arr.optJSONObject(i);
-                    if (o == null) continue;
-                    String name = o.optString("name", "").trim();
-                    String url = o.optString("url", "").trim();
-                    if (name.isEmpty() || name.length() > 40 || !allowedSourceUrl(url)) continue;
-                    got.add(new String[]{name, url});
+                byte[] data = ValidatedHttp.fetch(u, 65536, 8000);
+                byte[] signature = ValidatedHttp.fetch(signatureUrl(u), 1024, 8000);
+                SourceManifest.Manifest manifest = SourceManifest.verify(data, signature);
+                if (!SourceManifest.isNewer(manifest.version, last)) continue;
+                if (!sourceVersion(ctx, manifest.version)) {
+                    log.add("源清单：远程签名有效，但版本状态保存失败，本次不采用");
+                    continue;
                 }
-                if (got.size() >= 3) {
-                    log.add("源清单：使用仓库最新版（" + got.size() + " 个源）");
-                    return got.toArray(new String[0][]);
-                }
+                last = manifest.version;
+                log.add("源清单：使用远程签名清单 v" + manifest.version + "（"
+                        + manifest.sources.length + " 个源）");
+                return manifest.sources;
             } catch (Exception ignored) {
+                // A mirror is an availability channel only.  Missing, invalid,
+                // replayed or malformed manifests never replace the built-in list.
             }
         }
-        log.add("源清单：仓库清单拿不到，使用 App 内置的 " + PUBLIC_SOURCES.length + " 个源");
-        return PUBLIC_SOURCES;
+        log.add("源清单：没有更新的有效签名清单，使用 APK 内置 v" + builtinVersion);
+        return fallback;
+    }
+
+    private static int sourceVersion(Context ctx) {
+        try {
+            return Math.max(SourceManifest.BUILTIN_VERSION,
+                    sourcePrefs(ctx).getInt(KEY_SOURCE_VERSION, SourceManifest.BUILTIN_VERSION));
+        } catch (Exception ignored) {
+            return SourceManifest.BUILTIN_VERSION;
+        }
+    }
+
+    private static boolean sourceVersion(Context ctx, int version) {
+        try {
+            SharedPreferences prefs = sourcePrefs(ctx);
+            int previous = Math.max(SourceManifest.BUILTIN_VERSION,
+                    prefs.getInt(KEY_SOURCE_VERSION, SourceManifest.BUILTIN_VERSION));
+            if (!SourceManifest.isNewer(version, previous)) return false;
+            return prefs.edit().putInt(KEY_SOURCE_VERSION, version).commit();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static SharedPreferences sourcePrefs(Context ctx) {
+        return ctx.getApplicationContext().getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static byte[] readAsset(Context ctx, String name) throws Exception {
+        InputStream input = ctx.getApplicationContext().getAssets().open(name);
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) > 0) output.write(buffer, 0, count);
+            return output.toByteArray();
+        } finally {
+            input.close();
+        }
+    }
+
+    static String signatureUrl(String manifestUrl) {
+        if (manifestUrl == null || !manifestUrl.endsWith("sources.json")
+                || manifestUrl.indexOf('?') >= 0 || manifestUrl.indexOf('#') >= 0) {
+            throw new IllegalArgumentException("invalid manifest URL");
+        }
+        return manifestUrl.substring(0, manifestUrl.length() - "sources.json".length()) + "sources.sig";
     }
 
     static boolean allowedSourceUrl(String url) {
-        if (url == null || url.length() > 300 || !url.startsWith("https://")) return false;
-        if (url.matches(".*[\\s\\\\@].*")) return false;
-        return url.startsWith("https://raw.githubusercontent.com/")
-                || url.startsWith("https://cdn.jsdelivr.net/gh/")
-                || url.startsWith("https://gist.githubusercontent.com/");
+        return SourceManifest.allowedSourceUrl(url);
     }
 
     /** raw 地址 → [raw, jsDelivr, ghfast.top]。非 GitHub raw 的地址原样返回。 */
@@ -593,8 +651,8 @@ public final class ConfigBuilder {
      * 按 server:port/协议 去重后最多返回 {@link #CANDIDATE_MAX} 条候选；单源最多 {@link #PER_SOURCE}。
      * 返回的只是候选，是否入池由 {@link NodePool#refreshFromPublic} 的本机实测决定。
      */
-    public static List<String> fetchPublicSources(List<String> log) {
-        final String[][] sources = resolveSources(log);
+    public static List<String> fetchPublicSources(Context ctx, List<String> log) {
+        final String[][] sources = resolveSources(ctx, log);
         final int count = sources.length;
         final List<List<String>> got = new ArrayList<>();
         final String[] notes = new String[count];
