@@ -134,7 +134,8 @@ Android UI / VpnService
 - 流式读取，单源与总响应大小上限。
 - 手工重定向，每跳校验 scheme、host 与解析后的 IP。
 - 拒绝回环、私网、链路本地、CGNAT、多播、保留地址和 IPv4-mapped IPv6。
-- 记录内容哈希与来源，不记录订阅 token。
+- 记录内容哈希与来源，不记录订阅 token；报告 URL 只保留 scheme/host/port。
+- PC 实现默认 16 MiB 上限、最多 3 次重定向，跨重定向累计限流；可选 bootstrap 仅允许 loopback HTTP，HTTPS 通过 CONNECT 固定到已验证 IP。环境代理不参与，DNS 解析本身仍受操作系统解析器时限约束。
 - 公共节点剥离或拒绝 `insecure=1`；用户自有节点需要逐条显式允许。
 
 ### 4.6 提权 broker 与便携模式

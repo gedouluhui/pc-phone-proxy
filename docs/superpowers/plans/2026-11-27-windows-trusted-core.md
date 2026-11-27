@@ -22,11 +22,12 @@
 
 ## Implementation Status (2026-11-27)
 
-- Task 1 (fail-closed switching), Task 2 (stable process identity), Task 3 (authenticated local control API), and Task 4 (transactional configuration changes) are implemented.
+- Task 1 (fail-closed switching), Task 2 (stable process identity), Task 3 (authenticated local control API), Task 4 (transactional configuration changes), and Task 5 (bounded/pinned source downloads) are implemented.
 - The control secret is 32 random bytes encoded as URL-safe base64, protected with user-scoped DPAPI plus application entropy, and stored with a current-user-only ACL. Existing corrupt/foreign ciphertext fails closed and is never overwritten automatically.
 - All four Clash API configuration generators include the secret. Synchronous and asynchronous clients disable ambient proxies, send Bearer authorization, reject non-loopback URLs and redirects, and treat missing secrets or HTTP errors as hard failures.
 - Configuration replacement uses an OS-released cross-process lock, atomic `.new` staging, static validation before shutdown, real service verification before promotion, and automatic restoration/relaunch on launch or verification failure. Pinned exits, the TUN supervisor, and elevated TUN startup all use this transaction; rejected candidates are retained as `.broken` for diagnosis.
-- Verification includes a real sing-box process proving missing and incorrect credentials return HTTP 401. Real TUN traffic, network-switch behaviour, and non-current-user DPAPI/ACL denial still require machine-level acceptance testing.
+- Public source downloads validate every A/AAAA answer, reject private/mixed answers and HTTPS downgrades, connect to the validated IP while preserving Host/SNI, enforce a cumulative byte budget across at most three redirects, and never consult ambient proxies. An optional bootstrap proxy must be loopback HTTP; HTTPS uses CONNECT to the validated target IP. Harvest records SHA-256 and reports only the URL origin, not query tokens.
+- Verification includes a real sing-box process proving missing and incorrect credentials return HTTP 401 and a real read-only fetch of `TheSpeedX/PROXY-List` (50,412 bytes on 2026-11-27). Real TUN traffic, network-switch behaviour, non-current-user DPAPI/ACL denial, and DNS-polluted bootstrap operation still require machine-level acceptance testing.
 
 ---
 

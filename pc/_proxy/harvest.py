@@ -15,12 +15,13 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
+import source_fetch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RAW = os.path.join(HERE, "raw")
 # Empty = direct.  Set BOOT_PROXY=http://127.0.0.1:PORT when GitHub raw needs
-# an existing proxy to reach.
+# an existing loopback HTTP proxy.  The hardened fetcher pins the validated
+# target IP through CONNECT/absolute-form requests; no ambient proxy is used.
 BOOTSTRAP = os.environ.get("BOOT_PROXY", "").strip()
 
 # (slug, proto_hint, url)
@@ -119,17 +120,22 @@ HOSTPORT = re.compile(r"^(?:(\w+)://)?(?:([^:@/\s]+):([^@/\s]+)@)?\[?([0-9a-fA-F
 def fetch(slug: str, url: str, timeout: int = 30):
     t0 = time.time()
     try:
-        proxies = {"http": BOOTSTRAP, "https": BOOTSTRAP} if BOOTSTRAP else None
-        r = requests.get(url, proxies=proxies,
-                         timeout=timeout, headers={"User-Agent": "curl/8.5.0"})
+        body = source_fetch.fetch(url, timeout=timeout, proxy=BOOTSTRAP or None)
         dt = time.time() - t0
-        body = r.content
-        ok = r.status_code == 200 and len(body) > 0
-        return {"slug": slug, "url": url, "status": r.status_code, "bytes": len(body),
-                "secs": round(dt, 2), "ok": ok, "body": body}
-    except Exception as e:
-        return {"slug": slug, "url": url, "status": 0, "bytes": 0,
-                "secs": round(time.time() - t0, 2), "ok": False, "err": str(e)[:160], "body": b""}
+        return {"slug": slug, "url": source_fetch.safe_url(url), "fetch_url": url,
+                "status": 200, "bytes": len(body), "secs": round(dt, 2),
+                "ok": len(body) > 0, "body": body,
+                "sha256": source_fetch.digest(body)}
+    except Exception as exc:
+        status = getattr(exc, "status", None) or 0
+        return {"slug": slug, "url": source_fetch.safe_url(url), "fetch_url": url,
+                "status": status, "bytes": 0, "secs": round(time.time() - t0, 2),
+                "ok": False, "err": str(exc)[:160], "body": b""}
+
+
+def summarize(result):
+    keys = ("slug", "url", "status", "bytes", "secs", "ok", "err", "sha256")
+    return {key: result[key] for key in keys if key in result}
 
 
 def maybe_b64(text: str):
@@ -182,7 +188,7 @@ def main():
     # blobs often miss the first 30 s window through the bootstrap proxy).
     with ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(
-            lambda r: r if r["body"] else fetch(r["slug"], r["url"], 60), results))
+            lambda r: r if r["body"] else fetch(r["slug"], r.get("fetch_url", r["url"]), 60), results))
 
     src_rows = []
     seen = {}
@@ -210,7 +216,7 @@ def main():
         except Exception as e:
             print(f"  [warn] could not read old candidates: {e!r}")
     for r in results:
-        src_rows.append({k: r[k] for k in ("slug", "url", "status", "bytes", "secs", "ok") if k in r})
+        src_rows.append(summarize(r))
         if not r["ok"]:
             print(f"  FAIL {r['slug']:18s} {r.get('err', r['status'])}")
             continue
