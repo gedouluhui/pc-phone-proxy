@@ -8,8 +8,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -577,86 +576,13 @@ public final class ConfigBuilder {
         return out;
     }
 
-    /** 拉取订阅链接（在后台线程调用）。返回其中的分享链接。 */
+    /** 拉取 HTTPS 订阅：单次解析、固定 IP、每跳重验、2 MiB 硬上限。 */
     public static List<String> fetchSubscription(String url) throws Exception {
-        java.net.URI target;
-        try {
-            target = SubscriptionGuard.check(url);
-        } catch (SubscriptionGuard.Rejected rejected) {
-            // Untrusted input decides where the app connects; refuse before DNS.
-            throw new IllegalArgumentException("订阅地址不可用：" + rejected.reason);
-        }
-        HttpURLConnection c = null;
-        for (int hop = 0; hop <= SubscriptionGuard.MAX_REDIRECTS; hop++) {
-            c = (HttpURLConnection) target.toURL().openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(20000);
-            // Redirects are followed by hand so every hop passes the same guard;
-            // otherwise a public URL could bounce the app into 127.0.0.1.
-            c.setInstanceFollowRedirects(false);
-            c.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
-            // SubscriptionGuard 只做字符串检查；域名解析成 127.0.0.1 / 169.254.x 的
-            // rebinding 攻击必须在这里再拦一次（拿的是真实解析结果）。
-            SubscriptionGuard.checkResolved(target.getHost());
-            int code = c.getResponseCode();
-            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-                String location = c.getHeaderField("Location");
-                c.disconnect();
-                if (location == null) throw new IllegalStateException("HTTP " + code + " 无 Location");
-                if (hop == SubscriptionGuard.MAX_REDIRECTS) {
-                    throw new IllegalStateException("重定向次数过多");
-                }
-                java.net.URI next;
-                try {
-                    // Location 可能是相对路径（/v2ray.txt），直接当绝对 URI 校验会误拒。
-                    next = target.resolve(location.trim());
-                    if ("https".equalsIgnoreCase(target.getScheme())
-                            && !"https".equalsIgnoreCase(next.getScheme())) {
-                        throw new IllegalStateException("不允许从 HTTPS 降级到 HTTP 重定向");
-                    }
-                    target = SubscriptionGuard.check(next.toString());
-                } catch (SubscriptionGuard.Rejected rejected) {
-                    throw new IllegalStateException("重定向被拒绝：" + rejected.reason);
-                }
-                continue;
-            }
-            if (code != 200) throw new IllegalStateException("HTTP " + code);
-            break;
-        }
-        if (c == null) throw new IllegalStateException("没有可用的连接");
-        InputStream in = null;
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        boolean truncated = false;
-        try {
-        in = c.getInputStream();
-        byte[] buf = new byte[16384];
-        int n;
-        int total = 0;
-        while ((n = in.read(buf)) > 0) {
-            total += n;
-            // A hostile or broken subscription must not exhaust the phone's RAM
-            // (review C11). v3.0: 超过 2 MB 不再整源作废，而是截断——大聚合列表是按行的
-            // 明文链接，前 2 MB 已经是几千条候选；base64 整段编码的源截断后解不开，下面会报错。
-            if (total > 2 * 1024 * 1024) {
-                truncated = true;
-                break;
-            }
-            bos.write(buf, 0, n);
-        }
-        } finally {
-            if (in != null) try { in.close(); } catch (Exception ignored) {}
-            c.disconnect();
-        }
-        String body = bos.toString("UTF-8").trim();
-        if (truncated) {
-            if (!body.contains("://")) throw new IllegalStateException("订阅超过 2 MB 且是整段 base64，无法截断使用");
-            int nl = body.lastIndexOf('\n');
-            if (nl > 0) body = body.substring(0, nl); // 丢掉被截断的最后一行
-        }
+        byte[] raw = ValidatedHttp.fetch(url, ValidatedHttp.MAX_BYTES, 28000);
+        String body = new String(raw, StandardCharsets.UTF_8).trim();
         if (!body.contains("://")) {
-            String dec = tryB64(body);
-            if (dec != null) body = dec;
+            String decoded = tryB64(body);
+            if (decoded != null) body = decoded;
         }
         return splitUris(body);
     }
@@ -768,30 +694,9 @@ public final class ConfigBuilder {
         return out;
     }
 
-    /** 小文本 GET（源清单用）：过 SubscriptionGuard、不跟随重定向、最多 64 KB。 */
+    /** 小文本 GET（源清单用）：与订阅共用 DNS 固定连接，最多 64 KB。 */
     static String fetchText(String url, int timeoutMs) throws Exception {
-        java.net.URI target = SubscriptionGuard.check(url);
-        SubscriptionGuard.checkResolved(target.getHost());
-        HttpURLConnection c = (HttpURLConnection) target.toURL().openConnection();
-        c.setConnectTimeout(Math.min(timeoutMs, 4000));
-        c.setReadTimeout(timeoutMs);
-        c.setInstanceFollowRedirects(false);
-        c.setRequestProperty("User-Agent", "PhoneProxy");
-        try {
-            if (c.getResponseCode() != 200) throw new IllegalStateException("HTTP " + c.getResponseCode());
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                bos.write(buf, 0, n);
-                if (bos.size() > 65536) throw new IllegalStateException("too large");
-            }
-            in.close();
-            return bos.toString("UTF-8");
-        } finally {
-            c.disconnect();
-        }
+        return new String(ValidatedHttp.fetch(url, 65536, timeoutMs), StandardCharsets.UTF_8);
     }
 
     // --------------------------------------------------------------- 配置

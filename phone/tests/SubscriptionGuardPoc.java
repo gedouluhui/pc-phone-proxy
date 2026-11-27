@@ -29,7 +29,7 @@ public final class SubscriptionGuardPoc {
     static {
         allow("https://example.com/subs/nodes.txt");
         allow("https://raw.githubusercontent.com/owner/repo/main/nodes.txt");
-        allow("http://203.0.113.10/nodes.txt");
+        allow("https://93.184.216.34/nodes.txt");
         allow("https://sub.example.com:8443/api?token=abc");
 
         reject(null, "empty");
@@ -55,8 +55,15 @@ public final class SubscriptionGuardPoc {
         reject("http://172.20.1.1/nodes", "host_private");
         reject("http://192.168.1.1/nodes", "host_private");
         reject("http://100.64.0.1/nodes", "host_private");
+        reject("http://192.0.0.10/nodes", "host_reserved");
+        reject("http://192.0.2.10/nodes", "host_reserved");
+        reject("http://198.18.0.10/nodes", "host_reserved");
+        reject("http://198.51.100.10/nodes", "host_reserved");
+        reject("http://203.0.113.10/nodes", "host_reserved");
+        reject("http://240.0.0.10/nodes", "host_reserved");
         reject("http://[::1]/nodes", "host_local");
         reject("http://[fe80::1]/nodes", "host_private");
+        reject("http://[2001:db8::1]/nodes", "host_reserved");
         reject("http://[::ffff:127.0.0.1]/nodes", "host_private");
         reject("http://user:pass@example.com/nodes", "credentials_in_url");
         reject("http://example.com/nodes#fragment", "fragment_not_allowed");

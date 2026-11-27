@@ -151,7 +151,7 @@ public final class PoisonHarness {
                 + "&security=tls&sni=a.example.com&type=tcp&headerType=http#ok");
         add("vless-tls-httpupgrade", "vless://" + UUID + "@1.2.3.4:443?encryption=none"
                 + "&security=tls&sni=a.example.com&type=httpupgrade&host=h.example.com&path=%2Fu#ok");
-        add("vless-tls-ipv6", "vless://" + UUID + "@[2001:db8::1]:443?encryption=none"
+        add("vless-tls-ipv6", "vless://" + UUID + "@[2606:4700:4700::1]:443?encryption=none"
                 + "&security=tls&sni=a.example.com&type=ws&path=%2F#ok");
         add("vless-vision", "vless://" + UUID + "@1.2.3.4:443?encryption=none"
                 + "&security=tls&sni=a.example.com&flow=xtls-rprx-vision&type=tcp#ok");
@@ -351,7 +351,7 @@ public final class PoisonHarness {
         add("hy2-port-hop", "hysteria2://pass@1.2.3.4:20000-30000?sni=a.example.com#ok");
         add("hy2-port-list", "hysteria2://pass@1.2.3.4:443,20000-30000?sni=a.example.com#ok");
         add("hy2-mport", "hysteria2://pass@1.2.3.4:443?sni=a.example.com&mport=20000-30000#ok");
-        add("hy2-ipv6", "hysteria2://pass@[2001:db8::2]:443?sni=a.example.com#ok");
+        add("hy2-ipv6", "hysteria2://pass@[2606:4700:4700::2]:443?sni=a.example.com#ok");
         add("hy2-no-port", "hysteria2://pass@a.example.com#ok");
         add("hy2-empty-auth", "hysteria2://@1.2.3.4:443?sni=a.example.com#x");
         add("hy2-private", "hysteria2://pass@192.168.1.2:443?sni=a.example.com#x");

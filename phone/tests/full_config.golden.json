@@ -314,7 +314,7 @@
         "settings": {
           "vnext": [
             {
-              "address": "2001:db8::1",
+              "address": "2606:4700:4700::1",
               "port": 443,
               "users": [
                 {
@@ -4129,7 +4129,7 @@
       {
         "protocol": "hysteria",
         "settings": {
-          "address": "2001:db8::2",
+          "address": "2606:4700:4700::2",
           "port": 443,
           "version": 2
         },
@@ -4816,7 +4816,7 @@
         "settings": {
           "vnext": [
             {
-              "address": "2001:db8::1",
+              "address": "2606:4700:4700::1",
               "port": 443,
               "users": [
                 {
@@ -8631,7 +8631,7 @@
       {
         "protocol": "hysteria",
         "settings": {
-          "address": "2001:db8::2",
+          "address": "2606:4700:4700::2",
           "port": 443,
           "version": 2
         },

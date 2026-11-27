@@ -13,8 +13,8 @@
 
     <!-- allowBackup=false: node credentials must not leave the phone through
          adb backup or cloud backup (review C11).
-         usesCleartextTraffic=true: users may paste http:// subscriptions; the
-         UI and README still tell them to prefer https (review C5). -->
+         Subscription imports now require HTTPS and a DNS-pinned validated
+         connection, so the app no longer declares cleartext traffic. -->
     <application
         android:label="手机代理"
         android:icon="@mipmap/ic_launcher"
@@ -22,7 +22,7 @@
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:usesCleartextTraffic="true"
+        android:usesCleartextTraffic="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity

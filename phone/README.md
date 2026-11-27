@@ -269,6 +269,7 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
   延迟里仍能带上吞吐；8 节点约 18MB/天，比 32KB/5 分钟省 75%。
 - **ChatGPT**：通过 `cg=true` 的节点组成 `cg-balancer`，只给 OpenAI/Anthropic 域名使用。
 - **防回环**：VPN 建立时 `addDisallowedApplication(自身包名)`，App 自己的流量不走 TUN。
+- **订阅传输**：只接受 HTTPS；每个 URL 每跳只解析一次并校验全部 A/AAAA，随后固定连接到已验证 IP，同时保留原域名 SNI/Host 和证书主机名校验。拒绝私网/保留地址、HTTPS 降级、超过 3 次重定向或超过 2 MiB 的响应；不使用环境代理或明文 HTTP 回退。
 - **DNS**：国内 `223.5.5.5` 直连解析；国外域名走 Cloudflare DoH（经代理）。
 - **导入**：分享链接逐条解析，失败的单条跳过并写日志；订阅地址下载后按行解析（body 无 `://` 时按 base64 解）。
   解析阶段会拒绝 Xray 26 已移除的传输（`http` / `h2`）以及 REALITY 不支持的组合

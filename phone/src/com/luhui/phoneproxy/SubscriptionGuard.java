@@ -167,6 +167,12 @@ public final class SubscriptionGuard {
         if (first == 192 && second == 168) {
             throw new Rejected("host_private");
         }
+        if ((first == 192 && second == 0)
+                || (first == 198 && (second == 18 || second == 19))
+                || (first == 203 && second == 0 && parts[2] == 113)
+                || (first == 198 && second == 51 && parts[2] == 100)) {
+            throw new Rejected("host_reserved");
+        }
         if (first == 100 && second >= 64 && second <= 127) {
             throw new Rejected("host_private");
         }
@@ -229,6 +235,9 @@ public final class SubscriptionGuard {
         if (lower.startsWith("fe80") || lower.startsWith("fc") || lower.startsWith("fd")) {
             throw new Rejected("host_private");
         }
+        if (lower.startsWith("2001:db8:") || lower.equals("2001:db8")) {
+            throw new Rejected("host_reserved");
+        }
         // ::ffff:127.0.0.1 and similar mapped forms must be judged as IPv4.
         int mapped = lower.lastIndexOf("::ffff:");
         if (mapped >= 0) {
@@ -242,13 +251,26 @@ public final class SubscriptionGuard {
      * 必须在后台线程调用（会做真实 DNS 查询）。
      */
     public static void checkResolved(String host) throws Rejected {
+        resolvePublic(host);
+    }
+
+    /** Single DNS lookup whose complete result is validated before any socket opens. */
+    static java.net.InetAddress[] resolvePublic(String host) throws Rejected {
         if (host == null || host.trim().isEmpty()) {
             throw new Rejected("host_missing");
         }
+        String name = host.trim();
+        if (name.startsWith("[") && name.endsWith("]")) {
+            name = name.substring(1, name.length() - 1);
+        }
+        checkHost(name);
         java.net.InetAddress[] all;
         try {
-            all = java.net.InetAddress.getAllByName(host.trim());
+            all = java.net.InetAddress.getAllByName(name);
         } catch (java.net.UnknownHostException error) {
+            throw new Rejected("host_unresolved");
+        }
+        if (all.length == 0) {
             throw new Rejected("host_unresolved");
         }
         for (java.net.InetAddress address : all) {
@@ -256,9 +278,10 @@ public final class SubscriptionGuard {
                 throw new Rejected("host_resolved_private");
             }
         }
+        return all;
     }
 
-    private static boolean isBlockedAddress(java.net.InetAddress address) {
+    static boolean isBlockedAddress(java.net.InetAddress address) {
         if (address.isAnyLocalAddress() || address.isLoopbackAddress()
                 || address.isLinkLocalAddress() || address.isSiteLocalAddress()
                 || address.isMulticastAddress()) {
@@ -269,11 +292,17 @@ public final class SubscriptionGuard {
             int first = raw[0] & 0xff, second = raw[1] & 0xff;
             if (first == 0) return true;                                  // 0.0.0.0/8
             if (first == 100 && second >= 64 && second <= 127) return true; // 100.64/10 CGNAT
+            if (first == 192 && second == 0) return true;                   // IETF protocol assignments
+            if (first == 198 && (second == 18 || second == 19)) return true; // benchmarking
+            if (first == 203 && second == 0 && raw[2] == 113) return true;    // documentation
+            if (first == 198 && second == 51 && raw[2] == 100) return true;  // documentation
+            if (first >= 224) return true;                                  // multicast/reserved
             return false;
         }
         int firstByte = raw[0] & 0xff;
         if ((firstByte & 0xfe) == 0xfc) return true;   // fc00::/7 ULA
         if (firstByte == 0xff) return true;            // ff00::/8 多播
+        if (raw[0] == 0x20 && raw[1] == 0x01 && raw[2] == 0x0d && raw[3] == 0xb8) return true;
         boolean mapped = true;
         for (int i = 0; i < 10; i++) {
             if (raw[i] != 0) { mapped = false; break; }
@@ -283,7 +312,13 @@ public final class SubscriptionGuard {
             return a == 0 || a == 10 || a == 127
                     || (a == 169 && b == 254)
                     || (a == 192 && b == 168)
-                    || (a == 172 && b >= 16 && b <= 31);
+                    || (a == 172 && b >= 16 && b <= 31)
+                    || (a == 100 && b >= 64 && b <= 127)
+                    || (a == 192 && b == 0)
+                    || (a == 198 && (b == 18 || b == 19))
+                    || (a == 203 && b == 0 && (raw[14] & 0xff) == 113)
+                    || (a == 198 && b == 51 && (raw[14] & 0xff) == 100)
+                    || a >= 224;
         }
         return false;
     }

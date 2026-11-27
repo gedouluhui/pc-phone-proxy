@@ -172,7 +172,8 @@ Android UI / VpnService
 - 对每个 URL 只解析一次，校验全部 A/AAAA。
 - 使用受控 `SSLSocketFactory` 连接到已验证 IP，SNI 与主机名验证仍使用原域名。
 - 每跳重定向重新执行解析、校验与连接。
-- 不允许 HTTPS 降级到 HTTP；HTTP 订阅默认拒绝，只有用户显式开启“允许不安全 HTTP”才可用。
+- 不允许 HTTPS 降级到 HTTP；当前实现直接拒绝 HTTP 订阅，尚未提供“允许不安全 HTTP”开关。
+- `ValidatedHttp` 使用普通 `Socket`/`SSLSocket` 手写 HTTP，避免 `HttpURLConnection` 二次解析；HTTPS 开启 `HTTPS` endpoint identification，并保留原域名 SNI/Host。生产路径没有环境代理、明文 HTTP 或不安全回退。
 - 测试用本地 DNS 服务器交替返回公网/私网地址，验证不会连接私网。
 
 ### 5.2 源清单签名
