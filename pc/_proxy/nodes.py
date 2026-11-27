@@ -18,6 +18,9 @@ import sys
 import time
 import urllib.parse as up
 
+import control_api
+import control_secret
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "bin", "sing-box.exe")
 CFG = os.path.join(HERE, "singbox.json")
@@ -351,7 +354,9 @@ def write_config(nodes):
         "outbounds": ([{"type": "selector", "tag": "auto", "outbounds": tags + ["direct"],
                         "default": tags[0] if tags else "direct"}]
                       + [n["outbound"] for n in nodes] + [{"type": "direct", "tag": "direct"}]),
-        "experimental": {"clash_api": {"external_controller": "127.0.0.1:19090"}},
+        "experimental": {"clash_api": {
+            "external_controller": "127.0.0.1:19090",
+            "secret": control_secret.get_or_create()}},
     }
     with open(CFG, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
@@ -514,6 +519,7 @@ async def tcp_prefilter(nodes, timeout=2.5, conc=400):
         if via:
             try:
                 via.kill()
+                via.wait(timeout=6)
             except Exception:
                 pass
 
@@ -596,7 +602,7 @@ async def delay_all(tags, timeout_ms=4000, conc=120):
             except Exception:
                 out[tag] = None
 
-    async with aiohttp.ClientSession() as sess:
+    async with aiohttp.ClientSession(headers=control_api.headers(), trust_env=False) as sess:
         await asyncio.gather(*(one(sess, t) for t in tags))
     return out
 
@@ -624,7 +630,7 @@ def delay_batched(tags, timeout_ms=3000, conc=100, batch=250):
 
 async def set_selector(tag):
     import aiohttp
-    async with aiohttp.ClientSession() as sess:
+    async with aiohttp.ClientSession(headers=control_api.headers(), trust_env=False) as sess:
         async with sess.put(f"{API}/proxies/auto", json={"name": tag}) as r:
             return r.status
 
@@ -662,7 +668,7 @@ def main():
         for _ in range(60):
             try:
                 async def ping():
-                    async with aiohttp.ClientSession() as s:
+                    async with aiohttp.ClientSession(headers=control_api.headers(), trust_env=False) as s:
                         async with s.get(f"{API}/version", timeout=aiohttp.ClientTimeout(total=2)) as r:
                             return await r.text()
                 print("sing-box:", asyncio.run(ping()), flush=True)

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 
+import control_secret
 import process_identity as I
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -373,7 +374,9 @@ def build_config():
 
     cfg = {
         "log": {"level": "warn", "timestamp": True},
-        "experimental": {"clash_api": {"external_controller": "127.0.0.1:19091"}},
+        "experimental": {"clash_api": {
+            "external_controller": "127.0.0.1:19091",
+            "secret": control_secret.get_or_create()}},
         # 本机 DNS 对 Google 域名是被污染的：gemini.google.com 会解析成
         # Facebook 的 31.13.x / 2a03:2880::，浏览器拿着假 IP 连过去，TLS 必然
         # 被重置，表现就是“打不开”。TUN 自己用 DoH 取真实地址（DoH 走代理，

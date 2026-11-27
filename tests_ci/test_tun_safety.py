@@ -15,11 +15,25 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROXY = os.path.join(ROOT, "pc", "_proxy")
 if PROXY not in sys.path:
     sys.path.insert(0, PROXY)
+
+
+class PrefilterCleanup(unittest.TestCase):
+    def test_direct_socks_process_is_reaped_before_return(self):
+        import asyncio
+        import nodes
+        process = mock.Mock()
+        with mock.patch.object(nodes.os.path, "isfile", return_value=True), \
+             mock.patch.object(nodes, "_start_direct_socks", return_value=process), \
+             mock.patch.object(nodes, "_tcp_prefilter", new=mock.AsyncMock(return_value=[])):
+            self.assertEqual(asyncio.run(nodes.tcp_prefilter([])), [])
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=6)
 
 
 class Canary(unittest.TestCase):

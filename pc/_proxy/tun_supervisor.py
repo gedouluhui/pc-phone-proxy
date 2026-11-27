@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 
+import control_api
 import process_identity as I
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -142,14 +143,12 @@ GOOGLE_MIN = 3                # 能上 Gemini 的出口少于这个数就重扫
 def api_delay(tag, url, timeout_ms=5000):
     """经 TUN 自己的 clash API 让某个出口实测一次 url；>0 = 毫秒，0 = 不通。"""
     import urllib.parse
-    import urllib.request
     q = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
     req = "%s/proxies/%s/delay?%s" % (API, urllib.parse.quote(tag), q)
     try:
-        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with op.open(req, timeout=timeout_ms / 1000.0 + 3) as r:
-            d = json.loads(r.read().decode("utf-8", "replace") or "{}").get("delay")
-            return int(d) if isinstance(d, int) and d > 0 else 0
+        result = control_api.json_request("GET", req, timeout=timeout_ms / 1000.0 + 3)
+        d = result.get("delay")
+        return int(d) if isinstance(d, int) and d > 0 else 0
     except Exception:
         return 0
 

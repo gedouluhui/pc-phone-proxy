@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.request
 
+import control_api
 import process_identity as I
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,9 +42,6 @@ PINNED = os.path.join(HERE, "pinned.json")
 WATCH_PID = os.path.join(HERE, "watchdog.pid")
 WATCH_STOP = os.path.join(HERE, "STOP_WATCHDOG")
 LOCK = os.path.join(HERE, "start.lock")
-
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
 
 def log(*a):
     print(*a, flush=True)
@@ -65,8 +63,7 @@ def run(script, *args):
 
 
 def http_json(url, timeout=2.5):
-    with _OPENER.open(url, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+    return control_api.json_request("GET", url, timeout=timeout)
 
 
 def clash_ok():

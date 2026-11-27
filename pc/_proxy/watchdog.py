@@ -17,6 +17,7 @@ What it does (all state goes to watchdog_status.json + logs/watchdog.log):
 
 Everything is PID-targeted and image-checked; this never kills by name.
 """
+import atexit
 import datetime
 import io
 import tempfile
@@ -27,7 +28,6 @@ import subprocess
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -40,9 +40,11 @@ try:
     os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
     _CRASH = open(os.path.join(HERE, "logs", "watchdog_crash.log"), "a")
     faulthandler.enable(file=_CRASH)
+    atexit.register(_CRASH.close)
 except Exception:
     _CRASH = None
 
+import control_api        # noqa: E402
 import pacroute           # noqa: E402
 import proxyctl as P      # noqa: E402
 import sysstate           # noqa: E402
@@ -71,9 +73,6 @@ PY = os.path.join(os.path.dirname(sys.executable), "python.exe")
 if not os.path.isfile(PY):
     PY = sys.executable
 
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
 def log(msg):
     line = time.strftime("[%m-%d %H:%M:%S] ") + msg
     try:
@@ -96,8 +95,7 @@ def up(port):
 
 
 def http_json(url, timeout=3.0):
-    with _OPENER.open(url, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+    return control_api.json_request("GET", url, timeout=timeout)
 
 
 def clash_now(group):

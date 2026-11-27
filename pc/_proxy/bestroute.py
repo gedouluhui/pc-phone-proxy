@@ -20,6 +20,7 @@ import socket
 import subprocess
 import time
 
+import control_secret
 import diagnostics as D
 import process_identity as I
 import nodes as N
@@ -266,7 +267,8 @@ def build_config(gen, fast):
         "experimental": {
             # read-only local API: lets 启动/看门狗 read which member urltest is
             # using right now, plus its live delay history.
-            "clash_api": {"external_controller": "127.0.0.1:19090"}
+            "clash_api": {"external_controller": "127.0.0.1:19090",
+                         "secret": control_secret.get_or_create()}
         },
         "inbounds": [
             {"type": "http", "tag": "in-h-g", "listen": "127.0.0.1", "listen_port": GENERAL_HTTP},

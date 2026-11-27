@@ -20,6 +20,13 @@
 - Public nodes cannot disable TLS verification.
 - No force push and no secret-bearing files in git.
 
+## Implementation Status (2026-11-27)
+
+- Task 1 (fail-closed switching), Task 2 (stable process identity), and Task 3 (authenticated local control API) are implemented.
+- The control secret is 32 random bytes encoded as URL-safe base64, protected with user-scoped DPAPI plus application entropy, and stored with a current-user-only ACL. Existing corrupt/foreign ciphertext fails closed and is never overwritten automatically.
+- All four Clash API configuration generators include the secret. Synchronous and asynchronous clients disable ambient proxies, send Bearer authorization, reject non-loopback URLs and redirects, and treat missing secrets or HTTP errors as hard failures.
+- Verification includes a real sing-box process proving missing and incorrect credentials return HTTP 401. Real TUN traffic, network-switch behaviour, and non-current-user DPAPI/ACL denial still require machine-level acceptance testing.
+
 ---
 
 ## File Structure

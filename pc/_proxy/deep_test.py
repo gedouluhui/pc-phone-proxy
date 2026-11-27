@@ -20,6 +20,8 @@ import ssl
 import subprocess
 import time
 
+import control_api
+import control_secret
 import process_identity as I
 import bench
 import nodes as N
@@ -78,7 +80,9 @@ def build_cfg(subset, socks, http, api):
         "outbounds": ([{"type": "selector", "tag": "auto", "outbounds": tags + ["direct"],
                         "default": tags[0]}] + [n["outbound"] for n in subset]
                       + [{"type": "direct", "tag": "direct"}]),
-        "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api}"}},
+        "experimental": {"clash_api": {
+            "external_controller": f"127.0.0.1:{api}",
+            "secret": control_secret.get_or_create()}},
         # 自己绕开 TUN（见 nodes.bypass_route），否则 TUN 下测到的是「节点套节点」
         "route": N.bypass_route(),
     }
@@ -130,7 +134,7 @@ async def wait_api(api, proc, secs=45):
         if proc.poll() is not None:
             return False
         try:
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(headers=control_api.headers(), trust_env=False) as s:
                 async with s.get(f"http://127.0.0.1:{api}/version",
                                  timeout=aiohttp.ClientTimeout(total=2)) as r:
                     if r.status == 200:
@@ -277,7 +281,7 @@ async def deep_probe(rec, timeout=10.0):
 # ------------------------------------------------------------------ worker
 async def set_selector(api, tag):
     import aiohttp
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(headers=control_api.headers(), trust_env=False) as s:
         async with s.put(f"http://127.0.0.1:{api}/proxies/auto",
                          json={"name": tag}, timeout=aiohttp.ClientTimeout(total=6)) as r:
             return r.status

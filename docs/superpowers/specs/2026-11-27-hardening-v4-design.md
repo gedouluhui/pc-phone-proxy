@@ -103,6 +103,7 @@ Android UI / VpnService
 - 使用 Windows DPAPI 加密保存到 `%LOCALAPPDATA%\\PhoneProxy\\control-secret.bin`，并设置仅当前用户可访问的 ACL。
 - sing-box Clash API 配置写入 `secret`；所有 Python 客户端统一通过 `control_api.py` 添加 `Authorization: Bearer`。
 - 无 secret、鉴权失败或返回非预期状态时，视为控制面不可用，不得继续切换或重建。
+- 实现使用 32 字节随机 secret、用户级 DPAPI 加应用熵、仅当前用户的 ACL；密文损坏或无法解密时拒绝启动且不自动覆盖。控制客户端只允许 loopback HTTP，禁用环境代理与重定向，防止令牌被转发到其他地址。
 
 ### 4.3 配置事务
 

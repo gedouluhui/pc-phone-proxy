@@ -395,6 +395,7 @@ class DirectSocksPrefilter(unittest.TestCase):
             N.BIN = old_bin
             if p:
                 p.kill()
+                p.wait(timeout=6)
             srv.close()
         self.assertTrue(ok_open)
         self.assertFalse(ok_closed)
