@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 
+import config_transaction
 import control_secret
 import process_identity as I
 
@@ -630,96 +631,158 @@ def adapter_present():
 
 
 def start_admin():
-    # 2026-11-23：先生成并校验新配置，校验通过才动正在跑的隧道。
-    # 以前是先停旧隧道（[0/6]、[2/5]）再生成配置，新配置一旦过不了 sing-box check，
-    # 用户就从「能上网」直接变成「断网」。现在校验失败时旧隧道原样保留。
+    """Start TUN through a staged, verified transaction.
+
+    Static validation happens before any network change.  The old TUN and the
+    split-mode stack are stopped only after that check.  A candidate that exits
+    early or never creates the adapter is rolled back; supervisor and guard are
+    started only after the adapter is proven present.
+    """
+    old_tun = alive(read_pid())
+    split_active = False
     try:
-        pre = build_config()
+        status = pacroute.status()
+        split_active = bool(status.get("pac_url") or
+                            (status.get("proxy_enable") and status.get("proxy_server")))
+    except Exception:
+        pass
+    try:
+        cfg = build_config()
         pre_path = CFG + ".precheck"
-        with io.open(pre_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(pre, f, ensure_ascii=False, indent=1)
-        rc0, out0 = check_config(pre_path)
         try:
-            os.remove(pre_path)
-        except OSError:
-            pass
+            with io.open(pre_path, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(cfg, stream, ensure_ascii=False, indent=1)
+            rc0, out0 = check_config(pre_path)
+        finally:
+            try:
+                os.remove(pre_path)
+            except OSError:
+                pass
         if rc0 != 0:
             log("新配置没通过 sing-box check，保留当前隧道不动: " + out0[:300])
             return 1, "新配置没通过 sing-box check（当前网络未改动）: " + out0[:300]
-    except SystemExit as e:
-        return 1, "生成配置失败（当前网络未改动）: %s" % e
-    except Exception as e:
-        log("预检新配置时出错（继续按原流程）: %r" % (e,))
+    except SystemExit as exc:
+        return 1, "生成配置失败（当前网络未改动）: %s" % exc
+    except Exception as exc:
+        return 1, "预检新配置失败（当前网络未改动）: %r" % exc
 
-    if alive(read_pid()):
-        # 启动按钮的语义是"按当前配置生效"，不是"已经在跑就算了"：旧隧道可能
-        # 还挂在死节点上（AI 出口就是这样失效的），所以先拆再建。
-        log("[0/6] 检测到已有 TUN 在运行 (pid=%d)，按新配置重建 …" % read_pid())
-        try:
-            stop_stack()
-        except Exception as e:
-            log("停止旧 TUN 失败: %r" % (e,))
     wintun = os.path.join(HERE, "bin", "wintun.dll")
     if not os.path.isfile(wintun):
         return 1, "缺少 bin\\wintun.dll（TUN 必需）。断开重扫后重新下载，或改用分流模式。"
 
-    log("[1/6] wintun 驱动就绪，准备接管流量")
+    state = {"process": None}
 
-    # 分流模式的栈必须先让路：端口、PAC、静态代理都归零
-    log("[2/5] 停止分流模式的栈（端口 / PAC / 静态代理）…")
-    try:
-        import stop_proxy
-        stop_proxy.main()
-    except SystemExit:
-        pass
-    except Exception as e:
-        log("停止分流模式时出错（继续尝试 TUN）: %r" % (e,))
-
-    # AI 出口现在直接内建在 TUN 配置里（pinned 节点 + urltest），不再启动 2098。
-    log("[3/5] 生成 TUN 配置并做 sing-box check …")
-    cfg = build_config()
-    with io.open(CFG, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=1)
-    rc, out = check_config(CFG)
-    if rc != 0:
-        return 1, "sing-box check 失败: " + out[:500]
-
-    log("[4/5] 启动 sing-box，创建 %s 虚拟网卡 …" % IFACE)
-    os.makedirs(os.path.dirname(LOG), exist_ok=True)
-    # sing-box 自己的 ERROR 流单独写文件：混进 tun.log 会淹没进度输出。
-    logf = io.open(SB_LOG, "ab")
-    try:
-        # 注意：不要加 CREATE_BREAKAWAY_FROM_JOB。这份作业不允许 breakaway，
-        # 加上后 Popen 直接抛 OSError，隧道根本建不起来（12:30 那次实测）。
-        # DETACHED_PROCESS 必不可少：CREATE_NO_WINDOW 仍挂在这个控制台上，
-        # 一旦启动它的窗口关闭（用户点了叉、或父进程是脚本），sing-box 会被
-        # 一起收走，网卡随之消失 —— 表现为"刚配好就断网"。
-        p = subprocess.Popen([P.SING_EXE, "run", "-c", CFG], cwd=HERE,
-                             stdout=logf, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL,
-                             creationflags=(0x00000008 | 0x00000200))
-    finally:
-        logf.close()
-    time.sleep(2.0)
-    if p.poll() is not None:
-        return 1, "sing-box 启动后立即退出 (%s)，见 logs/tun.log" % p.returncode
-    with io.open(PID, "w", encoding="utf-8") as f:
-        f.write(str(p.pid))
-    I.record(p.pid, CFG, IDENTITY)
-    with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as f:
-        f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-
-    start_supervisor()
-    register_guard_task()
-
-    log("[5/5] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
-    t0 = time.time()
-    while time.time() - t0 < 15 and p.poll() is None and not adapter_present():
-        time.sleep(0.5)
-    if p.poll() is not None:
+    def stop_current():
+        candidate = state.get("process")
+        if candidate is not None:
+            # The transaction owns this exact Popen object.  Its identity record
+            # still names the staged path, so do not route cleanup through the
+            # final-config matcher or stop the already-cleared split stack again.
+            if candidate.poll() is None:
+                candidate.terminate()
+                candidate.wait(timeout=6)
+            for path in (PID, IDENTITY):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            state["process"] = None
+            return
+        log("[0/6] 停止旧 TUN / 分流栈，准备提交候选配置 …")
         stop_stack()
-        return 1, "Wintun 适配器创建失败，sing-box 退出 (%s)" % p.returncode
-    return 0, "TUN 已接管全部流量 (pid=%d, %s)" % (p.pid, IFACE)
+        log("[2/5] 停止分流模式的栈（端口 / PAC / 静态代理）…")
+        try:
+            import stop_proxy
+            result = stop_proxy.main()
+            if isinstance(result, int) and result != 0:
+                raise RuntimeError("stop_proxy returned %d" % result)
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                raise RuntimeError("stop_proxy exited %s" % exc.code)
+
+    def launch(path):
+        log("[4/5] 启动候选 sing-box，创建 %s 虚拟网卡 …" % IFACE)
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        logf = io.open(SB_LOG, "ab")
+        try:
+            # DETACHED_PROCESS is required; CREATE_NO_WINDOW still ties the child
+            # to this console.  Do not add CREATE_BREAKAWAY_FROM_JOB.
+            process = subprocess.Popen([P.SING_EXE, "run", "-c", path], cwd=HERE,
+                                       stdout=logf, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL,
+                                       creationflags=(0x00000008 | 0x00000200))
+        finally:
+            logf.close()
+        # Record ownership immediately, including a process that exits during
+        # the startup grace period, so rollback never repeats global cleanup.
+        state["process"] = process
+        time.sleep(2.0)
+        if process.poll() is not None:
+            return None, process.returncode
+        with io.open(PID, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(str(process.pid))
+        I.record(process.pid, path, IDENTITY)
+        return process, None
+
+    def verify(path):
+        process = state.get("process")
+        if process is None:
+            return False
+        log("[5/5] 等待 %s 网卡接管流量（最长 15 秒）…" % IFACE)
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if process.poll() is not None:
+                return False
+            if adapter_present():
+                return True
+            time.sleep(0.5)
+        return False
+
+    tx = config_transaction.ConfigTransaction(
+        CFG, check_config, launch, verify, stop_current, log)
+    try:
+        committed = tx.apply(cfg)
+    except config_transaction.TransactionError as exc:
+        return 1, "另一个 TUN 配置写入者正在运行，当前网络未改动: %s" % exc
+
+    if committed:
+        with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        start_supervisor()
+        register_guard_task()
+        return 0, "TUN 已接管全部流量 (pid=%d, %s)" % (state["process"].pid, IFACE)
+
+    if old_tun:
+        if alive(read_pid()):
+            with io.open(ACTIVE, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            start_supervisor()
+            register_guard_task()
+            return 1, "候选 TUN 验收失败，已恢复上一份隧道配置"
+        return 1, "候选 TUN 验收失败，旧隧道回滚也未成功"
+
+    if split_active:
+        # A stale config may have been rolled back even though split mode was
+        # the active service.  Stop that unmanaged TUN and rebuild split mode.
+        try:
+            stop_stack()
+        except Exception as exc:
+            log("清理回滚 TUN 失败: %r" % (exc,))
+        try:
+            result = subprocess.run([sys.executable, os.path.join(HERE, "start_proxy.py")],
+                                    cwd=HERE, timeout=600, creationflags=CREATE_NO_WINDOW)
+            if result.returncode == 0:
+                return 1, "候选 TUN 验收失败，已恢复分流模式"
+            log("分流模式恢复失败 rc=%d" % result.returncode)
+        except Exception as exc:
+            log("分流模式恢复失败: %r" % (exc,))
+    else:
+        try:
+            if alive(read_pid()):
+                stop_stack()
+        except Exception as exc:
+            log("清理未提交 TUN 失败: %r" % (exc,))
+    return 1, "候选 TUN 启动或验收失败，未提交新配置"
 
 
 SUP_PID = os.path.join(HERE, "tun_supervisor.pid")

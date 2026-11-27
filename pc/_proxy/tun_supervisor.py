@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 
+import config_transaction
 import control_api
 import process_identity as I
 
@@ -561,106 +562,64 @@ def _write_pid(pid):
 
 
 def restart(verify=None):
-    # 2026-11-23：先生成 + 校验新配置，再停旧进程。新配置过不了 sing-box check 时
-    # 改用上一份能用的配置（singbox_tun.json），而不是直接放弃——以前 DNS 换出口时
-    # 会先停掉活着的隧道，新配置一坏就整机断网。
+    """Rebuild through one checked/verified transaction.
+
+    A bad candidate never replaces the on-disk configuration.  If generation or
+    precheck fails, the last configuration is used instead.  Once the old
+    process is stopped, launch or real connectivity failure restores and
+    relaunches that previous configuration before reporting failure.
+    """
     verify = VERIFY_SWITCH if verify is None else verify
-    new_path = tun_mode.CFG + ".new"
-    prev_path = tun_mode.CFG + ".prev"
-    use = None
+    content = None
     try:
-        cfg = tun_mode.build_config()
-        with io.open(new_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(cfg if isinstance(cfg, str) else json.dumps(cfg, ensure_ascii=False, indent=1))
-        rc, out = tun_mode.check_config(new_path)
+        candidate = tun_mode.build_config()
+        precheck = tun_mode.CFG + ".precheck"
+        with io.open(precheck, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(candidate if isinstance(candidate, str)
+                         else json.dumps(candidate, ensure_ascii=False, indent=1))
+        rc, out = tun_mode.check_config(precheck)
+        try:
+            os.remove(precheck)
+        except OSError:
+            pass
         if rc == 0:
-            use = new_path
+            content = candidate
         else:
             log("新配置校验失败，改用上一份配置: " + out[:300])
-    except BaseException as e:  # build_config 用 SystemExit 报错
-        log("生成新配置失败，改用上一份配置: %r" % (e,))
-    if use is None:
-        if os.path.isfile(tun_mode.CFG) and tun_mode.check_config(tun_mode.CFG)[0] == 0:
-            use = tun_mode.CFG
-        else:
-            log("新旧配置都不可用，放弃本轮重建")
+    except BaseException as exc:  # build_config intentionally raises SystemExit
+        log("生成新配置失败，改用上一份配置: %r" % (exc,))
+    if content is None:
+        try:
+            with io.open(tun_mode.CFG, encoding="utf-8") as stream:
+                previous = stream.read()
+            if tun_mode.check_config(tun_mode.CFG)[0] != 0:
+                raise ValueError("previous configuration failed check")
+            content = previous
+        except BaseException as exc:
+            log("新旧配置都不可用，放弃本轮重建: %r" % (exc,))
             return False
-    # 切新配置前把正在用的那份留作回滚点（只在旧配置本身能过 check 时）
-    have_prev = False
-    if use == new_path and os.path.isfile(tun_mode.CFG):
-        try:
-            if tun_mode.check_config(tun_mode.CFG)[0] == 0:
-                import shutil
-                shutil.copyfile(tun_mode.CFG, prev_path)
-                have_prev = True
-        except Exception:
-            have_prev = False
-    stop_current()
-    # 2026-11-23：先用 .new 启动，进程活下来才改名成 singbox_tun.json。以前先改名再启动，
-    # 新进程立刻退出时磁盘上的配置已经是新的，running_has_direct_rule() 就会误以为
-    # 「正在跑的隧道已有直连规则」，在旧隧道下开始重扫（17:09 事故的一环）。
-    p, rc = _launch(use)
-    if p is None:
-        # 计划任务与常驻守护可能同时重建（2026-11-23 17:09 实测）：对方先起来、占住网卡和
-        # 控制端口，我们这份就会立刻退出。此时隧道其实是好的，不算失败。
-        other = read_pid(tun_mode.PID)
-        if other and alive(other):
-            log("另一个守护已完成重建（pid=%d），本次不再重复" % other)
-            return True
-        log("重建后立即退出 (%s)，见 tun_singbox.log" % rc)
-        if use == new_path:
-            try:
-                os.remove(new_path)
-            except OSError:
-                pass
-            if have_prev:
-                p2, _ = _launch(tun_mode.CFG)
-                if p2 is not None:
-                    _write_pid(p2.pid)
-                    log("新配置起不来，已用原配置恢复隧道 pid=%d" % p2.pid)
-                    return False
+
+    def launch(path):
+        process, rc = _launch(path)
+        if process is not None:
+            _write_pid(process.pid)
+        return process, rc
+
+    def check(path):
+        return tun_mode.check_config(path)
+
+    def verify_candidate(path):
+        return post_switch_check() if verify else "ok"
+
+    tx = config_transaction.ConfigTransaction(
+        tun_mode.CFG, check, launch, verify_candidate, stop_current, log)
+    try:
+        if not tx.apply(content):
+            return False
+    except config_transaction.TransactionError as exc:
+        log("另一配置写入者正在运行，本次不重建: %s" % (exc,))
         return False
-    _write_pid(p.pid)
-    if use == new_path and have_prev and verify:
-        verdict, ext, dom = post_switch_check()
-        if verdict in ("broken", "unknown"):
-            log("重建后外网不可用（境外 %s 国内 %s），回滚到上一份配置" % (ext, dom))
-            try:
-                p.kill()
-                p.wait(5)
-            except Exception:
-                pass
-            time.sleep(1.0)
-            p2, rc2 = _launch(tun_mode.CFG)
-            if p2 is not None:
-                _write_pid(p2.pid)
-                try:
-                    import shutil
-                    shutil.copyfile(new_path, tun_mode.CFG + ".broken")
-                    os.remove(new_path)
-                except OSError:
-                    pass
-                log("已回滚隧道 pid=%d（坏配置存为 singbox_tun.json.broken）" % p2.pid)
-                return False
-            log("回滚配置也起不来 (%s)，改回新配置继续跑" % rc2)
-            p, rc = _launch(new_path)
-            if p is None:
-                log("新配置也起不来 (%s)，等下一轮" % rc)
-                return False
-            _write_pid(p.pid)
-        elif verdict == "unknown":
-            log("重建后境外、国内均不可用，已按 fail-closed 策略处理")
-    if use == new_path:
-        try:
-            os.replace(new_path, tun_mode.CFG)
-        except OSError:
-            # 运行中的 sing-box 不锁配置文件，正常不会到这里；万一失败就复制一份
-            try:
-                import shutil
-                shutil.copyfile(new_path, tun_mode.CFG)
-            except OSError:
-                pass
-    log("已重建隧道 pid=%d" % p.pid)
+    log("已重建隧道 pid=%s" % read_pid(tun_mode.PID))
     return True
 
 

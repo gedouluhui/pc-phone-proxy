@@ -22,9 +22,10 @@
 
 ## Implementation Status (2026-11-27)
 
-- Task 1 (fail-closed switching), Task 2 (stable process identity), and Task 3 (authenticated local control API) are implemented.
+- Task 1 (fail-closed switching), Task 2 (stable process identity), Task 3 (authenticated local control API), and Task 4 (transactional configuration changes) are implemented.
 - The control secret is 32 random bytes encoded as URL-safe base64, protected with user-scoped DPAPI plus application entropy, and stored with a current-user-only ACL. Existing corrupt/foreign ciphertext fails closed and is never overwritten automatically.
 - All four Clash API configuration generators include the secret. Synchronous and asynchronous clients disable ambient proxies, send Bearer authorization, reject non-loopback URLs and redirects, and treat missing secrets or HTTP errors as hard failures.
+- Configuration replacement uses an OS-released cross-process lock, atomic `.new` staging, static validation before shutdown, real service verification before promotion, and automatic restoration/relaunch on launch or verification failure. Pinned exits, the TUN supervisor, and elevated TUN startup all use this transaction; rejected candidates are retained as `.broken` for diagnosis.
 - Verification includes a real sing-box process proving missing and incorrect credentials return HTTP 401. Real TUN traffic, network-switch behaviour, and non-current-user DPAPI/ACL denial still require machine-level acceptance testing.
 
 ---

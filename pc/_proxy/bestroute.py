@@ -20,6 +20,7 @@ import socket
 import subprocess
 import time
 
+import config_transaction
 import control_secret
 import diagnostics as D
 import process_identity as I
@@ -338,39 +339,111 @@ def build_config(gen, fast):
     return cfg, gtags, ftags, used
 
 
-def start(cfg):
-    with open(CFG, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(cfg, f)
-    r = subprocess.run([P.SING_EXE, "check", "-c", CFG], capture_output=True, text=True,
-                       creationflags=0x08000000)
-    if r.returncode != 0:
-        log("config check failed: " + ((r.stderr or r.stdout or "").strip()[-400:]))
+def check_config(path):
+    result = subprocess.run([P.SING_EXE, "check", "-c", path], capture_output=True,
+                            text=True, creationflags=0x08000000)
+    return result.returncode, (result.stderr or result.stdout or "").strip()
+
+
+def _stop_process(process):
+    if process is None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=6)
+    except Exception:
+        pass
+
+
+def start(path):
+    rc, output = check_config(path)
+    if rc != 0:
+        log("config check failed: " + output[-400:])
         return None
+    os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
     logp = os.path.join(HERE, "logs", "singbox_pinned.log")
     with open(logp, "ab") as logf:
-        p = subprocess.Popen([P.SING_EXE, "run", "-c", CFG], stdout=logf,
-                             stderr=subprocess.STDOUT, creationflags=0x08000000)
+        process = subprocess.Popen([P.SING_EXE, "run", "-c", path], stdout=logf,
+                                   stderr=subprocess.STDOUT, creationflags=0x08000000)
     for _ in range(40):
         if lok(GENERAL_HTTP) and lok(FAST_HTTP) and lok(CLI_MIXED):
             owners = set()
             for port in (GENERAL_HTTP, FAST_HTTP, CLI_MIXED):
                 owners.update(P.port_pids(port))
-            if owners and p.pid not in owners:
-                # A foreign listener already owns the ports: do not pretend our
-                # new process is serving them (review C9).
+            if owners and process.pid not in owners:
                 log("ports are held by pid(s) %s, not the process we just started (%d)"
-                    % (sorted(owners), p.pid))
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
+                    % (sorted(owners), process.pid))
+                _stop_process(process)
                 return None
-            return p
-        if p.poll() is not None:
-            log(f"sing-box exited rc={p.returncode}; see logs/singbox_pinned.log")
+            return process
+        if process.poll() is not None:
+            log(f"sing-box exited rc={process.returncode}; see logs/singbox_pinned.log")
             return None
         time.sleep(0.25)
+    log("sing-box did not expose all pinned ports before timeout")
+    _stop_process(process)
     return None
+
+
+def apply_config(cfg):
+    """Return (process, gates) only after the candidate passes real site gates."""
+    state = {"process": None, "gates": []}
+
+    def stop_current():
+        candidate = state.get("process")
+        if candidate is not None:
+            _stop_process(candidate)
+            try:
+                os.remove(PIN_PIDS)
+            except OSError:
+                pass
+            state["process"] = None
+        else:
+            stop_pinned()
+        if not P.wait_port_free([GENERAL_HTTP, GENERAL_SOCKS, FAST_HTTP, FAST_SOCKS, CLI_MIXED],
+                                timeout=6.0, expect_cmd="singbox_pinned.json", log=log):
+            raise RuntimeError("pinned ports did not become free")
+
+    def launch(path):
+        process = start(path)
+        if process is not None:
+            I.record_many([(process.pid, path)], PIN_PIDS)
+            state["process"] = process
+        return process
+
+    def verify(path):
+        process = state.get("process")
+        if process is None or process.poll() is not None:
+            return False
+        gates = []
+        for name, endpoint in (("general", f"127.0.0.1:{GENERAL_HTTP}"),
+                               ("fast", f"127.0.0.1:{FAST_HTTP}"),
+                               ("cli", f"127.0.0.1:{CLI_MIXED}")):
+            gate = P.gate_one(endpoint)
+            gate["role"] = name
+            gates.append(gate)
+            log(f"  gate {name:7s} {endpoint} " +
+                "  ".join(f"{key}:{value['verdict']}" for key, value in gate["sites"].items()))
+        general = gates[0]
+        if not general["general"]:
+            time.sleep(4)
+            general = P.gate_one(f"127.0.0.1:{GENERAL_HTTP}")
+            general["role"] = "general"
+            gates[0] = general
+            log("  gate general retry " +
+                "  ".join(f"{key}:{value['verdict']}" for key, value in general["sites"].items()))
+        state["gates"] = gates
+        return bool(general["general"])
+
+    tx = config_transaction.ConfigTransaction(
+        CFG, check_config, launch, verify, stop_current, log)
+    try:
+        if not tx.apply(cfg):
+            return None
+    except config_transaction.TransactionError as exc:
+        log("another pinned configuration writer is active: %s" % exc)
+        return None
+    return state["process"], state["gates"]
 
 
 def main():
@@ -436,52 +509,18 @@ def main():
 
     cfg, gtags, ftags, used = build_config(gen, fast)
     log(f"\ngroups: general={gtags} fast={ftags}")
-    stop_pinned()
-    # A previous process can hold the ports without a usable pid file (stale
-    # pid after a crash, or an instance started by an older build).  Free them
-    # by PID (image-checked) before binding, otherwise the new process dies and
-    # the gates silently test the old one.
-    P.wait_port_free([GENERAL_HTTP, GENERAL_SOCKS, FAST_HTTP, FAST_SOCKS, CLI_MIXED],
-                     timeout=6.0, expect_cmd="singbox_pinned.json", log=log)
-    proc = start(cfg)
-    if not proc:
+    applied = apply_config(cfg)
+    if not applied:
+        log("candidate pinned stack failed verification; previous configuration was restored")
         return 1
+    proc, gates = applied
     log(f"pinned sing-box pid={proc.pid}")
 
-    # ---- fresh, independent gate on the actual pinned ports ----
-    gates = []
-    for name, ep in (("general", f"127.0.0.1:{GENERAL_HTTP}"),
-                     ("fast", f"127.0.0.1:{FAST_HTTP}"),
-                     ("cli", f"127.0.0.1:{CLI_MIXED}")):
-        g = P.gate_one(ep)
-        g["role"] = name
-        gates.append(g)
-        log(f"  gate {name:7s} {ep} " + "  ".join(f"{k}:{v['verdict']}" for k, v in g["sites"].items()))
-    gg = [g for g in gates if g["role"] == "general"][0]
-    gf = [g for g in gates if g["role"] == "fast"][0]
-    if not gg["general"]:
-        # 2026-11-10 hotfix2: stop_pinned() 在本函数开头已经把旧栈拆掉了，
-        # 所以"拒绝应用"根本保不住旧代理，实际效果 = 整机断网（自举失败）。
-        # 先给候选栈一次重试机会，仍失败也保留它：urltest 每 60s 重探，
-        # geph 兜底成员还在组里，比杀掉唯一活着的进程严格更优。
-        time.sleep(4)
-        gg = P.gate_one(f"127.0.0.1:{GENERAL_HTTP}")
-        gg["role"] = "general"
-        gates[0] = gg
-        log("  gate general retry " +
-            "  ".join(f"{k}:{v['verdict']}" for k, v in gg["sites"].items()))
-    if not gg["general"]:
-        log("general port failed the ChatGPT gate after retry; "
-            "KEEPING the new process and applying PAC in degraded mode")
-    fast_degraded = False
-    if not gf["fast"]:
-        # 2026-11-10 WorkBuddy hotfix: fast 节点没过站点检测时，之前是直接拒绝应用
-        # （previous PAC kept）——但旧栈此时已被拆掉，结果 = 整机无代理。
-        # 现改为降级：fast 角色改走已通过检测的 general 门，保住在线状态。
-        log("fast port failed the site gate; DEGRADING fast role to general gate (still applying)")
-        fast_degraded = True
-
-    I.record_many([(proc.pid, CFG)], PIN_PIDS)
+    gg = [gate for gate in gates if gate["role"] == "general"][0]
+    gf = [gate for gate in gates if gate["role"] == "fast"][0]
+    fast_degraded = not bool(gf["fast"])
+    if fast_degraded:
+        log("fast port failed the site gate; DEGRADING fast role to verified general gate")
     general_ep = f"127.0.0.1:{GENERAL_HTTP}"
     fast_ep = f"127.0.0.1:{GENERAL_HTTP}" if fast_degraded else f"127.0.0.1:{FAST_HTTP}"
     pac_info = pacroute.apply_pac(general_ep, fast_ep)
