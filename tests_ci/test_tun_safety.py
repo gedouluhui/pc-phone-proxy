@@ -61,8 +61,12 @@ class PoolSwitch(unittest.TestCase):
         # bad = 能连上但 Google 判地区不支持：节点是活的，算数
         self.assertTrue(self.S.pool_switch_ok({"a": "ok", "b": "bad", "c": "err"}))
 
-    def test_no_verdicts_keeps_old_behaviour(self):
-        self.assertTrue(self.S.pool_switch_ok({}))
+    def test_no_verdicts_is_rejected(self):
+        self.assertFalse(self.S.pool_switch_ok({}))
+
+    def test_unknown_requires_explicit_emergency_mode(self):
+        self.assertFalse(self.S.pool_switch_ok({}, allow_unknown=False))
+        self.assertTrue(self.S.pool_switch_ok({}, allow_unknown=True))
 
     def test_restore_good_pinned_roundtrip(self):
         S = self.S
@@ -122,8 +126,8 @@ class NoRegression(unittest.TestCase):
         self.assertEqual(S.switch_min_live(0), S.SWITCH_MIN_LIVE)
         self.assertEqual(S.switch_min_live(1), S.SWITCH_MIN_LIVE)
         self.assertEqual(S.switch_min_live(3), max(S.SWITCH_MIN_LIVE, 3))
-        # 当前隧道很好时门槛封顶在 GOOGLE_MIN，避免永远换不了池
-        self.assertEqual(S.switch_min_live(10), max(S.SWITCH_MIN_LIVE, S.GOOGLE_MIN))
+        # 当前隧道很好时门槛必须跟随真实健康数，不能封顶。
+        self.assertEqual(S.switch_min_live(10), 10)
         self.assertEqual(S.switch_min_live(None), S.SWITCH_MIN_LIVE)
 
     def test_two_live_rejected_when_current_has_three(self):
@@ -215,14 +219,18 @@ class NoRegression(unittest.TestCase):
             with open(cfg, encoding="utf-8") as f:
                 self.assertIn("new", f.read())
 
-    def test_unknown_keeps_new_tunnel(self):
+    def test_unknown_rolls_back(self):
         with tempfile.TemporaryDirectory() as d:
             calls, cfg, undo = self._sandbox(d, "unknown")
             try:
-                self.assertTrue(self.S.restart())
+                self.assertFalse(self.S.restart())
             finally:
                 undo()
-            self.assertEqual(len(calls["launch"]), 1)
+            self.assertEqual(calls["launch"], ['{"new": true}', '{"old": true}'])
+            with open(cfg, encoding="utf-8") as f:
+                self.assertIn("old", f.read())
+            self.assertTrue(os.path.exists(cfg + ".broken"))
+            self.assertFalse(os.path.exists(cfg + ".new"))
 
     def test_new_config_dies_restores_old(self):
         with tempfile.TemporaryDirectory() as d:

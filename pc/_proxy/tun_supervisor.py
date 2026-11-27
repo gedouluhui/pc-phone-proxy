@@ -260,31 +260,25 @@ PINNED_GOOD = os.path.join(HERE, "singbox_pinned.good.json")
 SWITCH_MIN_LIVE = 2   # 新节点池实测至少这么多出口能连上（ok/bad 都算连上）才允许切换
 
 
-def pool_switch_ok(verdicts, min_live=SWITCH_MIN_LIVE):
-    """新节点池能不能切过去（纯函数，tests_ci 覆盖）。
+def pool_switch_ok(verdicts, min_live=SWITCH_MIN_LIVE, allow_unknown=False):
+    """新节点池能不能切过去。
 
-    2026-11-23 17:34 事故：重扫在「没有直连规则的旧隧道」下跑完，深测数据被二次转发污染，
-    30 个新出口在本机直连全部连不上；闸门已经测出全部 err，但旧逻辑「继续重建」，
-    整机断网 30 分钟。现在：闸门有结论且能连上的不足 min_live 个，就拒绝切换。
-    闸门没跑出任何结论（空字典，比如 sing-box 缺失）时不拦，保持旧行为。
+    当前隧道健康时必须 fail-closed：没有闸门结论就拒绝切换。
+    只有显式紧急恢复模式才允许无证据尝试，并且只能使用上一份已知可用配置。
     """
     if not verdicts:
-        return True
+        return bool(allow_unknown)
     live = sum(1 for v in verdicts.values() if v in ("ok", "bad"))
     return live >= min_live
 
 
 def switch_min_live(prev_live):
-    """新池至少要有几个能连上的出口才允许切换（纯函数，tests_ci 覆盖）。
-
-    2026-11-23 19:0x：测速进程改为真实直连后，当前隧道实测只有 3 个出口能连上。新池哪怕只有
-    2 个活的也会被放行，等于越换越差。现在：当前隧道上一次闸门有 N 个能连上，新池至少要
-    min(N, GOOGLE_MIN) 个（且不少于 SWITCH_MIN_LIVE）。当前本来就很差时不设更高门槛。"""
+    """新池至少要有几个能连上的出口才允许切换。"""
     try:
         prev = int(prev_live or 0)
     except (TypeError, ValueError):
         prev = 0
-    return max(SWITCH_MIN_LIVE, min(prev, GOOGLE_MIN))
+    return max(SWITCH_MIN_LIVE, prev)
 
 
 def save_good_pinned():
@@ -419,7 +413,7 @@ def maintain(now=None):
         try:
             verdicts = run_gate(h, now, source="pinned")
         except Exception as e:
-            log("新节点池地区闸门出错（继续重建）: %r" % (e,))
+            log("新节点池地区闸门出错（拒绝切换，当前隧道保持不动）: %r" % (e,))
         if not pool_switch_ok(verdicts, need):
             live = sum(1 for v in verdicts.values() if v in ("ok", "bad"))
             log("新节点池实测只有 %d/%d 个出口能连上（需要 >= %d），拒绝切换，当前隧道保持不动"
@@ -631,8 +625,8 @@ def restart(verify=None):
     _write_pid(p.pid)
     if use == new_path and have_prev and verify:
         verdict, ext, dom = post_switch_check()
-        if verdict == "broken":
-            log("重建后外网不通（境外 %s 国内 %s），回滚到上一份配置" % (ext, dom))
+        if verdict in ("broken", "unknown"):
+            log("重建后外网不可用（境外 %s 国内 %s），回滚到上一份配置" % (ext, dom))
             try:
                 p.kill()
                 p.wait(5)
@@ -657,7 +651,7 @@ def restart(verify=None):
                 return False
             _write_pid(p.pid)
         elif verdict == "unknown":
-            log("重建后境外、国内都不通（%s / %s），像是本机网络断了，保留新隧道" % (ext, dom))
+            log("重建后境外、国内均不可用，已按 fail-closed 策略处理")
     if use == new_path:
         try:
             os.replace(new_path, tun_mode.CFG)

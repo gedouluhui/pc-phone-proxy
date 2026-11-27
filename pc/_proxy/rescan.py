@@ -81,9 +81,9 @@ def main():
     if os.path.isfile(os.path.join(HERE, "TUN_ACTIVE")):
         bad, why = direct_path_contaminated()
         print("TUN 开着，检查测速路径是否直连：%s" % why, flush=True)
-        if bad:
-            print("[中止] 测速进程的流量正被当前隧道转发，这时深测会把不可达的节点当成可用。"
-                  "本轮不扫，节点池保持不变。重启一次 TUN（启动代理.bat 选 2）后再扫。", flush=True)
+        if bad is not False:
+            print("[中止] 测速路径无法证明为直连（污染或探测失败），本轮不扫，节点池保持不变。",
+                  flush=True)
             return 3
     env = dict(os.environ)
     boot = "http://127.0.0.1:2103" if up(2103) else ""

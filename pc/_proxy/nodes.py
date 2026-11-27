@@ -505,8 +505,9 @@ async def tcp_prefilter(nodes, timeout=2.5, conc=400):
     via = None
     if os.path.isfile(TUN_ACTIVE_FILE) and os.path.isfile(BIN):
         via = _start_direct_socks()
-        print("tcp prefilter: TUN active -> %s" % ("via direct sing-box socks" if via
-              else "direct socks unavailable, results may be optimistic"), flush=True)
+        if via is None:
+            raise RuntimeError("TUN active but direct SOCKS unavailable; refusing optimistic prefilter")
+        print("tcp prefilter: TUN active -> via direct sing-box socks", flush=True)
     try:
         return await _tcp_prefilter(nodes, timeout, conc, bool(via))
     finally:
