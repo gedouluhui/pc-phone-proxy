@@ -25,8 +25,11 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -61,14 +64,24 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private boolean populating = false;
     private boolean emptyHinted = false;
     private TaskControl importControl;
+    private int secondaryColor;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        boolean dark = (getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        int background = Color.parseColor(dark ? "#121212" : "#F5F6F8");
+        int foreground = Color.parseColor(dark ? "#F2F2F2" : "#1A1A1A");
+        int secondary = Color.parseColor(dark ? "#C7C7C7" : "#555555");
+        int muted = Color.parseColor(dark ? "#9FA3A8" : "#888888");
+        int accent = Color.parseColor(dark ? "#8AB4F8" : "#3B6EA5");
+        secondaryColor = secondary;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#F5F6F8"));
+        root.setBackgroundColor(background);
         int pad = dp(20);
         root.setPadding(pad, pad, pad, pad);
 
@@ -76,29 +89,30 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         title.setText("手机代理");
         title.setTextSize(26);
         title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(Color.parseColor("#1A1A1A"));
+        title.setTextColor(foreground);
         root.addView(title);
 
         TextView sub = new TextView(this);
         sub.setText("本机实测延迟+带宽选线 · 死节点自动替换 · 国内直连");
         sub.setTextSize(13);
-        sub.setTextColor(Color.parseColor("#888888"));
+        sub.setTextColor(muted);
         sub.setPadding(0, dp(4), 0, dp(16));
         root.addView(sub);
 
         status = new TextView(this);
         status.setTextSize(16);
-        status.setTextColor(Color.parseColor("#555555"));
+        status.setTextColor(secondary);
         status.setPadding(0, 0, 0, dp(12));
         root.addView(status);
 
         TextView nodeLabel = new TextView(this);
         nodeLabel.setText("节点");
         nodeLabel.setTextSize(13);
-        nodeLabel.setTextColor(Color.parseColor("#888888"));
+        nodeLabel.setTextColor(muted);
         root.addView(nodeLabel);
 
         spinner = new Spinner(this);
+        spinner.setContentDescription("选择代理节点");
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
                 if (populating || pos < 0 || pos >= nodeTags.size()) return;
@@ -160,11 +174,16 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         importBtn.setOnClickListener(v -> showImportDialog());
         tools.addView(importBtn, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        for (int i = 0; i < tools.getChildCount(); i++) {
+            tools.getChildAt(i).setMinimumHeight(dp(48));
+            tools.getChildAt(i).setContentDescription(((Button) tools.getChildAt(i)).getText());
+        }
         root.addView(tools);
 
         button = new Button(this);
         button.setTextSize(18);
         button.setAllCaps(false);
+        button.setContentDescription("连接或断开代理");
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(56));
         bp.topMargin = dp(16);
@@ -175,14 +194,14 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
 
         traffic = new TextView(this);
         traffic.setTextSize(13);
-        traffic.setTextColor(Color.parseColor("#3B6EA5"));
+        traffic.setTextColor(accent);
         traffic.setPadding(0, 0, 0, dp(8));
         traffic.setText("");
         root.addView(traffic);
 
         logView = new TextView(this);
         logView.setTextSize(12);
-        logView.setTextColor(Color.parseColor("#666666"));
+        logView.setTextColor(secondary);
         logView.setTextIsSelectable(true);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(logView);
@@ -285,7 +304,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 "从公开源导入（抓取后在本机逐个实测，只留能连上的）",
                 "粘贴分享链接 / 订阅地址",
                 "清理不可用的导入节点",
-                "清空已导入的节点"
+                "清空已导入的节点",
+                "每应用代理（留空＝全部应用）"
         };
         new AlertDialog.Builder(this)
                 .setTitle("导入节点")
@@ -293,7 +313,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                     if (which == 0) importFromPublicSources();
                     else if (which == 1) showPasteDialog();
                     else if (which == 2) pruneDead();
-                    else clearImported();
+                    else if (which == 3) clearImported();
+                    else showAppProxyDialog();
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -439,6 +460,49 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         int slash = rest.indexOf('/');
         int q = rest.indexOf('?');
         return (slash >= 0 && rest.substring(slash).length() > 1) || q >= 0;
+    }
+
+    private void showAppProxyDialog() {
+        try {
+            List<android.content.pm.ApplicationInfo> apps = getPackageManager().getInstalledApplications(0);
+            List<String> packages = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            for (android.content.pm.ApplicationInfo info : apps) {
+                if (info.packageName.equals(getPackageName())) continue;
+                packages.add(info.packageName);
+                labels.add(getPackageManager().getApplicationLabel(info) + "\n" + info.packageName);
+            }
+            HashSet<String> selected = new HashSet<>();
+            try {
+                String raw = SecureStore.get(this, "allowed_apps");
+                if (raw != null) {
+                    JSONArray array = new JSONArray(raw);
+                    for (int i = 0; i < array.length(); i++) selected.add(array.optString(i));
+                }
+            } catch (Exception ignored) {}
+            boolean[] checked = new boolean[packages.size()];
+            for (int i = 0; i < packages.size(); i++) checked[i] = selected.contains(packages.get(i));
+            new AlertDialog.Builder(this)
+                    .setTitle("每应用代理")
+                    .setMultiChoiceItems(labels.toArray(new String[0]), checked, (dialog, which, isChecked) -> {
+                        if (isChecked) selected.add(packages.get(which));
+                        else selected.remove(packages.get(which));
+                    })
+                    .setPositiveButton("保存并重连", (dialog, which) -> {
+                        JSONArray array = new JSONArray();
+                        for (String value : selected) array.put(value);
+                        if (!SecureStore.put(this, "allowed_apps", array.toString())) {
+                            toast("安全存储不可用，未保存");
+                            return;
+                        }
+                        toast(selected.isEmpty() ? "已恢复全部应用代理" : "已保存 " + selected.size() + " 个应用");
+                        if (ProxyVpnService.state == ProxyVpnService.STATE_RUNNING) applyStart(pendingNode, true);
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        } catch (Exception error) {
+            toast("无法读取应用列表：" + error.getMessage());
+        }
     }
 
     private void clearImported() {
@@ -655,7 +719,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 button.setText("启动代理");
                 button.setEnabled(true);
                 spinner.setEnabled(true);
-                status.setTextColor(Color.parseColor("#555555"));
+                status.setTextColor(secondaryColor);
                 traffic.setText("");
         }
     }

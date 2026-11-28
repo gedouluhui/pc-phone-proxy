@@ -354,7 +354,8 @@ def build_fixture_worker(script, scenario, args):
             with zipfile.ZipFile(dest, "w") as archive:
                 archive.writestr("AndroidManifest.xml", b"synthetic manifest")
         elif tool == "zipalign":
-            shutil.copyfile(argv[-2], argv[-1])
+            if "-c" not in argv:
+                shutil.copyfile(argv[-2], argv[-1])
         elif tool == "apksigner" and argv[1] == "sign":
             dest = Path(argv[argv.index("--out") + 1])
             shutil.copyfile(argv[-1], dest)

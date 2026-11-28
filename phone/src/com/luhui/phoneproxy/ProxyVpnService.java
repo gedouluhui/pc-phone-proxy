@@ -14,6 +14,8 @@ import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
+import org.json.JSONArray;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -851,7 +853,7 @@ public class ProxyVpnService extends VpnService {
 
     /** VPN 网卡：双栈都接管，否则 IPv6 流量会绕过隧道泄漏真实地址。 */
     private ParcelFileDescriptor buildTun() throws Exception {
-        return new Builder()
+        Builder builder = new Builder()
                 .setSession("手机代理")
                 .addAddress("172.19.0.1", 30)
                 .addRoute("0.0.0.0", 0)
@@ -860,8 +862,18 @@ public class ProxyVpnService extends VpnService {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
                 .setMtu(1500)
-                .addDisallowedApplication(getPackageName())  // 内核出站与测速绕过 TUN，防回环
-                .establish();
+                .addDisallowedApplication(getPackageName());  // 内核出站与测速绕过 TUN，防回环
+        String raw = SecureStore.get(this, "allowed_apps");
+        if (raw != null) {
+            JSONArray selected = new JSONArray(raw);
+            if (selected.length() > 0) {
+                for (int i = 0; i < selected.length(); i++) {
+                    String packageName = selected.optString(i, "").trim();
+                    if (!packageName.isEmpty()) builder.addAllowedApplication(packageName);
+                }
+            }
+        }
+        return builder.establish();
     }
 
     private CoreController newController() {

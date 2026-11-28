@@ -131,7 +131,7 @@ AI 打不开」。
 | 依赖 | 说明 |
 |---|---|
 | JDK 17 | 设置 `JAVA_HOME`，或改脚本里的 `find_jdk()` |
-| Android SDK | 需要 build-tools（含 d8/aapt2/zipalign/apksigner）和一个 `android-35` platform；设置 `ANDROID_HOME` / `ANDROID_SDK_ROOT` |
+| Android SDK | 需要 build-tools（含 d8/aapt2/zipalign/apksigner）和一个 `android-36` platform；设置 `ANDROID_HOME` / `ANDROID_SDK_ROOT` |
 | AndroidLibXrayLite | 下载 `libv2ray.aar` 放到 `phone/libs/libv2ray.aar` |
 | Python 3.8+ | 仅用于运行构建脚本 |
 | OpenSSL | 只有更新清单并重新签名时需要；构建验签使用 Python 标准库实现的 RSA/SHA-256 |

@@ -206,11 +206,12 @@ def build(stage, nodes, public, keystore, alias, env, jdk, bt, android_jar, rele
             zout.write(aar_dir / "jni" / abi / "libgojni.so", "lib/" + abi + "/libgojni.so")
 
     aligned, signed = stage / "aligned.apk", stage / "signed.apk"
-    run([exe(bt, "zipalign"), "-f", "4", unsigned, aligned], env, stage)
+    run([exe(bt, "zipalign"), "-f", "-P", "16", "4", unsigned, aligned], env, stage)
     run([exe(bt, "apksigner"), "sign", "--ks", keystore, "--ks-key-alias", alias,
          "--ks-pass", "env:PROXY_KS_PASS", "--key-pass", "env:PROXY_KS_PASS",
          "--out", signed, aligned], env, stage)
     run([exe(bt, "apksigner"), "verify", "--print-certs", signed], env, stage)
+    run([exe(bt, "zipalign"), "-c", "-P", "16", "4", signed], env, stage)
     nodes_in_apk(signed, require_empty=public)
     return signed
 
