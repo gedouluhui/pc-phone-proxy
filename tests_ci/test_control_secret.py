@@ -68,6 +68,12 @@ class ControlSecretTests(unittest.TestCase):
                 self.assertEqual(entry["Sid"], sid)
                 self.assertFalse(entry["Inherited"])
 
+    def test_current_sid_does_not_depend_on_whoami_path(self):
+        from unittest import mock
+        with mock.patch.object(control_secret.subprocess, "run",
+                               side_effect=AssertionError("external whoami must not run")):
+            self.assertTrue(control_secret._current_sid().startswith("S-1-"))
+
     def test_default_store_is_inside_current_user_local_appdata(self):
         expected = os.path.join(os.environ["LOCALAPPDATA"], "PhoneProxy",
                                 "control-secret.bin")

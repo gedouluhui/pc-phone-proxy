@@ -7,8 +7,6 @@ or foreign-user store is a hard error: silently replacing it would let an
 attacker desynchronise the running sing-box and its controller.
 """
 import base64
-import csv
-import io
 import os
 import secrets
 import subprocess
@@ -47,6 +45,23 @@ _crypt.CryptUnprotectData.restype = wintypes.BOOL
 _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel.LocalFree.argtypes = [ctypes.c_void_p]
 _kernel.LocalFree.restype = ctypes.c_void_p
+_advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+_advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                     ctypes.POINTER(wintypes.HANDLE)]
+_advapi.OpenProcessToken.restype = wintypes.BOOL
+_advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+_advapi.GetTokenInformation.restype = wintypes.BOOL
+_advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+_advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+_kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel.CloseHandle.restype = wintypes.BOOL
+_kernel.GetCurrentProcess.argtypes = []
+_kernel.GetCurrentProcess.restype = wintypes.HANDLE
+
+
+class _TokenUser(ctypes.Structure):
+    _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
 
 
 def default_path():
@@ -57,16 +72,32 @@ def default_path():
 
 
 def _current_sid():
+    """Use the process token directly; Git's GNU whoami can shadow the Windows tool."""
+    token = wintypes.HANDLE()
+    string = wintypes.LPWSTR()
     try:
-        raw = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
-                             capture_output=True, text=True, timeout=10,
-                             creationflags=NOWIN, check=True).stdout
-        sid = next(csv.reader(io.StringIO(raw)))[1].strip()
-        if not sid.startswith("S-1-"):
+        process = _kernel.GetCurrentProcess()
+        if not _advapi.OpenProcessToken(process, 0x0008, ctypes.byref(token)):
+            raise OSError("OpenProcessToken failed")
+        needed = wintypes.DWORD()
+        _advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not _advapi.GetTokenInformation(token, 1, buffer, needed, ctypes.byref(needed)):
+            raise OSError("GetTokenInformation failed")
+        user = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents
+        if not _advapi.ConvertSidToStringSidW(user.sid, ctypes.byref(string)):
+            raise OSError("ConvertSidToStringSidW failed")
+        sid = string.value
+        if not sid or not sid.startswith("S-1-"):
             raise ValueError("unexpected SID")
         return sid
     except Exception as exc:
         raise ControlSecretError("cannot determine current user SID") from exc
+    finally:
+        if string:
+            _kernel.LocalFree(string)
+        if token:
+            _kernel.CloseHandle(token)
 
 
 def _harden_acl(path):
