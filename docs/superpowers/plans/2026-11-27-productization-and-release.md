@@ -18,6 +18,13 @@
 - No force push, unsigned release, or silent fallback to an older/unverified artifact.
 - Real-device and real-TUN acceptance remains mandatory before release.
 
+## Implementation Status (2026-11-28)
+
+- Windows: verified elevated broker, install manifest/ACL checks, separated `PHONEPROXY_DATA_DIR`, no elevated scheduled-task creation, identity-checked legacy task deletion, tray state/UI, signed update staging, and Inno Setup source are implemented. The installer has not been compiled because the release runtime/tray executable and Inno Setup toolchain are not present in this workspace.
+- Release: CycloneDX 1.6 SBOM, in-toto/SLSA v1 provenance, signed monotonic release manifests, artifact hash verification, pinned Actions and pinned engine downloads are implemented and tested.
+- Android: target SDK 36, dark palette, accessibility labels/48dp controls, encrypted per-app allowlist, and 16 KiB APK alignment checks are implemented. A debug API 36 APK builds and verifies successfully.
+- Still open: full subscription CRUD/search/favorites UI, installer compilation and upgrade/uninstall testing, visible tray GUI testing, physical-device VPN/Keystore/network/leak/battery/accessibility acceptance, and remote CI verification.
+
 ## Verified Pins (2026-11-28)
 
 - `actions/checkout@v4.2.2` → `11bd71901bbe5b1630ceea73d27597364c9af683`.

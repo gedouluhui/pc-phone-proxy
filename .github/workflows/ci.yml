@@ -79,9 +79,9 @@ jobs:
         run: |
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          if [ ! -f "$SDK/platforms/android-35/android.jar" ]; then
+          if [ ! -f "$SDK/platforms/android-36/android.jar" ]; then
             yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35"
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36"
           fi
 
       - name: 取 libv2ray.aar（二进制不入库，用上游固定版本）
@@ -95,7 +95,7 @@ jobs:
       - name: Java 编译检查（javac）
         run: |
           javac -encoding UTF-8 -source 8 -target 8 -Xlint:-options \
-            -classpath "$ANDROID_HOME/platforms/android-35/android.jar:/tmp/lv/classes.jar" \
+            -classpath "$ANDROID_HOME/platforms/android-36/android.jar:/tmp/lv/classes.jar" \
             -d /tmp/classes $(find phone/src -name '*.java')
           echo "javac OK: $(find /tmp/classes -name '*.class' | wc -l) classes"
 
@@ -123,7 +123,7 @@ jobs:
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1)
           if [ -z "$BT" ]; then
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" > /dev/null
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;36.0.0" > /dev/null
             BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           fi
           keytool -genkeypair -keystore /tmp/ci.keystore -alias ci -storepass android \
@@ -138,3 +138,25 @@ jobs:
             PROXY_NODES_JSON=/tmp/empty-nodes.json PROXY_APK_OUT=/tmp/ci.apk \
             python3 phone/build_apk.py
           test -s /tmp/ci.apk && echo "APK built: $(stat -c %s /tmp/ci.apk) bytes"
+
+      - name: 生成 CycloneDX SBOM 与 SLSA 来源证明
+        run: |
+          python3 tools/generate_sbom.py --components tools/release_components.json --output /tmp/sbom.cdx.json
+          python3 tools/generate_provenance.py \
+            --repository "https://github.com/${GITHUB_REPOSITORY}" \
+            --commit "${GITHUB_SHA}" \
+            --builder "https://github.com/actions/runner" \
+            --material /tmp/libv2ray.aar \
+            --material phone/sources.json \
+            --artifact /tmp/ci.apk \
+            --output /tmp/provenance.json
+
+      - name: 上传 SBOM / provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-sbom-provenance
+          path: |
+            /tmp/sbom.cdx.json
+            /tmp/provenance.json
+          if-no-files-found: error
+          retention-days: 30

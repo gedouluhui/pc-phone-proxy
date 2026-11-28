@@ -36,9 +36,9 @@ jobs:
         run: |
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          if [ ! -f "$SDK/platforms/android-35/android.jar" ]; then
+          if [ ! -f "$SDK/platforms/android-36/android.jar" ]; then
             yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35"
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36"
           fi
 
       - name: AAR 与签名文件

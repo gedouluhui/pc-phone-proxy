@@ -1,0 +1,30 @@
+[
+  {
+    "type": "library",
+    "name": "sing-box",
+    "version": "1.14.4",
+    "bom-ref": "pkg:generic/sing-box@1.14.4",
+    "hashes": [{"alg": "SHA-256", "content": "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df"}]
+  },
+  {
+    "type": "library",
+    "name": "AndroidLibXrayLite",
+    "version": "26.11.9",
+    "bom-ref": "pkg:generic/AndroidLibXrayLite@26.11.9",
+    "hashes": [{"alg": "SHA-256", "content": "cdfef146218233a31a8b52c8b1016557730d3b63fc121d4c84cacea50e669155"}]
+  },
+  {
+    "type": "library",
+    "name": "Xray-core",
+    "version": "26.11.9",
+    "bom-ref": "pkg:generic/Xray-core@26.11.9",
+    "hashes": [{"alg": "SHA-256", "content": "1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d"}]
+  },
+  {
+    "type": "library",
+    "name": "org.json",
+    "version": "20240303",
+    "bom-ref": "pkg:maven/org.json/json@20240303",
+    "hashes": [{"alg": "SHA-256", "content": "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"}]
+  }
+]

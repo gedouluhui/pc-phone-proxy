@@ -12,6 +12,7 @@ ACTION_PINS = {
     "actions/setup-python": "a26af69be951a213d495a4c3e4e4022e16d87065",
     "actions/setup-java": "c5195efecf7bdfc987ee8bae7a71cb8b11521c00",
     "actions/cache": "5a3ec84eff668545956fd18022155c47e93e2684",
+    "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
 }
 SINGBOX_SHA256 = "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df"
 AAR_SHA256 = "cdfef146218233a31a8b52c8b1016557730d3b63fc121d4c84cacea50e669155"
