@@ -45,7 +45,16 @@ jobs:
           "SINGBOX_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: PC 回归（PAC / SSRF / 发布闸门 / 脱敏）
-        run: python -m unittest discover -s tests_ci -v
+        run: python tools/run_ci_tests.py
+
+      - name: 上传 PC 回归日志
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pc-regression-log
+          path: _ci_test_output.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 订阅地址护栏 PoC（JDK）
         run: python phone/tests/run_guard_poc.py

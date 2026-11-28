@@ -51,6 +51,7 @@ pc/_proxy/singbox*.json
 pc/_proxy/__pycache__/
 __pycache__/
 *.pyc
+_ci_test_output.log
 
 # --- releases (upload the APK as a release asset, do not commit it) ---
 dist/*.apk
