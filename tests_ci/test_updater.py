@@ -56,6 +56,32 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual((Path(stage) / artifact.name).read_bytes(), artifact.read_bytes())
             self.assertEqual(marker.read_bytes(), b"old install")
 
+    def test_installed_layout_finds_bundled_signature_verifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, sig, public, artifact = self.fixture(root)
+            install = root / "Program Files" / "PhoneProxy"
+            app = install / "app"
+            release_tools = app / "release_tools"
+            proxy = install / "_proxy"
+            downloads = root / "downloads"
+            release_tools.mkdir(parents=True)
+            proxy.mkdir()
+            downloads.mkdir()
+            shutil.copyfile(ROOT / "pc/app/updater.py", app / "updater.py")
+            for name in ("release_manifest.py", "sign_sources.py", "verify_sources.py"):
+                shutil.copyfile(ROOT / "tools" / name, release_tools / name)
+            shutil.copyfile(ROOT / "pc/_proxy/source_fetch.py", proxy / "source_fetch.py")
+            shutil.copyfile(artifact, downloads / artifact.name)
+            result = subprocess.run(
+                [sys.executable, "-B", str(app / "updater.py"),
+                 "--manifest", str(manifest), "--signature", str(sig),
+                 "--public-key", str(public), "--download-dir", str(downloads),
+                 "--previous-version", "1"], cwd=str(root), capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("verified update staged", result.stdout)
+
     def test_bad_signature_or_rollback_does_not_stage(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, sig, public, artifact = self.fixture(directory)

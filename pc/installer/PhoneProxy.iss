@@ -11,6 +11,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=admin
+; The elevated broker verifies code under Program Files while user data stays per-user.
+UsedUserAreasWarning=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
@@ -24,10 +26,13 @@ CloseApplications=yes
 [Files]
 Source: "..\app\*.py"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "..\app\release-public.pem"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "..\..\tools\release_manifest.py"; DestDir: "{app}\app\release_tools"; Flags: ignoreversion
+Source: "..\..\tools\sign_sources.py"; DestDir: "{app}\app\release_tools"; Flags: ignoreversion
+Source: "..\..\tools\verify_sources.py"; DestDir: "{app}\app\release_tools"; Flags: ignoreversion
 Source: "..\_proxy\*.py"; DestDir: "{app}\_proxy"; Excludes: "test_*.py"; Flags: ignoreversion
 Source: "..\_proxy\bin\*"; DestDir: "{app}\_proxy\bin"; Flags: ignoreversion
 Source: "..\_proxy\rulesets\*"; DestDir: "{app}\_proxy\rulesets"; Flags: ignoreversion
-Source: "..\runtime\python\*"; DestDir: "{app}\runtime\python"; Flags: ignoreversion recursesubdirs
+Source: "..\runtime\python\*"; DestDir: "{app}\runtime\python"; Excludes: "*.pyc,__pycache__"; Flags: ignoreversion recursesubdirs
 Source: "..\runtime\tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\version.txt"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -47,7 +52,7 @@ Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\app\make_insta
 Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\app\broker.py"" tun-stop --data-dir ""{localappdata}\PhoneProxy\data"""; Flags: runhidden waituntilterminated
 
 [UninstallRun]
-Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\app\broker.py"" tun-stop --data-dir ""{localappdata}\PhoneProxy\data"""; Flags: runhidden waituntilterminated
+Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\app\broker.py"" tun-stop --data-dir ""{localappdata}\PhoneProxy\data"""; RunOnceId: "PhoneProxyTunStop"; Flags: runhidden waituntilterminated
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);

@@ -52,6 +52,11 @@ pc/_proxy/__pycache__/
 __pycache__/
 *.pyc
 _ci_test_output.log
+pc/runtime/
+pc/dist/
+pc/install-manifest.json
+_audit_new/pyinstaller-spec/
+_audit_new/pyinstaller-work/
 
 # --- releases (upload the APK as a release asset, do not commit it) ---
 dist/*.apk

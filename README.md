@@ -20,7 +20,7 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-**当前版本**：手机端 **v3.2** / 电脑端 **2026-11-23 晚（便携版 V3.2.2）**。V3.2.2：选池不再因上传测速超时排除下载快的节点、沿用的旧节点一律排在本轮实测节点之后、记住 24 小时内实测合格的节点供下一轮使用（免费节点轮轮不同，以前好节点测出来下一轮就丢）。V3.2.1：电脑端这一版修掉了 TUN 模式两次整机断网的根因（路由里的 `process_name: sing-box.exe → direct` 在 `stack=system` 下等于全局直连，已删除）；测速 / 闸门 / 预筛用的临时 sing-box 改为**自己绑物理网卡绕开 TUN**，守护先实测「被墙地址连不上、国内能连」才允许重扫；**新节点池能连上的出口不得少于当前隧道**，否则拒绝切换；**重建隧道后实测境外站点，境外全断而国内通就自动回滚到原配置**，新配置起不来时立刻用原配置拉回隧道。
+**当前版本**：手机端 **v4.0.0（versionCode 13，target SDK 36）** / 电脑端 **v4.0.0 安装版与便携版**。Windows 新增最小权限 TUN broker、安装哈希/ACL 核验、DPAPI+Bearer 控制面、原子配置切换、托盘与验签更新暂存；Android 新增 Keystore 凭据加密、DNS 固定 HTTPS 订阅、签名源清单、订阅 CRUD、节点搜索/协议筛选/收藏、按应用分流与取消安全的生命周期。公开发版仍不内置节点。**当前离线构建与 CI 回归通过不等于真机验收；Windows TUN/UAC/升级卸载、Android 真机 VPN/Keystore/网络切换/泄漏/续航仍需按清单实测，正式发布还需非演示签名与 Windows 代码签名。**
 
 电脑端 2026-11-23 下午版：**支持 Hysteria2**、新增 6 个实测可用源、**重建隧道前先校验新配置**，CI 用真 sing-box 1.14.4 校验全部生成配置。手机端 v3.2：公开源清单在大陆网络下逐条实测更新（新增 Hysteria2 富集源与国内测过的源），源清单改为从仓库远程更新，按协议均衡取样。
 
@@ -31,6 +31,14 @@ v3.0（2026-11-23）：**只用本机实测能连上的节点**。启动前在�
 当前出口失效 3 分钟内切走；一个能用的都没有时明确提示、不接管网络（修掉 v2.x「已连接但什么都打不开」）。
 电脑端 TUN 开着扫描节点时测速子进程改为直连，避免测出「节点套节点」的假结果。
 下载：Releases 里的 `PhoneProxy-public.apk`（v3.0，与 v2.x 同签名，可覆盖安装）。
+
+v4.0（2026-11-28）：把“能用”推进到“可安装、可诊断、可验证发布”。Windows 安装版将代码放在
+`Program Files\PhoneProxy`、用户数据放在 `%LOCALAPPDATA%\PhoneProxy`，broker 每次执行 TUN 前核验
+安装清单哈希、ACL 和数据目录；配置候选先校验，真实启动/验证成功后才替换，失败恢复旧配置。
+Clash API 只绑回环并使用 DPAPI 加密的 Bearer 密钥；公开源下载固定到已验证 IP，拒绝私网、混合地址、
+HTTPS 降级和超限响应。Android 订阅地址与节点凭据改用 Android Keystore AES-256-GCM 加密，
+订阅传输固定 DNS 结果并保留 SNI/Host；新增订阅管理、搜索、协议筛选、收藏和按应用分流。
+发布链加入 CycloneDX 1.6 SBOM、SLSA v1 来源证明、签名且单调递增的更新清单；APK 校验 16 KiB 对齐。
 
 v2.7（2026-11-23 上午）：修掉 `host:port/` 形式的分享链接被整条判为不可用
 的问题（authority 后的路径不是传输参数）；CI 从"只做 javac"升级为**完整打包**——临时 debug 签名跑通
@@ -61,7 +69,7 @@ v2.4 的公开源一键导入与 v2.3 的安全加固（`https://` 不再降级�
 
 ## 特性
 
-### 手机端（Android 7.0+，v3.0）
+### 手机端（Android 7.0+，v4.0）
 
 - **一键启动**（v3.0）：先在手机直连实测节点池（TCP 预筛 + 内核真实请求），只把能连上的最快 30 个交给内核；
   运行中 Xray observatory 每 3 分钟探测，掉线自动切换，冷启动兜底到实测最快节点
@@ -76,10 +84,14 @@ v2.4 的公开源一键导入与 v2.3 的安全加固（`https://` 不再降级�
   配置校验（`measureOutboundDelay` 走到配置加载为止，探测 URL 故意非法，不发任何流量）；
   内核拒绝的节点会被标记并跳过，不会拖垮整条隧道。启动时若整批配置仍被内核拒绝，
   后台会自动隔离坏节点，下次启动只加载可用节点
-- **公开源一键导入**：内置 12 个公开聚合列表（GitHub raw / jsDelivr / ghfast.top 镜像），并发抓取、去重，
-  **在本机网络逐个实测、只留能连上的**；
-  APK 里只有 URL，不含任何节点凭据，所以公开版也能直接用
-- **导入灵活**：支持 `vless://` `vmess://` `trojan://` `ss://` `hysteria2://`（v3.1）分享链接（每行一条）与 `http(s)` 订阅地址；公开源清单可从仓库远程更新（v3.2）
+- **公开源一键导入**：内置签名源清单（GitHub raw / jsDelivr / ghfast.top 镜像），并发抓取、去重，
+  **在本机网络逐个实测、只留能连上的**；APK 里只有公开列表 URL，不含任何节点凭据
+- **订阅管理与节点整理**：订阅添加/更新/启停/删除、名称唯一性与数量上限，URL 加密存储；
+  支持节点搜索、协议筛选与收藏，完整订阅地址不显示在界面或日志中
+- **凭据与传输保护**：Android Keystore AES-256-GCM 信封；HTTPS 订阅每跳只解析一次并校验全部
+  A/AAAA，固定连接已验证 IP 且保留原域名 SNI/Host 与证书主机名校验
+- **导入灵活**：支持 `vless://` `vmess://` `trojan://` `ss://` `hysteria2://` 分享链接与 HTTPS 订阅；
+  明文 HTTP 订阅、私网/保留地址、userinfo、控制字符与超限响应均拒绝
 - **TUN 模式**，无需 root；内置 arm64-v8a / armeabi-v7a / x86 / x86_64 四个 ABI
 - 手动指定节点 / 自动模式；实时上下行速率；节点池为空时给出明确引导
 - 不读短信、不读通讯录、无账号、无遥测
@@ -125,7 +137,8 @@ v2.4 的公开源一键导入与 v2.3 的安全加固（`https://` 不再降级�
 1. 到 [Releases](../../releases) 下载 `PhoneProxy-public.apk`（本地构建产物名为 `手机代理-公版.apk`）。
 2. Android 7.0 及以上；首次安装需允许“安装未知来源应用”。iOS 与 HarmonyOS NEXT 无法安装 APK。
 3. 打开 App → 允许通知 → 点 **导入节点 / 订阅** → **从公开源导入**。
-   它会依次抓 7 个公开聚合列表（单个源失败自动换 jsDelivr 镜像），去重后最多收 120 条，然后自动测速。
+   它会按签名源清单并发抓取公开聚合列表（单个源失败自动换镜像），去重后在本机实测，
+   只保留能连上的候选；APK 本身不含节点。
 4. 点 **启动代理** → 允许建立 VPN 连接 → 默认「自动选线」会走当前最快且可用的节点。
    状态变成“已连接”后用浏览器打开 `google.com` 验证。
 5. 抓不到或想用固定节点：同一入口选「粘贴分享链接 / 订阅地址」，填自己的订阅。
@@ -246,7 +259,9 @@ python start_proxy.py
 - **手机 APK**：见 [`phone/README.md`](phone/README.md)。不需要 Gradle，`phone/build_apk.py` 走 `javac → d8 → aapt2 → zip → zipalign → apksigner`；需要 JDK 17、Android SDK build-tools 与 [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite/releases) 的 `libv2ray.aar`。
   解析器回归：`python phone/tools/check_poison.py` 会编译纯 JVM 解析器，喂 333 条投毒样本，
   并把每条被接受的节点和完整配置交给真 Xray `run -test`；CI 的 `android` job 已接入，规则漂移会直接红灯。
-- **电脑端**：纯 Python 脚本，无需构建；按上面的“准备”放好 `sing-box.exe` 即可。
+- **电脑端**：便携版仍为纯 Python 脚本；安装版源码在 `pc/app`、`pc/_proxy` 与 `pc/installer/PhoneProxy.iss`。
+  发布前准备 `pc/runtime/python`、`pc/runtime/tray.exe` 和 `pc/_proxy/bin`，用 Inno Setup 7.1.1 编译，再运行
+  `python pc/check_release.py pc/dist/PhoneProxy-Setup-4.0.0.exe`。本机安装包未代码签名，正式发布必须签名。
 
 ---
 
@@ -256,6 +271,10 @@ python start_proxy.py
 - ChatGPT 有地区封锁，深测会淘汰部分节点；被淘汰不代表节点本身不可用
 - 手机端仅 Android 7.0+，iOS 与 HarmonyOS NEXT 不支持
 - 电脑端只在 Windows 10/11 x64 实测过
+- v4.0.0 的安装包、托盘和 Android APK 已通过离线构建与自动检查，但真实 Windows TUN/UAC/升级卸载、
+  Android 真机 VPN/Keystore/网络切换/DNS/IPv6/WebRTC/续航/无障碍尚未验收；不得把这些写成已通过
+- 当前桌面 APK 使用既有测试 keystore，Windows 安装包未代码签名；正式商业发布还需生产签名、法律/合规评审，
+  代码加固本身不构成在中国大陆提供跨境网络服务的授权
 
 ---
 

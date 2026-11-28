@@ -20,9 +20,13 @@ class BrokerTests(unittest.TestCase):
         install = Path(directory) / "Program Files" / "PhoneProxy"
         install.mkdir(parents=True)
         files = {}
-        for relative in ("app/broker.py", "app/install_manifest.py", "_proxy/tun_mode.py",
+        for relative in ("app/broker.py", "app/install_manifest.py", "app/updater.py",
+                         "app/release_tools/release_manifest.py",
+                         "app/release_tools/sign_sources.py",
+                         "app/release_tools/verify_sources.py", "_proxy/tun_mode.py",
                          "_proxy/tun_supervisor.py", "_proxy/bin/sing-box.exe",
-                         "_proxy/bin/wintun.dll"):
+                         "_proxy/bin/wintun.dll", "runtime/python/python.exe",
+                         "runtime/tray.exe"):
             path = install / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("synthetic-" + relative).encode("utf-8"))
@@ -37,7 +41,8 @@ class BrokerTests(unittest.TestCase):
             install, manifest = self.fixture(directory)
             make_install_manifest.build(install, manifest)
             data = json.loads(manifest.read_text(encoding="utf-8"))
-            self.assertIn("_proxy/bin/sing-box.exe", data["files"])
+            self.assertIn("runtime/tray.exe", data["files"])
+            self.assertIn("runtime/python/python.exe", data["files"])
             self.assertIn("app/broker.py", data["files"])
             self.assertNotIn("install-manifest.json", data["files"])
 
@@ -83,6 +88,10 @@ class BrokerTests(unittest.TestCase):
     def test_installer_packages_update_verification_key(self):
         installer = (ROOT / "pc" / "installer" / "PhoneProxy.iss").read_text(encoding="utf-8")
         self.assertIn("release-public.pem", installer)
+        for name in ("release_manifest.py", "sign_sources.py", "verify_sources.py"):
+            self.assertIn("..\\..\\tools\\" + name, installer)
+            self.assertIn("app/release_tools/" + name, install_manifest.REQUIRED)
+        self.assertIn('Excludes: "*.pyc,__pycache__"', installer)
         self.assertIn("PHONEPROXY_DATA_DIR", (ROOT / "pc" / "app" / "tray.py").read_text(encoding="utf-8"))
 
     def test_non_elevated_broker_refuses_before_spawning(self):

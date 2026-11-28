@@ -8,9 +8,11 @@ import tempfile
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
-ROOT = APP.parents[1]
-sys.path.insert(0, str(ROOT / "tools"))
-sys.path.insert(0, str(ROOT / "pc" / "_proxy"))
+INSTALL = APP.parent
+BUNDLED_TOOLS = APP / "release_tools"
+SOURCE_TOOLS = APP.parents[1] / "tools"
+sys.path.insert(0, str(BUNDLED_TOOLS if BUNDLED_TOOLS.is_dir() else SOURCE_TOOLS))
+sys.path.insert(0, str(INSTALL / "_proxy"))
 import release_manifest  # noqa: E402
 import source_fetch  # noqa: E402
 

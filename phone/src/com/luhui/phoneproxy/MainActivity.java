@@ -14,6 +14,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.AdapterView;
@@ -27,9 +29,11 @@ import android.widget.TextView;
 
 import org.json.JSONArray;
 
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -48,12 +52,18 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private Button gateBtn;
     private Button importBtn;
     private Spinner spinner;
+    private EditText searchInput;
+    private Spinner filterSpinner;
+    private Button favoriteButton;
 
     private ArrayAdapter<String> nodeAdapter;
     private final List<String> nodeLabels = new ArrayList<>();
     private final List<String> nodeTags = new ArrayList<>();
     private final List<ConfigBuilder.Node> nodeList = new ArrayList<>();
+    private final List<ConfigBuilder.Node> allNodes = new ArrayList<>();
+    private final Set<String> favoriteKeys = new HashSet<>();
     private volatile boolean labelRefreshPending = false;
+    private boolean changingFilter = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final StringBuilder logBuf = new StringBuilder();
@@ -115,8 +125,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         spinner.setContentDescription("选择代理节点");
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                if (populating || pos < 0 || pos >= nodeTags.size()) return;
+                if (changingFilter || populating || pos < 0 || pos >= nodeTags.size()) return;
                 pendingNode = nodeTags.get(pos);
+                updateFavoriteButton();
                 if (ProxyVpnService.state == ProxyVpnService.STATE_RUNNING
                         && !pendingNode.equals(appliedSelection)) {
                     appendLog("切换到 " + (pendingNode.equals("auto") ? "自动选线" : pendingNode) + " …");
@@ -126,6 +137,43 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             @Override public void onNothingSelected(AdapterView<?> p) {}
         });
         root.addView(spinner);
+
+        searchInput = new EditText(this);
+        searchInput.setHint("搜索节点 / 地区 / 协议");
+        searchInput.setSingleLine(true);
+        searchInput.setContentDescription("搜索节点");
+        searchInput.setMinimumHeight(dp(48));
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) { rebuildSpinner(); }
+        });
+        root.addView(searchInput);
+
+        LinearLayout filterRow = new LinearLayout(this);
+        filterRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterSpinner = new Spinner(this);
+        filterSpinner.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item,
+                new String[]{"全部", "收藏", "VLESS", "VMess", "Trojan", "Shadowsocks", "Hysteria2"}));
+        filterSpinner.setContentDescription("按协议或收藏筛选节点");
+        filterSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!changingFilter && !populating) rebuildSpinner();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        filterRow.addView(filterSpinner, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        favoriteButton = new Button(this);
+        favoriteButton.setText("☆ 收藏");
+        favoriteButton.setAllCaps(false);
+        favoriteButton.setContentDescription("收藏或取消收藏当前节点");
+        favoriteButton.setMinimumHeight(dp(48));
+        favoriteButton.setOnClickListener(view -> toggleFavorite());
+        filterRow.addView(favoriteButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(filterRow);
 
         LinearLayout tools = new LinearLayout(this);
         tools.setOrientation(LinearLayout.HORIZONTAL);
@@ -217,7 +265,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                         ? "已连接 · " + ProxyVpnService.runningNode : "未连接");
 
         // 公版不带任何内置节点；空池时给一次明确引导，别让用户点启动后只看到失败。
-        if (nodeList.isEmpty()) {
+        if (allNodes.isEmpty()) {
             appendLog("节点池为空：直接点「启动代理」会自动从公开源找节点；也可以导入自己的订阅。");
             ui.post(this::showEmptyHint);
         }
@@ -241,19 +289,37 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     // ------------------------------------------------------------- 节点列表
 
     private void rebuildSpinner() {
+        changingFilter = true;
         populating = true;
         nodeLabels.clear();
         nodeTags.clear();
         nodeList.clear();
+        allNodes.clear();
+        favoriteKeys.clear();
         nodeLabels.add("自动 · 智能选线（故障自动切换）");
         nodeTags.add("auto");
         try {
-            // v3.0：按本机实测排序——能用的（延迟升序）在最上面，未测的居中，不可用的沉底
-            for (ConfigBuilder.Node n : NodePool.sortedForDisplay(this, ConfigBuilder.loadNodes(this))) {
+            favoriteKeys.addAll(ConfigBuilder.loadFavorites(this));
+            allNodes.addAll(NodePool.sortedForDisplay(this, ConfigBuilder.loadNodes(this)));
+            String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+            int filter = filterSpinner == null ? 0 : filterSpinner.getSelectedItemPosition();
+            for (ConfigBuilder.Node n : allNodes) {
+                String protocol = n.outbound.optString("protocol", "").toLowerCase(Locale.ROOT);
+                boolean protocolMatch = filter == 0 || filter == 1
+                        || (filter == 2 && protocol.equals("vless"))
+                        || (filter == 3 && protocol.equals("vmess"))
+                        || (filter == 4 && protocol.equals("trojan"))
+                        || (filter == 5 && protocol.equals("shadowsocks"))
+                        || (filter == 6 && protocol.equals("hysteria"));
+                boolean favoriteMatch = filter != 1 || favoriteKeys.contains(n.key);
+                boolean queryMatch = query.isEmpty() || (n.name + " " + n.tag + " " + protocol)
+                        .toLowerCase(Locale.ROOT).contains(query);
+                if (!protocolMatch || !favoriteMatch || !queryMatch) continue;
                 nodeList.add(n);
                 nodeTags.add(n.tag);
                 nodeLabels.add(labelFor(n));
             }
+            if (nodeList.isEmpty()) nodeLabels.add("没有匹配的节点");
         } catch (Exception e) {
             nodeLabels.add("节点读取失败");
             nodeTags.add("auto");
@@ -265,6 +331,45 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         int idx = nodeTags.indexOf(pendingNode);
         spinner.setSelection(idx < 0 ? 0 : idx);
         populating = false;
+        changingFilter = false;
+        updateFavoriteButton();
+    }
+
+    private void toggleFavorite() {
+        int position = spinner.getSelectedItemPosition();
+        if (position <= 0 || position >= nodeTags.size()) {
+            toast("请先选择一个具体节点");
+            return;
+        }
+        String tag = nodeTags.get(position);
+        for (ConfigBuilder.Node node : allNodes) {
+            if (!node.tag.equals(tag)) continue;
+            boolean remove = favoriteKeys.contains(node.key);
+            if (remove) favoriteKeys.remove(node.key);
+            else favoriteKeys.add(node.key);
+            if (!ConfigBuilder.saveFavorites(this, favoriteKeys)) {
+                toast("安全存储不可用，收藏未保存");
+                return;
+            }
+            toast(remove ? "已取消收藏" : "已收藏 " + node.name);
+            rebuildSpinner();
+            return;
+        }
+    }
+
+    private void updateFavoriteButton() {
+        if (favoriteButton == null) return;
+        int position = spinner.getSelectedItemPosition();
+        boolean selected = position > 0 && position < nodeTags.size();
+        if (selected) {
+            for (ConfigBuilder.Node node : allNodes) {
+                if (node.tag.equals(nodeTags.get(position))) {
+                    favoriteButton.setText(favoriteKeys.contains(node.key) ? "★ 已收藏" : "☆ 收藏");
+                    return;
+                }
+            }
+        }
+        favoriteButton.setText("☆ 收藏");
     }
 
     private String labelFor(ConfigBuilder.Node n) {
@@ -284,7 +389,8 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         }
         if (e != null && e.frag && e.ms > 0) suffix += " · 分片";
         // AI✓ = 这个节点实测过得了 ChatGPT/Claude 的地区闸门（AI 域名只走这些）
-        return n.name + (n.cg ? " · AI✓" : "") + suffix;
+        return (favoriteKeys.contains(n.key) ? "★ " : "") + n.name
+                + (n.cg ? " · AI✓" : "") + suffix;
     }
 
     private void refreshLabels() {
@@ -303,6 +409,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         final String[] items = {
                 "从公开源导入（抓取后在本机逐个实测，只留能连上的）",
                 "粘贴分享链接 / 订阅地址",
+                "订阅管理（更新 / 启停 / 删除）",
                 "清理不可用的导入节点",
                 "清空已导入的节点",
                 "每应用代理（留空＝全部应用）"
@@ -312,8 +419,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 .setItems(items, (d, which) -> {
                     if (which == 0) importFromPublicSources();
                     else if (which == 1) showPasteDialog();
-                    else if (which == 2) pruneDead();
-                    else if (which == 3) clearImported();
+                    else if (which == 2) showSubscriptionManager();
+                    else if (which == 3) pruneDead();
+                    else if (which == 4) clearImported();
                     else showAppProxyDialog();
                 })
                 .setNegativeButton("取消", null)
@@ -417,6 +525,10 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 if (control.isCancelled()) return;
                 List<String> uris;
                 if (looksLikeSubscription(t)) {
+                    String name = subscriptionName(t);
+                    if (!ConfigBuilder.upsertSubscription(this, name, t)) {
+                        throw new IllegalStateException("订阅地址安全存储失败");
+                    }
                     appendLog("拉取订阅…");
                     uris = ConfigBuilder.fetchSubscription(t, control);
                 } else {
@@ -426,6 +538,11 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 uris = ConfigBuilder.screenImports(this, uris, logs);
                 if (control.isCancelled()) return;
                 int added = NodePool.addUris(this, uris);
+                if (looksLikeSubscription(t)) {
+                    ConfigBuilder.saveSubscriptions(this, SubscriptionCatalog.touch(
+                            ConfigBuilder.loadSubscriptions(this), t,
+                            System.currentTimeMillis(), added));
+                }
                 int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
                     if (control.isCancelled() || isFinishing()) return;
@@ -460,6 +577,113 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         int slash = rest.indexOf('/');
         int q = rest.indexOf('?');
         return (slash >= 0 && rest.substring(slash).length() > 1) || q >= 0;
+    }
+
+    private String subscriptionName(String url) throws GeneralSecurityException {
+        List<SubscriptionCatalog.Record> records = ConfigBuilder.loadSubscriptions(this);
+        for (SubscriptionCatalog.Record record : records) {
+            if (record.url.equals(url)) return record.name;
+        }
+        String host;
+        try { host = java.net.URI.create(url).getHost(); }
+        catch (Exception ignored) { host = "subscription"; }
+        String base = (host == null ? "subscription" : host)
+                .replaceAll("[^A-Za-z0-9.-]", "_");
+        if (base.isEmpty()) base = "subscription";
+        String candidate = base.substring(0, Math.min(36, base.length()));
+        int suffix = 2;
+        while (true) {
+            String name = candidate + (suffix == 2 ? "" : " " + suffix);
+            boolean used = false;
+            for (SubscriptionCatalog.Record record : records) {
+                if (record.name.equals(name)) { used = true; break; }
+            }
+            if (!used) return name;
+            suffix++;
+        }
+    }
+
+    private void showSubscriptionManager() {
+        List<SubscriptionCatalog.Record> records;
+        try {
+            records = ConfigBuilder.loadSubscriptions(this);
+        } catch (Exception error) {
+            toast("订阅读取失败：安全存储不可用，未修改任何数据");
+            return;
+        }
+        String[] labels = new String[records.size()];
+        for (int i = 0; i < records.size(); i++) {
+            SubscriptionCatalog.Record record = records.get(i);
+            labels[i] = record.name + (record.enabled ? " · 已启用" : " · 已停用")
+                    + (record.lastUpdate > 0 ? " · 上次新增 " + record.lastCount : " · 尚未更新");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("订阅管理")
+                .setNegativeButton("关闭", null)
+                .setNeutralButton("添加订阅", (dialog, which) -> showPasteDialog());
+        if (labels.length > 0) {
+            builder.setItems(labels, (dialog, which) -> {
+                SubscriptionCatalog.Record record = records.get(which);
+                new AlertDialog.Builder(this)
+                        .setTitle(record.name)
+                        .setItems(new String[]{"立即更新", record.enabled ? "停用" : "启用",
+                                "删除订阅（保留已导入节点）"}, (actionDialog, action) -> {
+                            if (action == 0) {
+                                updateSubscription(record);
+                            } else if (action == 1) {
+                                boolean saved = ConfigBuilder.saveSubscriptions(this,
+                                        SubscriptionCatalog.setEnabled(records, record.url, !record.enabled));
+                                toast(saved ? (record.enabled ? "订阅已停用" : "订阅已启用") : "安全存储不可用");
+                            } else {
+                                boolean saved = ConfigBuilder.saveSubscriptions(this,
+                                        SubscriptionCatalog.remove(records, record.url));
+                                toast(saved ? "订阅已删除，已导入节点仍保留" : "安全存储不可用");
+                            }
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            });
+        } else {
+            builder.setMessage("还没有保存的订阅。添加后地址会加密保存，更新时只显示名称和数量。");
+        }
+        builder.show();
+    }
+
+    private void updateSubscription(SubscriptionCatalog.Record record) {
+        if (importControl != null) importControl.cancel();
+        final TaskControl control = new TaskControl();
+        importControl = control;
+        importBtn.setEnabled(false);
+        new Thread(() -> {
+            List<String> logs = new ArrayList<>();
+            try {
+                List<String> uris = ConfigBuilder.fetchSubscription(record.url, control);
+                if (control.isCancelled()) return;
+                uris = ConfigBuilder.screenImports(this, uris, logs);
+                if (control.isCancelled()) return;
+                int added = NodePool.addUris(this, uris);
+                if (!ConfigBuilder.saveSubscriptions(this, SubscriptionCatalog.touch(
+                        ConfigBuilder.loadSubscriptions(this), record.url,
+                        System.currentTimeMillis(), added))) {
+                    throw new IllegalStateException("订阅元数据安全存储失败");
+                }
+                runOnUiThread(() -> {
+                    importBtn.setEnabled(true);
+                    if (control.isCancelled() || isFinishing()) return;
+                    for (String line : logs) appendLog("  · " + line);
+                    toast("订阅更新完成，新增 " + added + " 个节点");
+                    appendLog("订阅 " + record.name + " 更新完成：新增 " + added + " 个节点");
+                    rebuildSpinner();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    importBtn.setEnabled(true);
+                    if (control.isCancelled() || isFinishing()) return;
+                    toast("订阅更新失败：" + error.getMessage());
+                    appendLog("订阅 " + record.name + " 更新失败");
+                });
+            }
+        }, "subscription-update").start();
     }
 
     private void showAppProxyDialog() {
@@ -526,7 +750,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             return;
         }
         if (ProxyVpnService.state == ProxyVpnService.STATE_CONNECTING) return;
-        if (nodeList.isEmpty()) {
+        if (allNodes.isEmpty()) {
             appendLog("节点池为空：启动时会自动从公开源抓取并实测，约 1~3 分钟…");
         }
         Intent consent = VpnService.prepare(this);

@@ -33,6 +33,11 @@ def build(install_dir, output):
             if path.name in SKIP_FILES or path.suffix.lower() not in ALLOWED_SUFFIXES:
                 continue
             files[relative] = sha256(path)
+    for relative in ("runtime/python/python.exe", "runtime/tray.exe"):
+        path = install_dir / relative
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        files[relative] = sha256(path)
     document = {"schema": 1, "files": files}
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)

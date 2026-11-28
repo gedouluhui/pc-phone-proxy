@@ -8,10 +8,10 @@
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Android-lightgrey">
 </p>
 
-An auto-selecting proxy for **Windows (portable, sing-box)** and **Android (own app, Xray)**.
+An auto-selecting proxy for **Windows (portable + installed, sing-box)** and **Android (own app, Xray)**.
 It harvests public nodes, benchmarks them itself (TCP → download → upload → a region gate), picks the
 fastest working egress, switches when a node dies, and keeps domestic traffic direct.
-No account, no telemetry, no paid tier.
+No account, no telemetry, no paid tier. Current release line: **v4.0.0**.
 
 > **This repository ships no usable nodes.** Node credentials are someone else's password. The public APK
 > contains no nodes but does contain **one-tap import from public lists** (URLs only, fetched at runtime).
@@ -22,11 +22,20 @@ No account, no telemetry, no paid tier.
 > Build the private variant yourself (`assets/nodes.json` is git-ignored and must never be committed).
 > Both are signed with the same key, so they install over each other.
 
+**v4.0.0 (2026-11-28)** adds a least-privilege Windows TUN broker, install hash/ACL verification,
+DPAPI-protected loopback control credentials, transactional config replacement, a tray shell and signed
+update staging. Android adds Keystore-encrypted credentials, DNS-pinned HTTPS subscriptions, signed source
+manifests, subscription CRUD, node search/filter/favorites, per-app routing and cancellation-safe lifecycle.
+Release tooling emits CycloneDX 1.6 SBOMs, SLSA v1 provenance and signed monotonic update manifests.
+Offline builds and CI checks pass; real-device VPN/Keystore/network tests and real Windows TUN/UAC/upgrade
+acceptance remain required. The local Windows installer is unsigned and the APK uses the existing test key;
+production publishing still requires production signing and legal/compliance review.
+
 ![Android app](docs/phone-connected.png)
 
 ## What it does
 
-**Android (7.0+, v2.6)**
+**Android (7.0+, v4.0)**
 
 - One-tap start: benchmarks the whole pool concurrently, then Xray's observatory re-checks it every 10
   minutes with a 16 KB probe and fails over automatically
@@ -38,8 +47,10 @@ No account, no telemetry, no paid tier.
   egress — the classic "internet works but ChatGPT returns 403"
 - **Kernel pre-check / quarantine (v2.6)**: imports and every start validate configs with the real Xray
   kernel in a zero-network dry run; nodes the kernel rejects are skipped instead of taking the tunnel down
-- Import: `vless://` `vmess://` `trojan://` `ss://` share links, `http(s)` subscriptions, or the built-in
-  public-source importer (7 lists, GitHub raw + jsDelivr mirror, 40 per source, 120 total)
+- Import: `vless://` `vmess://` `trojan://` `ss://` `hysteria2://` share links, HTTPS-only subscriptions,
+  or the signed public-source importer (raw + mirrors, runtime fetch, on-device validation)
+- Subscription manager (add/update/enable/disable/delete), node search, protocol filters and favorites;
+  URLs and credentials are stored as Android Keystore AES-256-GCM envelopes
 - TUN mode, no root; four ABIs (arm64-v8a, armeabi-v7a, x86, x86_64)
 - Manual node selection or auto; live up/down rate; clear guidance when the pool is empty
 
@@ -129,7 +140,10 @@ links and bundled nodes go through the same parser.
 - **APK**: see [`phone/README.md`](phone/README.md) — no Gradle; `build_apk.py` runs
   `javac → d8 → aapt2 → zip → zipalign → apksigner`. Needs JDK 17, Android SDK build-tools and
   `libv2ray.aar` from [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite/releases).
-- **Windows**: plain Python, no build step — drop `sing-box.exe` into `pc/_proxy/bin/`.
+- **Windows**: portable mode remains plain Python. The installed product is built from `pc/app`, `pc/_proxy`
+  and `pc/installer/PhoneProxy.iss`; stage `pc/runtime/python`, `pc/runtime/tray.exe` and `pc/_proxy/bin`,
+  compile with Inno Setup 7.1.1, then run `python pc/check_release.py pc/dist/PhoneProxy-Setup-4.0.0.exe`.
+  The local installer is unsigned; production releases must be code-signed.
 
 ## Split-routing self-healing (2026-11-18)
 
@@ -155,6 +169,11 @@ de-duplicated. `doctor.py` / `check-proxy.bat` gives a layered verdict (ports �
 - ChatGPT's region gate eliminates some nodes; elimination doesn't mean the node is broken
 - Android 7.0+ only; iOS and HarmonyOS NEXT are not supported
 - The Windows side is only tested on Windows 10/11 x64
+- v4.0.0 offline builds and automated checks do not replace real Windows TUN/UAC/upgrade acceptance or
+  physical-device VPN/Keystore/network/DNS/IPv6/WebRTC/battery/accessibility testing
+- The desktop APK uses the existing test keystore and the local Windows installer is unsigned. Production
+  publishing requires production signing and legal/compliance review; hardening is not authorization to
+  provide cross-border network services in mainland China
 
 ## License
 

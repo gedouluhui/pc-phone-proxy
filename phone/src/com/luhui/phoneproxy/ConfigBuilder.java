@@ -4,11 +4,13 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -35,6 +37,8 @@ public final class ConfigBuilder {
 
     public static final String PREFS = "imported";
     public static final String KEY_URIS = "uris";
+    public static final String KEY_SUBSCRIPTIONS = "subscriptions";
+    public static final String KEY_FAVORITES = "favorite_nodes";
     /**
      * 导入池上限。v3.0 起导入池只放「本机实测能连上」的节点（死节点会被
      * {@link NodePool#pruneDeadImports} 清掉），80 个足够；运行配置再从里面挑最快的 30 个。
@@ -400,6 +404,40 @@ public final class ConfigBuilder {
             }
         } catch (Exception ignored) {}
         return out;
+    }
+
+    public static List<SubscriptionCatalog.Record> loadSubscriptions(Context ctx)
+            throws GeneralSecurityException {
+        return SubscriptionCatalog.parse(SecureStore.get(ctx, KEY_SUBSCRIPTIONS));
+    }
+
+    public static boolean saveSubscriptions(Context ctx, List<SubscriptionCatalog.Record> records) {
+        return SecureStore.put(ctx, KEY_SUBSCRIPTIONS, SubscriptionCatalog.serialize(records));
+    }
+
+    public static boolean upsertSubscription(Context ctx, String name, String url)
+            throws GeneralSecurityException {
+        return saveSubscriptions(ctx, SubscriptionCatalog.upsert(loadSubscriptions(ctx), name, url));
+    }
+
+    public static java.util.Set<String> loadFavorites(Context ctx)
+            throws GeneralSecurityException, JSONException {
+        java.util.Set<String> result = new HashSet<>();
+        String raw = SecureStore.get(ctx, KEY_FAVORITES);
+        if (raw != null) {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                String key = array.optString(i, "");
+                if (!key.isEmpty()) result.add(key);
+            }
+        }
+        return result;
+    }
+
+    public static boolean saveFavorites(Context ctx, java.util.Set<String> keys) {
+        JSONArray array = new JSONArray();
+        for (String key : keys) array.put(key);
+        return SecureStore.put(ctx, KEY_FAVORITES, array.toString());
     }
 
     // ---------------------------------------------------------- 内核预检

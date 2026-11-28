@@ -20,10 +20,10 @@
 
 ## Implementation Status (2026-11-28)
 
-- Windows: verified elevated broker, install manifest/ACL checks, separated `PHONEPROXY_DATA_DIR`, no elevated scheduled-task creation, identity-checked legacy task deletion, tray state/UI, signed update staging, and Inno Setup source are implemented. The installer has not been compiled because the release runtime/tray executable and Inno Setup toolchain are not present in this workspace.
-- Release: CycloneDX 1.6 SBOM, in-toto/SLSA v1 provenance, signed monotonic release manifests, artifact hash verification, pinned Actions and pinned engine downloads are implemented and tested.
-- Android: target SDK 36, dark palette, accessibility labels/48dp controls, encrypted per-app allowlist, and 16 KiB APK alignment checks are implemented. A debug API 36 APK builds and verifies successfully.
-- Still open: full subscription CRUD/search/favorites UI, installer compilation and upgrade/uninstall testing, visible tray GUI testing, physical-device VPN/Keystore/network/leak/battery/accessibility acceptance, and remote CI verification.
+- Windows: verified elevated broker, install manifest/ACL checks, separated `PHONEPROXY_DATA_DIR`, no elevated scheduled-task creation, identity-checked legacy task deletion, tray state/UI, signed update staging, and Inno Setup source are implemented. `runtime/tray.exe` was built and smoke-tested; `dist/PhoneProxy-Setup-4.0.0.exe` was compiled with Inno Setup 7.1.1 and passed the Windows PE/release guard. The updater now has an actual installed-layout regression and bundled `app/release_tools` verification modules.
+- Release: CycloneDX 1.6 SBOM, in-toto/SLSA v1 provenance, signed monotonic release manifests, artifact hash verification, pinned Actions and pinned engine downloads are implemented and tested. CI includes the Windows installer guard when an artifact exists.
+- Android: target SDK 36, dark palette, accessibility labels/48dp controls, encrypted per-app allowlist, subscription CRUD, search/filter/favorites, and 16 KiB APK alignment checks are implemented. A v4.0.0 public APK was built, signed with the existing test key, verified, aligned, and copied to the desktop package.
+- Still open: physical-device VPN/Keystore/network/leak/battery/accessibility acceptance, visible tray GUI and real Windows TUN/UAC/install/upgrade/uninstall acceptance, production APK signing with a non-demo password, Windows Authenticode signing, and legal/telecom/filing/privacy review for a mainland-China commercial service. Offline tests must not be reported as device acceptance.
 
 ## Verified Pins (2026-11-28)
 

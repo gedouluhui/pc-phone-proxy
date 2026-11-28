@@ -10,7 +10,11 @@ from ctypes import wintypes
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
-INSTALL = APP.parent
+if getattr(sys, "frozen", False):
+    INSTALL = Path(sys.executable).resolve().parent
+    APP = INSTALL / "app"
+else:
+    INSTALL = APP.parent
 PROXY = INSTALL / "_proxy"
 LOCAL = Path(os.environ.get("LOCALAPPDATA", ""))
 DATA = LOCAL / "PhoneProxy" / "data"
@@ -201,6 +205,9 @@ def window_proc(window, message, wparam, lparam):
 
 def main():
     global hwnd, icon, wndproc
+    if "--version" in sys.argv:
+        print("PhoneProxy tray 4.0.0")
+        return 0
     if sys.platform != "win32":
         raise SystemExit("tray requires Windows")
     if not PYTHON.is_file() or not (INSTALL / "install-manifest.json").is_file():

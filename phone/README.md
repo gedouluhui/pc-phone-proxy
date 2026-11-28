@@ -3,6 +3,28 @@
 一个自研的 Android 代理 App（包名 `com.luhui.phoneproxy`），Java 外壳 + Xray 内核。
 不需要 Gradle，`build_apk.py` 直接调用 JDK / Android SDK 命令行工具完成构建。
 
+## 可信核心与订阅产品化（v4.0，2026-11-28）
+
+- **版本与平台**：`versionCode=13`、`versionName=4.0.0`，minSdk 24 / targetSdk 36，禁止明文流量；
+  APK 继续校验 16 KiB 对齐，公开构建仍要求唯一的 `assets/nodes.json=[]`。
+- **订阅传输**：生产环境只接受 HTTPS；每个 URL 每跳只解析一次并校验全部 A/AAAA，拒绝私网、保留、
+  链路本地、元数据与 IPv4-mapped 私网地址；socket 固定到已验证 IP，同时保留原域名 SNI/Host 和
+  证书主机名校验。拒绝环境代理、HTTPS 降级、超过 3 次重定向和超过 2 MiB 的响应。
+- **签名源清单**：APK 内置公钥与同一份清单；远程清单必须通过 RSA/SHA-256 精确验签，schema/来源/版本
+  非法或版本不升时回退内置清单。私钥不进入仓库或 CI。
+- **凭据加密**：导入 URI、订阅 URL 与收藏键经 Android Keystore AES-256-GCM 信封写入；旧明文只在密文
+  `commit()` 成功后删除，Keystore 不可用时保留旧数据并警告，新写入直接失败，不退回明文。
+- **订阅管理**：最多 20 条，名称 1~40 字符且唯一、拒绝控制字符；支持添加、更新、启停、删除与元数据
+  记录。界面不显示完整订阅 URL，日志与诊断不输出凭据。
+- **节点整理**：新增名称/地区/协议搜索、全部/收藏/VLESS/VMess/Trojan/Shadowsocks/Hysteria2 筛选与收藏。
+- **生命周期**：启动、停止、测速、AI 闸门、订阅抓取和后台维护共用取消令牌；STOP 使用独立通道，
+  旧会话不能继续建立 VPN；网络切换去抖，核心死亡最多自动恢复 3 次；测试线程未真实结束时不发完成回调。
+- **按应用分流**：`allowed_apps` 加密存储，非空时映射到 `VpnService.Builder.addAllowedApplication`；
+  空列表保持全 VPN，不改变国内/敏感域/私有地址直连策略。
+- **验证边界**：JVM Proof、javac、真 Xray 投毒语料、aapt2/d8/签名/zipalign 与 CI 已通过；**尚未在物理
+  设备完成 VPN、Keystore、网络切换、DNS/IPv6/WebRTC、续航与无障碍验收**。当前桌面 APK 沿用既有测试
+  keystore，不是使用非演示口令的正式生产签名流程。
+
 ## 源清单实测 + 可远程更新 + 协议均衡取样（v3.2，2026-11-23）
 
 - **源清单逐条实测**：在用户的大陆网络下拉取了 39 个候选源。删掉 404 的 `aiboboxx/v2`、`mfuu`，
@@ -250,13 +272,15 @@ python check_release.py ../dist/手机代理-公版.apk  # APK 内嵌了几个�
 | `src/.../MainActivity.java` | 界面：一键启动/断开、节点下拉、测速、导入/订阅、日志、流量显示 |
 | `src/.../ProxyVpnService.java` | 前台 VPN 服务：建 TUN、启动/停止 Xray、统计流量、通知 |
 | `src/.../NodeConfigCodec.java` | 纯 JVM 解析器 + 完整 Xray 配置生成（可脱离 Android 测试） |
-| `src/.../ConfigBuilder.java` | Android 胶水：Context/偏好/网络/内核预检，委托 `NodeConfigCodec` 生成配置 |
+| `src/.../ConfigBuilder.java` | Android 胶水：Context/偏好/网络/内核预检，委托 `NodeConfigCodec` 生成配置；加密订阅 CRUD 与收藏键 |
+| `src/.../SubscriptionCatalog.java` | 纯 JVM 订阅 schema/CRUD：HTTPS、唯一名称/URL、数量与长度上限、启停/元数据/删除 |
+| `src/.../SecureStore.java` | Android Keystore AES-256-GCM 信封与旧明文迁移 |
 | `src/.../NodeHealth.java` | v3.0：本机实测健康度（按节点指纹持久化） |
 | `src/.../NodeTester.java` | v3.0：TCP 预筛 + 内核真实请求的两段式实测 |
 | `src/.../NodePool.java` | v3.0：导入池唯一写入口；公开源补充、死节点清理、运行配置选员；v3.1：综合评分与 leastLoad 代价系数 |
 | `tests/PoisonHarness.java` | 333 条投毒语料生成器，输出每条被接受的 outbound 与完整配置 |
 | `tools/check_poison.py` | 编译并运行投毒语料，逐条过 `xray run -test`，比对 golden |
-| `AndroidManifest.xml` | minSdk 24 / targetSdk 33，VPN Service 声明 |
+| `AndroidManifest.xml` | minSdk 24 / targetSdk 36，VPN Service 声明，禁止明文流量 |
 | `build_apk.py` | javac → d8 → aapt2 → zip → zipalign → apksigner |
 | `gen_nodes.py` / `gen_pool.py` | 把电脑端节点数据转换/挑选成 `assets/nodes.json` |
 

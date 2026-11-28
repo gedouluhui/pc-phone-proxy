@@ -26,7 +26,7 @@ jobs:
         run: python tools/check_ci_supply_chain.py
 
       - name: 语法检查（pc/_proxy）
-        run: python -m compileall -q pc/_proxy
+        run: python -m compileall -q pc/_proxy pc/app pc/check_release.py
 
       # 与用户便携版同版本的真 sing-box：tests_ci/test_singbox_configs.py 用它校验
       # TUN / 深测 / 延迟测三套生成配置（含 Hysteria2），生成器出错会在这里拦下，
@@ -82,8 +82,14 @@ jobs:
       - name: VPN 取消 / 会话 / 网络去抖 PoC（JDK）
         run: python phone/tests/run_lifecycle_poc.py
 
+      - name: 订阅 CRUD / schema PoC（JDK）
+        run: python phone/tests/run_catalog_poc.py
+
       - name: 发布前防泄漏自检
         run: python phone/check_release.py
+
+      - name: Windows 安装包发布闸门（存在时）
+        run: python pc/check_release.py
 
   android:
     runs-on: ubuntu-latest

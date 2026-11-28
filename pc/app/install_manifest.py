@@ -8,9 +8,11 @@ import subprocess
 from pathlib import Path
 
 NOWIN = 0x08000000
-REQUIRED = ("app/broker.py", "app/install_manifest.py", "_proxy/tun_mode.py",
+REQUIRED = ("app/broker.py", "app/install_manifest.py", "app/updater.py",
+            "app/release_tools/release_manifest.py", "app/release_tools/sign_sources.py",
+            "app/release_tools/verify_sources.py", "_proxy/tun_mode.py",
             "_proxy/tun_supervisor.py", "_proxy/bin/sing-box.exe",
-            "_proxy/bin/wintun.dll")
+            "_proxy/bin/wintun.dll", "runtime/python/python.exe", "runtime/tray.exe")
 
 
 def sha256(path):
