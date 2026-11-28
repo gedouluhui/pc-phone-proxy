@@ -4,20 +4,26 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   pc:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: CI Action / 二进制供应链 pin
+        run: python tools/check_ci_supply_chain.py
 
       - name: 语法检查（pc/_proxy）
         run: python -m compileall -q pc/_proxy
@@ -30,6 +36,9 @@ jobs:
         run: |
           $zip = Join-Path $env:RUNNER_TEMP "sb.zip"
           Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip" -OutFile $zip
+          $expected = "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df"
+          $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "sing-box SHA-256 mismatch: $actual" }
           Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "sb")
           $exe = Get-ChildItem -Recurse (Join-Path $env:RUNNER_TEMP "sb") -Filter sing-box.exe | Select-Object -First 1
           & $exe.FullName version
@@ -47,15 +56,18 @@ jobs:
       - name: Keystore AES/GCM 信封 PoC（JDK）
         run: python phone/tests/run_secure_envelope_poc.py
 
+      - name: VPN 取消 / 会话 / 网络去抖 PoC（JDK）
+        run: python phone/tests/run_lifecycle_poc.py
+
       - name: 发布前防泄漏自检
         run: python phone/check_release.py
 
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: temurin
           java-version: "17"
@@ -77,6 +89,7 @@ jobs:
           mkdir -p /tmp/lv /tmp/classes
           curl -sSL -o /tmp/libv2ray.aar \
             https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.11.9/libv2ray.aar
+          echo "cdfef146218233a31a8b52c8b1016557730d3b63fc121d4c84cacea50e669155  /tmp/libv2ray.aar" | sha256sum -c -
           unzip -o -q /tmp/libv2ray.aar classes.jar -d /tmp/lv
 
       - name: Java 编译检查（javac）
@@ -87,7 +100,7 @@ jobs:
           echo "javac OK: $(find /tmp/classes -name '*.class' | wc -l) classes"
 
       - name: 缓存 Xray / org.json（按固定版本）
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: phone/tools/.cache
           key: poison-${{ runner.os }}-xray-v26.11.9-json-20240303
