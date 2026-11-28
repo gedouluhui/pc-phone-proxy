@@ -25,6 +25,9 @@ class CiSupplyChainTests(unittest.TestCase):
         changed = WORKFLOW.replace(check.SINGBOX_SHA256, "0" * 64)
         self.assertTrue(any("sing-box" in error for error in check.check_text(changed)))
 
+    def test_release_workflows_are_pinned_and_verify_aar(self):
+        self.assertEqual(check.check_repository(), [])
+
     def test_write_permissions_are_rejected(self):
         changed = WORKFLOW.replace("contents: read", "contents: write")
         self.assertTrue(any("permissions" in error for error in check.check_text(changed)))

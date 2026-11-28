@@ -23,6 +23,7 @@ CloseApplications=yes
 
 [Files]
 Source: "..\app\*.py"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "..\app\release-public.pem"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "..\_proxy\*.py"; DestDir: "{app}\_proxy"; Excludes: "test_*.py"; Flags: ignoreversion
 Source: "..\_proxy\bin\*"; DestDir: "{app}\_proxy\bin"; Flags: ignoreversion
 Source: "..\_proxy\rulesets\*"; DestDir: "{app}\_proxy\rulesets"; Flags: ignoreversion

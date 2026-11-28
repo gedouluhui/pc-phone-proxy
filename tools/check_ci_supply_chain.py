@@ -44,8 +44,24 @@ def check_text(text):
     return errors
 
 
+def check_repository():
+    errors = []
+    for path in sorted(WORKFLOW.parent.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        for action, ref in re.findall(r"(?m)^\s*-?\s*uses:\s*([^\s@]+)@([^\s]+)", text):
+            if not re.fullmatch(r"[0-9a-f]{40}", ref):
+                errors.append("%s: action %s is not pinned to a commit SHA" % (path.name, action))
+            elif ACTION_PINS.get(action) != ref:
+                errors.append("%s: action %s has an unreviewed pin" % (path.name, action))
+        if path.name in ("phone-apk.yml", "release.yml"):
+            if AAR_SHA256 not in text or "sha256sum -c -" not in text:
+                errors.append("%s: AAR must be verified before use" % path.name)
+    errors.extend(check_text(WORKFLOW.read_text(encoding="utf-8")))
+    return errors
+
+
 def main():
-    errors = check_text(WORKFLOW.read_text(encoding="utf-8"))
+    errors = check_repository()
     for error in errors:
         print("FAIL " + error, file=sys.stderr)
     print("CI supply-chain pins OK" if not errors else "CI supply-chain pins INVALID")

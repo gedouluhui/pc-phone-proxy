@@ -112,6 +112,16 @@ def _harden_acl(path):
             pass
         raise ControlSecretError("cannot restrict control-secret ACL: " +
                                  (result.stderr or result.stdout).strip()[-300:])
+    found = subprocess.run(["icacls", path, "/findsid", "*" + sid],
+                           capture_output=True, text=True, creationflags=NOWIN, timeout=15)
+    listing = subprocess.run(["icacls", path], capture_output=True, text=True,
+                             creationflags=NOWIN, timeout=15)
+    if found.returncode != 0 or listing.returncode != 0 or "(I)" in (listing.stdout or ""):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise ControlSecretError("control-secret ACL verification failed")
 
 
 def _protect(data, entropy=_ENTROPY):

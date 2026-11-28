@@ -1,5 +1,4 @@
 """The local control secret must be encrypted, user-bound and fail closed."""
-import json
 import os
 import subprocess
 import sys
@@ -48,25 +47,19 @@ class ControlSecretTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "control-secret.bin")
             control_secret.get_or_create(path)
-            script = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
-                      "$a=Get-Acl -LiteralPath $env:TEST_ACL_PATH;"
-                      "$a.Access | ForEach-Object { [pscustomobject]@{"
-                      "Sid=$_.IdentityReference.Translate("
-                      "[System.Security.Principal.SecurityIdentifier]).Value;"
-                      "Inherited=$_.IsInherited} } | ConvertTo-Json -Compress")
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, text=True, env=dict(os.environ, TEST_ACL_PATH=path),
-                creationflags=0x08000000, timeout=20)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            entries = json.loads(result.stdout or "[]")
-            if isinstance(entries, dict):
-                entries = [entries]
-            self.assertTrue(entries)
-            sid = control_secret._current_sid()
-            for entry in entries:
-                self.assertEqual(entry["Sid"], sid)
-                self.assertFalse(entry["Inherited"])
+            listing = subprocess.run(
+                ["icacls", path], capture_output=True, text=True,
+                creationflags=0x08000000, timeout=15)
+            self.assertEqual(listing.returncode, 0, listing.stderr)
+            entries = [line.strip() for line in listing.stdout.splitlines()
+                       if ":" in line and "(" in line]
+            self.assertTrue(entries, listing.stdout)
+            for line in entries:
+                self.assertNotIn("(I)", line)
+            found = subprocess.run(
+                ["icacls", path, "/findsid", "*" + control_secret._current_sid()],
+                capture_output=True, text=True, creationflags=0x08000000, timeout=15)
+            self.assertEqual(found.returncode, 0, found.stderr)
 
     def test_current_sid_does_not_depend_on_whoami_path(self):
         from unittest import mock

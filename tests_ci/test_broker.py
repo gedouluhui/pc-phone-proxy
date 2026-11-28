@@ -80,6 +80,11 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertIn("/Query", run.call_args.args[0])
 
+    def test_installer_packages_update_verification_key(self):
+        installer = (ROOT / "pc" / "installer" / "PhoneProxy.iss").read_text(encoding="utf-8")
+        self.assertIn("release-public.pem", installer)
+        self.assertIn("PHONEPROXY_DATA_DIR", (ROOT / "pc" / "app" / "tray.py").read_text(encoding="utf-8"))
+
     def test_non_elevated_broker_refuses_before_spawning(self):
         with mock.patch.object(broker.ctypes.windll.shell32, "IsUserAnAdmin", return_value=0), \
              mock.patch.object(broker.subprocess, "run") as run:

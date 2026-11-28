@@ -6,6 +6,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to create or update"
+        required: true
+        default: ""
 
 permissions:
   contents: write
@@ -16,13 +21,13 @@ jobs:
     # 没有配置签名 secret 时直接跳过，避免在这个仓库上跑出未签名的假产物。
     if: ${{ github.event_name == 'workflow_dispatch' || vars.RELEASE_SIGNING_READY == '1' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: temurin
           java-version: "17"
@@ -41,6 +46,7 @@ jobs:
           echo "${{ secrets.PROXY_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
           curl -sSL -o phone/libs/libv2ray.aar \
             https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.11.9/libv2ray.aar
+          echo "cdfef146218233a31a8b52c8b1016557730d3b63fc121d4c84cacea50e669155  phone/libs/libv2ray.aar" | sha256sum -c -
 
       - name: 构建公版（0 节点）
         env:
@@ -56,10 +62,12 @@ jobs:
           sha256sum "dist/手机代理-公版.apk" | tee dist/SHA256SUMS.txt
 
       - name: 发布
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/手机代理-公版.apk
-            dist/SHA256SUMS.txt
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}"
+          test -n "$TAG" || { echo "release_tag is required"; exit 1; }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "dist/手机代理-公版.apk" dist/SHA256SUMS.txt \
+            --clobber --repo "$GITHUB_REPOSITORY"

@@ -5,7 +5,6 @@ import sys
 import unittest
 from pathlib import Path
 
-import requests
 from unittest import mock
 
 PROXY = Path(__file__).resolve().parents[1] / "pc" / "_proxy"
@@ -17,9 +16,10 @@ import harvest
 class HarvestFetchTests(unittest.TestCase):
     def test_success_uses_hardened_fetcher_and_records_digest(self):
         body = b"1.2.3.4:8080\n"
+        legacy = mock.Mock()
         with mock.patch.object(harvest, "BOOTSTRAP", "http://127.0.0.1:2086"), \
              mock.patch.object(harvest.source_fetch, "fetch", return_value=body) as fetch, \
-             mock.patch.object(requests, "get") as legacy:
+             mock.patch.dict(sys.modules, {"requests": legacy}):
             result = harvest.fetch("sample", "https://example.com/list", timeout=12)
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], 200)
@@ -48,10 +48,11 @@ class HarvestFetchTests(unittest.TestCase):
         self.assertNotIn("fetch_url", row)
 
     def test_rejected_source_has_no_unpinned_retry(self):
+        legacy = mock.Mock()
         with mock.patch.object(harvest, "BOOTSTRAP", ""), \
              mock.patch.object(harvest.source_fetch, "fetch",
                                side_effect=harvest.source_fetch.Rejected("private address")), \
-             mock.patch.object(requests, "get") as legacy:
+             mock.patch.dict(sys.modules, {"requests": legacy}):
             result = harvest.fetch("sample", "http://127.0.0.1/list")
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], 0)
