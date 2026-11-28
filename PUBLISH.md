@@ -1,135 +1,120 @@
 # 发布到 GitHub（维护者步骤）
 
-本地已经是一个提交好的 git 仓库（分支 `main`）。因为这台机器上既没有 GitHub 登录凭据、
-也没有 `gh` 命令行，最后一步「建仓库 + push + 上传 Release」需要你在网页上完成，约 3 分钟。
+本仓库已公开：<https://github.com/gedouluhui/pc-phone-proxy>。当前版本线为 **v4.0.0**。
+不要 force push，不要用 `commit --amend` 改历史；新修复创建新提交，CI 全绿后才能非 force 快进 `main`。
 
 ## 0. 发布前自检
 
-在仓库目录执行：
+在仓库根目录执行：
 
 ```bash
-git log --oneline -1
-git ls-files | grep -E "pinned\.json|nodes\.json|node_deep|\.keystore|dist/.*\.apk"
+python tools/check_ci_supply_chain.py
+python tools/verify_sources.py
+python tools/sync_policy.py --check
+python tools/run_ci_tests.py
+python phone/tests/run_catalog_poc.py
+python phone/check_release.py
+python pc/check_release.py
 ```
 
-第二条**应该没有任何输出**。若列出了文件，先不要 push：先把清单里的凭据移出仓库或加进 `.gitignore`。
+`phone/check_release.py` 与 `pc/check_release.py` 必须确认 git 没有跟踪节点凭据、keystore、APK 或 Windows 二进制。
+真实 Windows TUN/UAC/安装升级卸载、托盘 GUI 与 Android 真机 VPN/Keystore/网络切换/泄漏/续航/无障碍未验收前，
+不得把离线 CI 写成生产验收通过。
 
-## 1. 建一个空仓库
+## 1. Android 公版 APK
 
-打开 <https://github.com/new>：
+公开构建必须同时满足：
 
-- Repository name：`pc-phone-proxy`（想换名字可以换，下面命令同步改）
-- 可见性：**Public**
-- **不要**勾选 "Add a README file" / ".gitignore" / "license"（本地已有，勾了会冲突）
-
-点 **Create repository**。
-
-## 2. 首次 push
-
-GitHub 的创建成功页会显示仓库地址。在仓库目录执行：
+- `PROXY_RELEASE=1`：要求已有 keystore 和非空、非演示口令 `PROXY_KS_PASS`，绝不自动生成密钥。
+- `--public`：所选节点输入必须恰为空数组，最终 APK 内唯一的 `assets/nodes.json=[]`。
+- JDK 17、Android SDK build-tools 与 `android-36` platform。
+- `phone/libs/libv2ray.aar` 为 v26.11.9，SHA-256
+  `cdfef146218233a31a8b52c8b1016557730d3b63fc121d4c84cacea50e669155`。
 
 ```bash
-git remote add origin https://github.com/<你的用户名>/pc-phone-proxy.git
-git push -u origin main
+PROXY_RELEASE=1 \
+PROXY_KEYSTORE=/secure/path/phoneproxy.keystore \
+PROXY_KS_ALIAS=phoneproxy \
+PROXY_KS_PASS='<non-demo password from a secret channel>' \
+PROXY_NODES_JSON=phone/assets/nodes.sample.json \
+PROXY_APK_OUT=dist/手机代理-公版.apk \
+python phone/build_apk.py --public
+python phone/check_release.py dist/手机代理-公版.apk
 ```
 
-第一次 push 会弹窗要求登录 GitHub（Git Credential Manager / 浏览器授权）。
-登录一次之后，以后 push 不用再输密码。
+`build_apk.py` 会完成 javac、d8、aapt2、签名、验签和 16 KiB 对齐检查，验证成功后原子替换产物。
+本机 2026-11-28 的桌面 APK 沿用既有测试 keystore，**不是**上述正式签名流程。
 
-> 如果弹窗授权失败，可以在 GitHub「Settings → Developer settings → Personal access tokens」
-> 建一个只勾 `repo` 权限的 token，push 时用户名填 GitHub 用户名、密码填 token。
-> token 等同于密码，不要粘贴到聊天、文档或截图里。
+## 2. Windows 安装包
 
-## 3. 发布公版 APK（Release）
+准备以下被 `.gitignore` 排除的构建输入：
 
-1. 打开仓库页 → 右侧 **Releases** → **Draft a new release**
-2. **Choose a tag**：输入 `v2.6` → 点 "Create new tag: v2.6 on publish"
-3. Release title：`v2.6 — 真内核预检、假死流放行、单实例 TUN`
-4. 描述可以直接复制：
+- `pc/runtime/python/`：内嵌 CPython 与 `pc/_proxy/requirements.txt` 的依赖。
+- `pc/runtime/tray.exe`：由 `pc/app/tray.py` 构建的 PyInstaller 托盘，先运行 `tray.exe --version` 冒烟。
+- `pc/_proxy/bin/sing-box.exe`：sing-box 1.14.4，ZIP SHA-256
+  `99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df`。
+- `pc/_proxy/bin/wintun.dll`：0.14.1，当前观察到的 DLL SHA-256
+  `d694fa46ab4cfebcb2632d094c7aa97278eef2f8052438621766d863ae98a931`，并验证 WireGuard LLC 签名。
 
-   ```text
-   v2.6。
-
-   手机端：PhoneProxy-public.apk（Android 7.0+，不内置节点，安装后导入自己的分享链接/订阅）
-   - 导入与启动前用真 Xray 内核做零网络配置预检，坏节点自动隔离
-   - AI 闸门缓存 1 天；observatory 探针 16KB / 10 分钟
-
-   电脑端：见仓库 pc/ 目录，Windows 10/11 x64（V3.2）
-   - TUN 单实例，原 2098 GAI 出口并入主配置
-   - 低速假死流判定放行；PC 解析器投毒用例
-
-   SHA256（PhoneProxy-public.apk）：
-   0890349b80f591932847054b1f45c0b61bb8eb3ec8e0225a2a229192ac8651ff
-   ```
-
-5. 把 `dist/手机代理-公版.apk` 拖进 **Attach binaries** 区域（约 54 MB，上传需要一会儿）
-6. 点 **Publish release**
-
-> GitHub 会把 Release 资产名里的中文剥掉（实测 `手机代理-公版.apk` 会变成 `-.apk`），所以资产名统一用 ASCII 的 `PhoneProxy-public.apk`；本地构建产物仍叫 `手机代理-公版.apk`，两者字节相同。
-
-> **发版前对一遍版本**：`phone/AndroidManifest.xml` 的 `versionName` 是源码真相，
-> `dist/SHA256SUMS.txt` 是**已发布资产**的校验值，两者必须同时更新，否则源码说 2.6、
-> 用户下到的还是 2.5 且校验值对不上。
->
-> 电脑端（2026-11-23）：仓库内 PC 脚本为 **V3.2**（真关闭 / 静态代理兜底 /
-> 下载保护 / 低速假死流放行 / TUN 单实例），以源码形式发布，不随 APK 资产打包。
->
-> 当前状态（2026-11-23）：已发布 **v2.6**
-> （<https://github.com/gedouluhui/pc-phone-proxy/releases/tag/v2.6>），
-> 资产 `PhoneProxy-public.apk` 56,964,102 B，
-> SHA256 `0890349b80f591932847054b1f45c0b61bb8eb3ec8e0225a2a229192ac8651ff`，
-> 与 `dist/手机代理-公版.apk` 字节一致。下次发版按上面第 5 步重新上传并改这一行。
->
-> **公开版必须 `python build_apk.py --public`**。不带参数时脚本会把本地
-> `assets/nodes.json`（真实节点凭据）打进 APK；2026-11-18 第一次发的 v2.5 资产就是这样
-> 把 24 个节点带上去的，十分钟后才发现并替换。现在 `--public` 会强制空表并在打包后
-> 读回 APK 断言节点数为 0；发版前运行
-> `python phone/check_release.py dist/手机代理-公版.apk`，必须打印 `assets/nodes.json = []`。
-
-## 4. 发布后验证
-
-- 仓库首页的 README 能正常显示，图片 `docs/phone-connected.png` 能打开。
-- Releases 页面能看到 `PhoneProxy-public.apk`，下载后校验：
-
-  ```bash
-  # Windows PowerShell
-  Get-FileHash .\PhoneProxy-public.apk -Algorithm SHA256
-  ```
-
-  结果应为 `0890349B80F591932847054B1F45C0B61BB8EB3EC8E0225A2A229192AC8651FF`。
-- 用手机浏览器打开 Release 页面，确认能下载并安装。
-
-## 5. 可选：让提交作者显示成你自己
-
-本地这次提交用的是占位身份。如果你想把它改成自己的 GitHub 身份：
+用 Inno Setup 7.1.1 编译：
 
 ```bash
-git config user.name "你的名字"
-git config user.email "你的邮箱"
-git commit --amend --reset-author --no-edit
-git push -f origin main   # 仅在还没别人克隆时使用
+ISCC.exe pc/installer/PhoneProxy.iss
+python pc/check_release.py pc/dist/PhoneProxy-Setup-4.0.0.exe
 ```
 
-## 6. 不要公开的东西（再强调一次）
+安装版将代码放在 `Program Files\PhoneProxy`，用户数据放在 `%LOCALAPPDATA%\PhoneProxy`。
+TUN 由 broker 按需请求 UAC；便携版不得注册提权计划任务。
 
-以下文件已被 `.gitignore` 排除，**永远不要**用 `git add -f` 强行提交：
-`pinned.json`、`phone/assets/nodes.json`、`node_deep*.json`、`*.keystore`、`dist/*.apk`。
-节点 URI 里含 UUID/密码，keystore 是签名私钥；公开等于把节点和 APP 更新权一起送人。
+**本机生成的安装包没有 Authenticode 签名。正式对外发布前必须用生产代码签名证书签名托盘和安装包，
+并让 `PROXY_RELEASE=1 python pc/check_release.py <installer>` 通过；不要把本地未签名包标成正式发行版。**
 
-## v2.7（2026-11-23）
+## 3. GitHub Actions
 
-- 公版：`dist/手机代理-公版.apk`（versionCode 9 / versionName 2.7，0 节点）
-- 校验：见 `dist/SHA256SUMS.txt`
-- 变更：`host:port/` 形式分享链接不再被判为不可用；CI 增加完整打包校验
-- 发布：把该 APK 作为 `v2.7` 的资产上传，标题沿用 `PhoneProxy-public.apk` 命名习惯
+- `.github/workflows/ci.yml`：每次 push/PR 跑 Windows/Android 编译、回归、Proof、投毒语料和发布闸门。
+- `.github/workflows/phone-apk.yml`：手动构建公版 APK，可上传到指定 Release。
+- `.github/workflows/release.yml`：推送 `v*` tag 或手动触发时构建并发布公版 APK。
 
-## 自动发布（可选，替代手工上传）
+`phone-apk.yml` 需要：
 
-`.github/workflows/release.yml` 会在推送 `v*` tag 时构建公版并挂到 Release。
-启用需要两样东西（仓库 Settings → Secrets/Variables）：
+- `secrets.PHONE_KS_B64`：keystore 的 base64。
+- `secrets.PHONE_KS_PASS`：keystore/key 口令。
 
-1. `secrets.PROXY_KEYSTORE_BASE64`：`base64 -w0 phone/phoneproxy.keystore`
-2. `secrets.PROXY_KS_PASS` 与 `vars.PROXY_KS_ALIAS`
-3. `vars.RELEASE_SIGNING_READY=1`（没设置时 workflow 直接跳过，避免产出未签名的假包）
+`release.yml` 需要：
 
-之后发布只要：`git tag v2.7 && git push origin v2.7`。
+- `secrets.PROXY_KEYSTORE_BASE64`
+- `secrets.PROXY_KS_PASS`
+- `vars.PROXY_KS_ALIAS`
+- `vars.RELEASE_SIGNING_READY=1`
+
+ secret 缺失时不要绕过守卫，也不要把演示口令 `android` 改成生产口令。
+
+## 4. 更新清单与发布资产
+
+Windows 更新只接受与 `pc/app/release-public.pem` 对应的私钥签名、SHA-256/大小匹配且版本递增的清单：
+
+```bash
+python tools/release_manifest.py --create <spec.json> \
+  --private-key <offline-private-key.pem> \
+  --manifest dist/release-manifest.json \
+  --signature dist/release-manifest.sig
+python tools/release_manifest.py --verify \
+  --manifest dist/release-manifest.json \
+  --signature dist/release-manifest.sig \
+  --public-key pc/app/release-public.pem
+```
+
+发布 Release 时资产名使用 ASCII（如 `PhoneProxy-public.apk`、`PhoneProxy-Setup-4.0.0.exe`），
+上传后重新下载并核对 SHA-256。SBOM/provenance 由 `tools/generate_sbom.py` 与
+`tools/generate_provenance.py` 生成；不要把生成物里的本机绝对路径当作可复现入口。
+
+## 5. 永远不要公开
+
+`pinned.json`、`phone/assets/nodes.json`、`node_deep*.json`、订阅 URL/token、`*.keystore`、
+私钥、真实诊断数据和含节点 APK。节点 URI 含 UUID/密码，keystore 与签名私钥等于更新权。
+需要排除已误跟踪文件时用 `git rm --cached <path>` 保留本地副本，不要 `git add -f`。
+
+## 6. 合规边界
+
+代码加固不构成在中国大陆提供跨境网络服务的法律授权。商业发布前仍需专业法律、电信、App 备案、
+隐私与数据保护评审，并准备隐私政策、支持渠道、漏洞披露和真实设备验收记录。

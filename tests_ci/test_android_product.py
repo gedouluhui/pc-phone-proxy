@@ -1,7 +1,10 @@
 """Android product packaging and per-app proxy must be wired through secure storage."""
+import hashlib
 import json
 import re
+import runpy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -58,6 +61,23 @@ class AndroidProductTests(unittest.TestCase):
         manager = manager.split("private void updateSubscription", 1)[0]
         self.assertIn("catch", manager)
         self.assertIn("订阅读取失败", manager)
+
+    def test_ci_prepares_pinned_json_jar_before_catalog_proof(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("json-20240303.jar", workflow)
+        self.assertIn("3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed", workflow)
+        self.assertLess(workflow.index("json-20240303.jar"),
+                        workflow.index("python phone/tests/run_catalog_poc.py"))
+
+    def test_catalog_proof_verifies_json_jar_hash(self):
+        runner = runpy.run_path(str(PHONE / "tests" / "run_catalog_poc.py"))
+        with tempfile.TemporaryDirectory() as directory:
+            jar = Path(directory) / "json.jar"
+            jar.write_bytes(b"synthetic jar")
+            digest = hashlib.sha256(jar.read_bytes()).hexdigest()
+            runner["verify_jar"](jar, digest)
+            with self.assertRaises(ValueError):
+                runner["verify_jar"](jar, "0" * 64)
 
     def test_ci_builds_with_api_36(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
