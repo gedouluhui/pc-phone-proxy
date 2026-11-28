@@ -36,10 +36,6 @@ public final class ValidatedHttp {
         InetAddress[] resolve(String host) throws UnknownHostException;
     }
 
-    public interface Cancellation {
-        boolean isCancelled();
-    }
-
     public static final class FetchException extends Exception {
         public final int status;
         public FetchException(String message) { this(message, 0); }

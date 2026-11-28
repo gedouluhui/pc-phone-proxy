@@ -60,6 +60,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
     private int gateTotal = 0;
     private boolean populating = false;
     private boolean emptyHinted = false;
+    private TaskControl importControl;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -386,20 +387,27 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             toast("没有可导入的内容");
             return;
         }
+        if (importControl != null) importControl.cancel();
+        final TaskControl control = new TaskControl();
+        importControl = control;
         new Thread(() -> {
             List<String> logs = new ArrayList<>();
             try {
+                if (control.isCancelled()) return;
                 List<String> uris;
                 if (looksLikeSubscription(t)) {
                     appendLog("拉取订阅…");
-                    uris = ConfigBuilder.fetchSubscription(t);
+                    uris = ConfigBuilder.fetchSubscription(t, control);
                 } else {
                     uris = ConfigBuilder.splitUris(t);
                 }
+                if (control.isCancelled()) return;
                 uris = ConfigBuilder.screenImports(this, uris, logs);
+                if (control.isCancelled()) return;
                 int added = NodePool.addUris(this, uris);
                 int total = ConfigBuilder.loadImportedUris(this).size();
                 runOnUiThread(() -> {
+                    if (control.isCancelled() || isFinishing()) return;
                     for (String l : logs) appendLog("  · " + l);
                     toast("导入 " + added + " 个新节点（共 " + total + "），开始实测…");
                     appendLog("导入 " + added + " 个新节点（共 " + total + "）；自己的订阅不做筛除，只实测标注");
@@ -411,7 +419,9 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                     }
                 });
             } catch (Exception e) {
+                if (control.isCancelled()) return;
                 runOnUiThread(() -> {
+                    if (control.isCancelled() || isFinishing()) return;
                     toast("导入失败：" + e.getMessage());
                     appendLog("导入失败：" + e.getMessage());
                 });
@@ -481,6 +491,24 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
                 .show();
     }
 
+    private void showKillSwitchGuide() {
+        if (isFinishing() || getSharedPreferences("phoneproxy", MODE_PRIVATE)
+                .getBoolean("kill_switch_guided", false)) return;
+        getSharedPreferences("phoneproxy", MODE_PRIVATE).edit()
+                .putBoolean("kill_switch_guided", true).apply();
+        new AlertDialog.Builder(this)
+                .setTitle("开启 VPN 防泄漏")
+                .setMessage("当前 TUN 已接管 IPv4/IPv6。若要在隧道意外断开时也阻止裸连，"
+                        + "请到系统 VPN 设置为本应用开启「始终开启 VPN」和「阻止无 VPN 的连接」。"
+                        + "不同 Android 版本的名称可能不同。")
+                .setPositiveButton("打开 VPN 设置", (d, w) -> {
+                    try { startActivity(new Intent(android.provider.Settings.ACTION_VPN_SETTINGS)); }
+                    catch (Exception ignored) { appendLog("无法打开系统 VPN 设置，请手动前往设置"); }
+                })
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
     private void applyStart(String node) {
         applyStart(node, false);
     }
@@ -526,6 +554,13 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
         if (ProxyVpnService.listener == this) ProxyVpnService.listener = null;
     }
 
+    @Override
+    protected void onDestroy() {
+        if (importControl != null) importControl.cancel();
+        ui.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
     // ------------------------------------------------------- Listener 回调
 
     @Override
@@ -534,6 +569,7 @@ public class MainActivity extends Activity implements ProxyVpnService.Listener {
             refresh(state, detail);
             if (state == ProxyVpnService.STATE_RUNNING) {
                 appliedSelection = ProxyVpnService.currentSelection;
+                showKillSwitchGuide();
             }
         });
     }

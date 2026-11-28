@@ -41,7 +41,7 @@ public final class ValidatedHttpPoc {
         }
     }
 
-    private static final class Cancellation implements ValidatedHttp.Cancellation {
+    private static final class Cancellation implements com.luhui.phoneproxy.Cancellation {
         boolean cancelled;
         @Override public boolean isCancelled() { return cancelled; }
     }

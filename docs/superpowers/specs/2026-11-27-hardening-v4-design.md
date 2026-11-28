@@ -212,6 +212,7 @@ Android UI / VpnService
 - 启动、测速、闸门、订阅抓取全部可取消；停止优先于排队任务。
 - 网络回调增加 `onLost`/`onCapabilitiesChanged` 去抖，清理旧网络健康度并重建或重绑内核。
 - 核心死亡检测与自动恢复；提供 always-on/“无 VPN 禁止联网”的用户引导。
+- 当前实现用 `LifecycleState` 管理会话代号，STOP 走独立停止通道；`TaskControl` 只有在线程池真实终止后才允许完成回调。网络丢失/能力变化按 1.5–3 秒去抖，核心死亡最多自动恢复 3 次并指数退避；真机行为仍需验收。
 
 ### 5.6 Android 产品化
 

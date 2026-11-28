@@ -13,7 +13,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import libv2ray.Libv2ray;
@@ -66,14 +65,20 @@ public final class NodeTester {
     public static Map<String, Long> run(Context ctx, final List<ConfigBuilder.Node> nodes,
                                         long budgetMs, final int enough,
                                         final Callback cb, final Runnable onAllDone) {
+        return run(ctx, nodes, budgetMs, enough, cb, onAllDone, () -> false);
+    }
+
+    public static Map<String, Long> run(Context ctx, final List<ConfigBuilder.Node> nodes,
+                                        long budgetMs, final int enough,
+                                        final Callback cb, final Runnable onAllDone,
+                                        final Cancellation cancellation) {
         final Context app = ctx.getApplicationContext();
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
         final Map<String, Long> results = new ConcurrentHashMap<>();
+        if (cancel.isCancelled()) return results;
         if (nodes == null || nodes.isEmpty()) {
-            if (onAllDone != null) {
-                try {
-                    onAllDone.run();
-                } catch (Throwable ignored) {
-                }
+            if (onAllDone != null && !cancel.isCancelled()) {
+                try { onAllDone.run(); } catch (Throwable ignored) {}
             }
             return results;
         }
@@ -85,77 +90,80 @@ public final class NodeTester {
         final int total = nodes.size();
         final AtomicInteger done = new AtomicInteger();
         final AtomicInteger alive = new AtomicInteger();
-        final ExecutorService tcpPool = Executors.newFixedThreadPool(Math.min(TCP_THREADS, total));
-        final ExecutorService corePool = Executors.newFixedThreadPool(Math.min(CORE_THREADS, total));
+        final ExecutorService tcpPool = daemonPool(Math.min(TCP_THREADS, total));
+        final ExecutorService corePool = daemonPool(Math.min(CORE_THREADS, total));
 
         for (final ConfigBuilder.Node n : nodes) {
+            if (cancel.isCancelled()) break;
             try {
                 tcpPool.execute(() -> {
-                    final long tcp = tcpProbe(n);
-                    if (tcp < 0) {
-                        finish(app, n, -1, results, done, alive, total, cb);
+                    if (cancel.isCancelled()) {
+                        finish(app, n, -1, results, done, alive, total, cb, cancel);
+                        return;
+                    }
+                    final long tcp = tcpProbe(n, cancel);
+                    if (tcp < 0 || cancel.isCancelled()) {
+                        finish(app, n, -1, results, done, alive, total, cb, cancel);
                         return;
                     }
                     try {
                         corePool.execute(() -> {
-                            long ms = coreProbe(n.outbound);
-                            // v3.1：TCP 能连上、TLS 却不通，多半是 SNI 被封。拆分 ClientHello 再试一次，
-                            // 通了就记下来，之后这个节点一律带分片（ConfigBuilder.loadNodes 负责套上）。
-                            if (ms <= 0 && tcp > 0 && NodeConfigCodec.canFragment(n.outbound)
+                            long ms = coreProbe(n.outbound, cancel);
+                            if (ms <= 0 && tcp > 0 && !cancel.isCancelled()
+                                    && NodeConfigCodec.canFragment(n.outbound)
                                     && !NodeConfigCodec.hasFragment(n.outbound)) {
                                 try {
-                                    long m2 = coreProbe(NodeConfigCodec.withTlsFragment(n.outbound));
-                                    if (m2 > 0) {
+                                    long m2 = coreProbe(NodeConfigCodec.withTlsFragment(n.outbound), cancel);
+                                    if (m2 > 0 && !cancel.isCancelled()) {
                                         NodeHealth.setFrag(app, n.key, true);
                                         ms = m2;
                                     }
-                                } catch (Throwable ignored) {
-                                }
+                                } catch (Throwable ignored) {}
                             }
-                            finish(app, n, ms, results, done, alive, total, cb);
+                            finish(app, n, ms, results, done, alive, total, cb, cancel);
                         });
                     } catch (RejectedExecutionException e) {
-                        finish(app, n, -1, results, done, alive, total, cb);
+                        finish(app, n, -1, results, done, alive, total, cb, cancel);
                     }
                 });
             } catch (RejectedExecutionException e) {
-                finish(app, n, -1, results, done, alive, total, cb);
+                finish(app, n, -1, results, done, alive, total, cb, cancel);
             }
         }
-        // 已提交的任务照常执行；corePool 要等 TCP 阶段全部结束才能关，否则后续提交会被拒
         tcpPool.shutdown();
 
         Thread reaper = new Thread(() -> {
-            try {
-                tcpPool.awaitTermination(10, TimeUnit.MINUTES);
-            } catch (InterruptedException ignored) {
+            boolean terminated;
+            if (cancel.isCancelled()) {
+                terminated = TaskControl.shutdownAndAwait(cancel, 60_000, tcpPool, corePool);
+            } else {
+                boolean tcpDone = TaskControl.shutdownAndAwait(cancel, 10 * 60_000, tcpPool);
+                if (tcpDone) {
+                    corePool.shutdown();
+                    terminated = TaskControl.shutdownAndAwait(cancel, 15 * 60_000, corePool);
+                } else {
+                    corePool.shutdownNow();
+                    terminated = false;
+                }
             }
-            corePool.shutdown();
-            try {
-                corePool.awaitTermination(15, TimeUnit.MINUTES);
-            } catch (InterruptedException ignored) {
+            if (!terminated) {
+                android.util.Log.w("PhoneProxy", "node tester threads did not terminate; completion suppressed");
+                TaskControl.shutdownAndAwait(() -> true, 5000, tcpPool, corePool);
             }
             NodeHealth.flush(app);
             RUNNING.decrementAndGet();
-            if (onAllDone != null) {
-                try {
-                    onAllDone.run();
-                } catch (Throwable ignored) {
-                }
+            if (terminated && onAllDone != null && !cancel.isCancelled()) {
+                try { onAllDone.run(); } catch (Throwable ignored) {}
             }
         }, "node-test-reaper");
         reaper.setDaemon(true);
         reaper.start();
 
         long deadline = System.currentTimeMillis() + Math.max(1000L, budgetMs);
-        while (System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() < deadline && !cancel.isCancelled()) {
             if (done.get() >= total) break;
             if (enough > 0 && alive.get() >= enough) break;
-            try {
-                Thread.sleep(250);
-            } catch (InterruptedException e) {
-                break;
-            }
+            try { Thread.sleep(250); } catch (InterruptedException e) { break; }
         }
         NodeHealth.flush(app);
         return new HashMap<>(results);
@@ -163,12 +171,14 @@ public final class NodeTester {
 
     private static void finish(Context app, ConfigBuilder.Node n, long ms,
                                Map<String, Long> results, AtomicInteger done,
-                               AtomicInteger alive, int total, Callback cb) {
+                               AtomicInteger alive, int total, Callback cb,
+                               Cancellation cancellation) {
+        int d = done.incrementAndGet();
+        if (cancellation.isCancelled()) return;
         long v = ms > 0 ? ms : -1;
         results.put(n.tag, v);
         NodeHealth.record(app, n.key, v);
         if (v > 0) alive.incrementAndGet();
-        int d = done.incrementAndGet();
         if (d % 40 == 0) NodeHealth.flush(app);
         if (cb != null) {
             try {
@@ -183,6 +193,11 @@ public final class NodeTester {
      * &lt;0 = 连不上。
      */
     static long tcpProbe(ConfigBuilder.Node n) {
+        return tcpProbe(n, () -> false);
+    }
+
+    static long tcpProbe(ConfigBuilder.Node n, Cancellation cancellation) {
+        if (cancellation.isCancelled()) return -1;
         String[] ep = ConfigBuilder.endpoint(n.outbound);
         if (ep == null || isUdpTransport(n.outbound)) return 0;
         int port;
@@ -195,7 +210,7 @@ public final class NodeTester {
         long t0 = System.nanoTime();
         try {
             s.connect(new InetSocketAddress(ep[0], port), TCP_TIMEOUT_MS);
-            return Math.max(1L, (System.nanoTime() - t0) / 1000000L);
+            return cancellation.isCancelled() ? -1 : Math.max(1L, (System.nanoTime() - t0) / 1000000L);
         } catch (Throwable e) {
             return -1;
         } finally {
@@ -208,13 +223,18 @@ public final class NodeTester {
 
     /** 内核真实请求一次；只认 200/204（libv2ray measureInstDelay 的规则）。 */
     static long coreProbe(JSONObject outbound) {
-        return coreFetch(outbound, PROBE_URL);
+        return coreProbe(outbound, () -> false);
     }
 
-    private static long coreFetch(JSONObject outbound, String url) {
+    static long coreProbe(JSONObject outbound, Cancellation cancellation) {
+        return coreFetch(outbound, PROBE_URL, cancellation);
+    }
+
+    private static long coreFetch(JSONObject outbound, String url, Cancellation cancellation) {
+        if (cancellation.isCancelled()) return -1;
         try {
             long ms = Libv2ray.measureOutboundDelay(ConfigBuilder.measureConfigOf(outbound), url);
-            return ms > 0 ? ms : -1;
+            return !cancellation.isCancelled() && ms > 0 ? ms : -1;
         } catch (Throwable t) {
             return -1;
         }
@@ -242,21 +262,31 @@ public final class NodeTester {
      * 计费网络（移动数据）只下 128 KB，Wi-Fi 下 256 KB。下载失败不判节点死，只记成很慢。
      */
     public static int speedTest(Context ctx, List<ConfigBuilder.Node> nodes, boolean metered) {
-        if (nodes == null || nodes.isEmpty()) return 0;
+        return speedTest(ctx, nodes, metered, () -> false);
+    }
+
+    public static int speedTest(Context ctx, List<ConfigBuilder.Node> nodes, boolean metered,
+                                Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
+        if (nodes == null || nodes.isEmpty() || cancel.isCancelled()) return 0;
         final Context app = ctx.getApplicationContext();
         final int bytes = metered ? 131072 : 262144;
         final AtomicInteger ok = new AtomicInteger();
         RUNNING.incrementAndGet();
-        ExecutorService pool = Executors.newFixedThreadPool(2);
+        ExecutorService pool = daemonPool(2);
+        boolean terminated = false;
         try {
             for (final ConfigBuilder.Node n : nodes) {
+                if (cancel.isCancelled()) break;
                 pool.execute(() -> {
+                    if (cancel.isCancelled()) return;
                     NodeHealth.Entry e = NodeHealth.get(app, n.key);
                     long base = e != null && e.ms > 0 ? e.ms : 0;
-                    long ms = coreFetch(n.outbound, SPEED_URL + bytes);
+                    long ms = coreFetch(n.outbound, SPEED_URL + bytes, cancel);
+                    if (cancel.isCancelled()) return;
                     long kbps;
                     if (ms <= 0) {
-                        kbps = 8; // 12 秒内没下完：当作极慢，排到后面
+                        kbps = 8;
                     } else {
                         long transfer = ms - base;
                         if (transfer < 60) transfer = Math.max(60, ms / 2);
@@ -266,8 +296,7 @@ public final class NodeTester {
                     NodeHealth.recordSpeed(app, n.key, kbps);
                 });
             }
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.MINUTES);
+            terminated = TaskControl.shutdownAndAwait(cancel, 5 * 60_000, pool);
         } catch (Throwable ignored) {
         } finally {
             pool.shutdownNow();
@@ -275,5 +304,13 @@ public final class NodeTester {
             RUNNING.decrementAndGet();
         }
         return ok.get();
+    }
+
+    private static ExecutorService daemonPool(int threads) {
+        return Executors.newFixedThreadPool(Math.max(1, threads), task -> {
+            Thread thread = new Thread(task, "node-test-worker");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 }

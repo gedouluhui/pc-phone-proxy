@@ -19,7 +19,6 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import libv2ray.Libv2ray;
 
@@ -93,6 +92,11 @@ public final class ConfigBuilder {
 
     /** Signed APK manifest first, then signed remote mirrors; never trust a mirror alone. */
     static String[][] resolveSources(Context ctx, List<String> log) {
+        return resolveSources(ctx, log, () -> false);
+    }
+
+    static String[][] resolveSources(Context ctx, List<String> log, Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
         String[][] fallback = PUBLIC_SOURCES;
         int builtinVersion = SourceManifest.BUILTIN_VERSION;
         try {
@@ -107,9 +111,11 @@ public final class ConfigBuilder {
         }
         int last = Math.max(builtinVersion, sourceVersion(ctx));
         for (String u : REMOTE_SOURCES) {
+            if (cancel.isCancelled()) break;
             try {
-                byte[] data = ValidatedHttp.fetch(u, 65536, 8000);
-                byte[] signature = ValidatedHttp.fetch(signatureUrl(u), 1024, 8000);
+                byte[] data = ValidatedHttp.fetch(u, 65536, 8000, cancel);
+                if (cancel.isCancelled()) break;
+                byte[] signature = ValidatedHttp.fetch(signatureUrl(u), 1024, 8000, cancel);
                 SourceManifest.Manifest manifest = SourceManifest.verify(data, signature);
                 if (!SourceManifest.isNewer(manifest.version, last)) continue;
                 if (!sourceVersion(ctx, manifest.version)) {
@@ -640,7 +646,11 @@ public final class ConfigBuilder {
 
     /** 拉取 HTTPS 订阅：单次解析、固定 IP、每跳重验、2 MiB 硬上限。 */
     public static List<String> fetchSubscription(String url) throws Exception {
-        byte[] raw = ValidatedHttp.fetch(url, ValidatedHttp.MAX_BYTES, 28000);
+        return fetchSubscription(url, () -> false);
+    }
+
+    public static List<String> fetchSubscription(String url, Cancellation cancellation) throws Exception {
+        byte[] raw = ValidatedHttp.fetch(url, ValidatedHttp.MAX_BYTES, 28000, cancellation);
         String body = new String(raw, StandardCharsets.UTF_8).trim();
         if (!body.contains("://")) {
             String decoded = tryB64(body);
@@ -656,7 +666,13 @@ public final class ConfigBuilder {
      * 返回的只是候选，是否入池由 {@link NodePool#refreshFromPublic} 的本机实测决定。
      */
     public static List<String> fetchPublicSources(Context ctx, List<String> log) {
-        final String[][] sources = resolveSources(ctx, log);
+        return fetchPublicSources(ctx, log, () -> false);
+    }
+
+    public static List<String> fetchPublicSources(Context ctx, List<String> log,
+                                                   Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
+        final String[][] sources = resolveSources(ctx, log, cancel);
         final int count = sources.length;
         final List<List<String>> got = new ArrayList<>();
         final String[] notes = new String[count];
@@ -665,12 +681,14 @@ public final class ConfigBuilder {
         for (int i = 0; i < count; i++) {
             final int idx = i;
             pool.execute(() -> {
+                if (cancel.isCancelled()) return;
                 String name = sources[idx][0];
                 List<String> urls = mirrorsOf(sources[idx][1]);
                 String err = "?";
                 for (int k = 0; k < urls.size(); k++) {
+                    if (cancel.isCancelled()) return;
                     try {
-                        List<String> list = fetchSubscription(urls.get(k));
+                        List<String> list = fetchSubscription(urls.get(k), cancel);
                         synchronized (got) {
                             got.set(idx, list);
                         }
@@ -684,12 +702,8 @@ public final class ConfigBuilder {
                 notes[idx] = name + " 失败：" + err;
             });
         }
-        pool.shutdown();
-        try {
-            pool.awaitTermination(150, TimeUnit.SECONDS);
-        } catch (InterruptedException ignored) {
-        }
-        pool.shutdownNow();
+        boolean terminated = TaskControl.shutdownAndAwait(cancel, 150_000, pool);
+        if (!terminated || cancel.isCancelled()) return new ArrayList<>();
 
         LinkedHashMap<String, String> byKey = new LinkedHashMap<>();
         int hyTotal = 0;

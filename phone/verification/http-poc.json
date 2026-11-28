@@ -3,6 +3,7 @@
   "jdk": "jdk-12.0.2",
   "tls_hostname_check": true,
   "sources": [
+    "phone/src/com/luhui/phoneproxy/Cancellation.java",
     "phone/src/com/luhui/phoneproxy/SubscriptionGuard.java",
     "phone/src/com/luhui/phoneproxy/ValidatedHttp.java"
   ],

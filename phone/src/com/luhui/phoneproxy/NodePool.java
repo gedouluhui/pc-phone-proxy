@@ -236,10 +236,19 @@ public final class NodePool {
      */
     public static int refreshFromPublic(Context ctx, List<String> logs, long budgetMs, int enough,
                                         NodeTester.Callback cb, final Runnable onLateMerge) {
+        return refreshFromPublic(ctx, logs, budgetMs, enough, cb, onLateMerge, () -> false);
+    }
+
+    public static int refreshFromPublic(Context ctx, List<String> logs, long budgetMs, int enough,
+                                        NodeTester.Callback cb, final Runnable onLateMerge,
+                                        Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
+        if (cancel.isCancelled()) return 0;
         final Context app = ctx.getApplicationContext();
         prefs(app).edit().putLong(KEY_LAST_REFRESH, System.currentTimeMillis()).apply();
 
-        List<String> fetched = ConfigBuilder.fetchPublicSources(app, logs);
+        List<String> fetched = ConfigBuilder.fetchPublicSources(app, logs, cancel);
+        if (cancel.isCancelled()) return 0;
         if (fetched.isEmpty()) {
             logs.add("公开源一个都没抓到：GitHub 与各镜像在当前网络都连不上。可以换个网络再试，或粘贴自己的订阅");
             return 0;
@@ -271,10 +280,12 @@ public final class NodePool {
         }
         logs.add("候选 " + cands.size() + " 个（已去重、已排除池内已有），在本机网络逐个实测…");
         Runnable late = () -> {
+            if (cancel.isCancelled()) return;
             int more = mergeAlive(app, cands, uriByTag);
-            if (more > 0 && onLateMerge != null) onLateMerge.run();
+            if (more > 0 && onLateMerge != null && !cancel.isCancelled()) onLateMerge.run();
         };
-        Map<String, Long> res = NodeTester.run(app, cands, budgetMs, enough, cb, late);
+        Map<String, Long> res = NodeTester.run(app, cands, budgetMs, enough, cb, late, cancel);
+        if (cancel.isCancelled()) return 0;
         int added = mergeAlive(app, cands, uriByTag);
         int alive = 0;
         for (Long v : res.values()) if (v != null && v > 0) alive++;

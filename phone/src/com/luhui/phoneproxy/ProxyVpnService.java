@@ -88,6 +88,18 @@ public class ProxyVpnService extends VpnService {
     private static final long RELOAD_MIN_GAP_MS = 8L * 60 * 1000;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /** STOP uses an independent channel so it never queues behind a blocking start. */
+    private final ExecutorService stopper = Executors.newSingleThreadExecutor();
+    private final Object coreLock = new Object();
+    private final LifecycleState lifecycle = new LifecycleState();
+    private final Set<TaskControl> tasks = Collections.synchronizedSet(new HashSet<TaskControl>());
+    private final NetworkDebouncer networkDebouncer = new NetworkDebouncer();
+    private final CoreRecoveryPolicy coreRecovery = new CoreRecoveryPolicy();
+    private volatile TaskControl maintenanceControl;
+    private volatile Network underlyingNetwork;
+    private volatile Network fingerprintedNetwork;
+    private volatile String networkFingerprint;
+    private volatile boolean underlyingDown;
     /** 一次闸门最多验证多少个节点。 */
     private static final int GATE_MAX = 24;
     private volatile boolean gating = false;
@@ -119,7 +131,10 @@ public class ProxyVpnService extends VpnService {
         String action = intent != null ? intent.getAction() : ACTION_START;
 
         if (ACTION_STOP.equals(action)) {
-            worker.submit(this::stopVpn);
+            int session = lifecycle.stop();
+            cancelAllTasks();
+            stopMaintenance();
+            stopper.submit(() -> stopVpn(session));
             return START_NOT_STICKY;
         }
         if (ACTION_MEASURE.equals(action)) {
@@ -139,26 +154,58 @@ public class ProxyVpnService extends VpnService {
         final String sel = node == null || node.isEmpty() ? "auto" : node;
         final boolean force = intent != null && intent.getBooleanExtra(EXTRA_FORCE, false);
 
-        if (starting) {
-            log("正在启动中，请稍候…");
-            return START_STICKY;
+        synchronized (coreLock) {
+            if (state == STATE_RUNNING && sel.equals(currentSelection) && !force) {
+                log("已在运行中");
+                return START_STICKY;
+            }
+            if (starting) {
+                lifecycle.stop();
+                cancelAllTasks();
+            }
+            final boolean switching = state == STATE_RUNNING;
+            if (switching) stopMaintenance();
+            final LifecycleState.Session session = lifecycle.begin();
+            registerTask(session.control);
+            starting = true;
+            setState(STATE_CONNECTING, switching ? "正在切换节点…" : "正在连接…");
+            worker.submit(() -> {
+                if (switching) {
+                    synchronized (coreLock) {
+                        if (lifecycle.isCurrent(session)) teardownCore(false);
+                    }
+                }
+                if (lifecycle.isCurrent(session)) startVpn(sel, session);
+            });
         }
-        if (state == STATE_RUNNING && sel.equals(currentSelection) && !force) {
-            log("已在运行中");
-            return START_STICKY;
-        }
-        final boolean switching = state == STATE_RUNNING;
-        starting = true;
-        setState(STATE_CONNECTING, switching ? "正在切换节点…" : "正在连接…");
-        worker.submit(() -> {
-            if (switching) teardownCore(false);
-            startVpn(sel);
-        });
         return START_STICKY;
     }
 
-    private void startVpn(String selection) {
+    private static final class Cancelled extends Exception {
+    }
+
+    private void ensureCurrent(LifecycleState.Session session) throws Cancelled {
+        if (!lifecycle.isCurrent(session)) throw new Cancelled();
+    }
+
+    private TaskControl registerTask(TaskControl control) {
+        tasks.add(control);
+        return control;
+    }
+
+    private void unregisterTask(TaskControl control) {
+        tasks.remove(control);
+    }
+
+    private void cancelAllTasks() {
+        synchronized (tasks) {
+            for (TaskControl control : tasks) control.cancel();
+        }
+    }
+
+    private void startVpn(String selection, LifecycleState.Session session) {
         try {
+            ensureCurrent(session);
             log("初始化内核 " + Libv2ray.checkVersionX());
             copyGeoAssets();
             Libv2ray.initCoreEnv(getFilesDir().getAbsolutePath(), "");
@@ -173,7 +220,8 @@ public class ProxyVpnService extends VpnService {
                 log("在当前网络下实测节点（直连测，不经过代理）；找到 " + START_ENOUGH
                         + " 个可用就先连上，其余后台继续测…");
                 NodeTester.run(this, nodes, START_TEST_BUDGET_MS, START_ENOUGH,
-                        progress("实测"), this::notifyNodesChanged);
+                        progress("实测"), this::notifyNodesChanged, session.control);
+                ensureCurrent(session);
                 alive = NodePool.aliveFresh(this, nodes);
                 log("当前可用 " + alive.size() + " 个");
             }
@@ -186,7 +234,8 @@ public class ProxyVpnService extends VpnService {
                         : "现有 " + nodes.size() + " 个节点在当前网络下都连不上，自动从公开源找新节点…");
                 List<String> logs = new ArrayList<>();
                 NodePool.refreshFromPublic(this, logs, START_REFRESH_BUDGET_MS, START_ENOUGH,
-                        progress("新节点实测"), this::notifyNodesChanged);
+                        progress("新节点实测"), this::notifyNodesChanged, session.control);
+                ensureCurrent(session);
                 for (String l : logs) log("  · " + l);
                 nodes = ConfigBuilder.loadNodes(this);
                 alive = NodePool.aliveFresh(this, nodes);
@@ -213,13 +262,17 @@ public class ProxyVpnService extends VpnService {
 
             String config = ConfigBuilder.fullConfig(members, selection, fallback,
                     NodePool.costsFor(this, members));
+            synchronized (coreLock) {
+                ensureCurrent(session);
             tunFd = buildTun();
             if (tunFd == null) throw new IllegalStateException("VPN 建立失败（未授权？）");
 
             controller = newController();
             try {
+                ensureCurrent(session);
                 controller.startLoop(config, tunFd.getFd());
             } catch (Throwable startError) {
+                ensureCurrent(session);
                 // 内核是「整份配置要么全用、要么全不用」。错误原文必须先落地，不能吞掉。
                 Log.e(TAG, "core rejected config", startError);
                 log("内核拒绝了当前配置：" + startError.getMessage());
@@ -249,9 +302,11 @@ public class ProxyVpnService extends VpnService {
                 tunFd = buildTun();
                 if (tunFd == null) throw new IllegalStateException("VPN 重建失败");
                 controller = newController();
+                ensureCurrent(session);
                 controller.startLoop(config, tunFd.getFd());
             }
             if (!controller.getIsRunning()) throw new IllegalStateException("内核启动失败");
+            ensureCurrent(session);
 
             currentSelection = selection;
             synchronized (memberKeys) {
@@ -272,8 +327,8 @@ public class ProxyVpnService extends VpnService {
             }
             runningNode = sel != null ? sel.name
                     : ("自动选线（" + members.size() + " 个可用节点）");
-            registerUnderlyingNetwork();
             setState(STATE_RUNNING, "已连接 · " + runningNode);
+            registerUnderlyingNetwork();
             log("VPN 已启动，国内外自动分流"
                     + ("auto".equals(selection)
                     ? "；首选 " + best.name + " " + NodePool.msOf(this, best) + "ms" + speedText(best)
@@ -281,12 +336,17 @@ public class ProxyVpnService extends VpnService {
             startTrafficPoll();
             startMaintenance();
             kickPostStart();
+            }
+        } catch (Cancelled cancelled) {
+            // STOP or a newer session invalidated this start; never build state.
         } catch (Throwable e) {
+            if (!lifecycle.isCurrent(session)) return;
             Log.e(TAG, "start failed", e);
             log("启动失败：" + e.getMessage());
-            failStop();
+            failStop(session);
         } finally {
-            starting = false;
+            if (lifecycle.active() == session.control) starting = false;
+            unregisterTask(session.control);
         }
     }
 
@@ -352,19 +412,22 @@ public class ProxyVpnService extends VpnService {
      */
     private void kickPostStart() {
         final int gen = maintGen.get();
+        final TaskControl control = registerTask(new TaskControl());
         Thread t = new Thread(() -> {
             try {
-                Thread.sleep(8000); // 先让用户的首批请求跑起来
-                if (gen != maintGen.get() || state != STATE_RUNNING) return;
-                speedAndMaybeReload(gen, "连接后测速");
-                if (gen != maintGen.get() || state != STATE_RUNNING) return;
+                Thread.sleep(8000);
+                if (control.isCancelled() || gen != maintGen.get() || state != STATE_RUNNING) return;
+                speedAndMaybeReload(gen, "连接后测速", control);
+                if (control.isCancelled() || gen != maintGen.get() || state != STATE_RUNNING) return;
                 if (!configHasCg && NodePool.autoGateDue(this) && !gating) {
                     NodePool.markAutoGate(this);
                     log("自动验证 AI 出口（ChatGPT / Claude），每天最多一次…");
-                    kickGate(false, true, AUTO_GATE_MAX);
+                    kickGate(false, true, AUTO_GATE_MAX, control);
                 }
             } catch (Throwable e) {
                 Log.w(TAG, "post-start", e);
+            } finally {
+                unregisterTask(control);
             }
         }, "post-start");
         t.setDaemon(true);
@@ -372,8 +435,9 @@ public class ProxyVpnService extends VpnService {
     }
 
     /** 测带宽；若发现评分明显更好的兜底节点就重建出口。返回是否已请求重建。 */
-    private boolean speedAndMaybeReload(int gen, String label) {
-        if (!"auto".equals(currentSelection)) return false;
+    private boolean speedAndMaybeReload(int gen, String label, Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
+        if (cancel.isCancelled() || !"auto".equals(currentSelection)) return false;
         List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
         List<ConfigBuilder.Node> alive = NodePool.aliveFresh(this, nodes);
         boolean m = metered();
@@ -381,8 +445,8 @@ public class ProxyVpnService extends VpnService {
                 m ? SPEED_TOP_METERED : SPEED_TOP_WIFI);
         if (todo.isEmpty()) return false;
         log(label + "：测 " + todo.size() + " 个节点的下行带宽（" + (m ? "移动数据，每个 128 KB" : "Wi-Fi，每个 256 KB") + "）…");
-        int ok = NodeTester.speedTest(this, todo, m);
-        if (gen != maintGen.get() || state != STATE_RUNNING) return false;
+        int ok = NodeTester.speedTest(this, todo, m, cancel);
+        if (cancel.isCancelled() || gen != maintGen.get() || state != STATE_RUNNING) return false;
         alive = NodePool.aliveFresh(this, nodes);
         notifyNodesChanged();
         if (alive.isEmpty()) return false;
@@ -401,9 +465,11 @@ public class ProxyVpnService extends VpnService {
 
     private void startMaintenance() {
         final int gen = maintGen.incrementAndGet();
+        final TaskControl control = registerTask(new TaskControl());
+        maintenanceControl = control;
         Thread t = new Thread(() -> {
             long next = System.currentTimeMillis() + MAINT_FIRST_DELAY_MS;
-            while (gen == maintGen.get()) {
+            while (gen == maintGen.get() && !control.isCancelled()) {
                 if (System.currentTimeMillis() < next) {
                     try {
                         Thread.sleep(2000);
@@ -413,7 +479,7 @@ public class ProxyVpnService extends VpnService {
                     continue;
                 }
                 try {
-                    maintainOnce(gen);
+                    maintainOnce(gen, control);
                 } catch (Throwable e) {
                     Log.w(TAG, "maintenance", e);
                 }
@@ -426,13 +492,20 @@ public class ProxyVpnService extends VpnService {
 
     private void stopMaintenance() {
         maintGen.incrementAndGet();
+        TaskControl control = maintenanceControl;
+        maintenanceControl = null;
+        if (control != null) {
+            control.cancel();
+            unregisterTask(control);
+        }
     }
 
-    private void maintainOnce(int gen) {
-        if (state != STATE_RUNNING || NodeTester.busy()) return;
+    private void maintainOnce(int gen, Cancellation cancellation) {
+        final Cancellation cancel = cancellation == null ? () -> false : cancellation;
+        if (cancel.isCancelled() || state != STATE_RUNNING || NodeTester.busy()) return;
         List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
-        NodeTester.run(this, nodes, MAINT_TEST_BUDGET_MS, 0, null, null);
-        if (gen != maintGen.get()) return;
+        NodeTester.run(this, nodes, MAINT_TEST_BUDGET_MS, 0, null, null, cancel);
+        if (cancel.isCancelled() || gen != maintGen.get()) return;
 
         int pruned = NodePool.pruneDeadImports(this, NodeHealth.PRUNE_FAILS);
         if (pruned > 0) log("后台维护：清理 " + pruned + " 个连续失败的导入节点");
@@ -444,7 +517,8 @@ public class ProxyVpnService extends VpnService {
             log("后台维护：可用节点只剩 " + alive.size() + " 个，从公开源补充…");
             List<String> logs = new ArrayList<>();
             NodePool.refreshFromPublic(this, logs, MAINT_REFRESH_BUDGET_MS, 0, null,
-                    this::notifyNodesChanged);
+                    this::notifyNodesChanged, cancel);
+            if (cancel.isCancelled() || gen != maintGen.get()) return;
             for (String l : logs) log("  · " + l);
             nodes = ConfigBuilder.loadNodes(this);
             alive = NodePool.aliveFresh(this, nodes);
@@ -480,46 +554,66 @@ public class ProxyVpnService extends VpnService {
             return;
         }
         // 出口都还健康：顺带补测过期的带宽（2 小时一次），有明显更优的才重建
-        if (gen == maintGen.get() && state == STATE_RUNNING) speedAndMaybeReload(gen, "后台维护");
+        if (gen == maintGen.get() && state == STATE_RUNNING) speedAndMaybeReload(gen, "后台维护", cancel);
     }
 
     /** 用最新实测结果重建内核（短暂断流 1~2 秒）。只在维护线程判定需要时调用。 */
     private void requestReload(String why) {
-        if (starting || state != STATE_RUNNING) return;
-        long now = System.currentTimeMillis();
-        if (now - lastReloadAt < RELOAD_MIN_GAP_MS) return;
-        lastReloadAt = now;
-        starting = true;
-        log("节点池有变化（" + why + "），重建出口…");
-        setState(STATE_CONNECTING, "正在更新节点…");
-        final String sel = currentSelection;
-        worker.submit(() -> {
-            teardownCore(false);
-            startVpn(sel);
-        });
+        requestReload(why, false);
+    }
+
+    private void requestReload(String why, boolean force) {
+        synchronized (coreLock) {
+            if (starting || state != STATE_RUNNING) return;
+            long now = System.currentTimeMillis();
+            if (!force && now - lastReloadAt < RELOAD_MIN_GAP_MS) return;
+            int expected = lifecycle.currentId();
+            final LifecycleState.Session session = lifecycle.begin(expected);
+            if (session == null) return; // STOP or a newer session won the race
+            lastReloadAt = now;
+            stopMaintenance();
+            registerTask(session.control);
+            starting = true;
+            log("节点池有变化（" + why + "），重建出口…");
+            setState(STATE_CONNECTING, "正在更新节点…");
+            final String sel = currentSelection;
+            worker.submit(() -> {
+                synchronized (coreLock) {
+                    if (lifecycle.isCurrent(session)) teardownCore(false);
+                }
+                if (lifecycle.isCurrent(session)) startVpn(sel, session);
+            });
+        }
     }
 
     // ------------------------------------------------------------ 测速 / 闸门
 
     /** 整池实测（独立线程，结果通过 Listener.onMeasure 回传，写入 NodeHealth）。 */
     private void kickMeasureAll(final boolean stopWhenIdle) {
+        final TaskControl control = registerTask(new TaskControl());
         new Thread(() -> {
-            List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
-            if (nodes.isEmpty()) {
-                log("节点池为空：点「启动代理」会自动从公开源找节点，或先导入订阅");
+            try {
+                if (control.isCancelled()) return;
+                List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
+                if (nodes.isEmpty()) {
+                    log("节点池为空：点「启动代理」会自动从公开源找节点，或先导入订阅");
+                    if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
+                    return;
+                }
+                log("开始实测（" + nodes.size() + " 个节点，手机直连测，不经过代理）…");
+                Map<String, Long> res = NodeTester.run(this, nodes, MEASURE_BUDGET_MS, 0,
+                        progress("实测"), null, control);
+                if (control.isCancelled()) return;
+                int ok = 0;
+                for (Long v : res.values()) if (v != null && v > 0) ok++;
+                log("实测完成：可用 " + ok + "/" + nodes.size()
+                        + (ok == 0 ? "。都连不上：点「导入节点 / 订阅 → 从公开源导入」找新节点" : ""));
+                NodePool.resort(this);
+                notifyNodesChanged();
                 if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
-                return;
+            } finally {
+                unregisterTask(control);
             }
-            log("开始实测（" + nodes.size() + " 个节点，手机直连测，不经过代理）…");
-            Map<String, Long> res = NodeTester.run(this, nodes, MEASURE_BUDGET_MS, 0,
-                    progress("实测"), null);
-            int ok = 0;
-            for (Long v : res.values()) if (v != null && v > 0) ok++;
-            log("实测完成：可用 " + ok + "/" + nodes.size()
-                    + (ok == 0 ? "。都连不上：点「导入节点 / 订阅 → 从公开源导入」找新节点" : ""));
-            NodePool.resort(this);
-            notifyNodesChanged();
-            if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
         }, "measure-all").start();
     }
 
@@ -533,19 +627,27 @@ public class ProxyVpnService extends VpnService {
 
     /** reloadOnSuccess：验出合格节点且当前配置没有 AI 出口时，重建出口让它们立刻生效。 */
     private void kickGate(final boolean stopWhenIdle, final boolean reloadOnSuccess, final int max) {
+        kickGate(stopWhenIdle, reloadOnSuccess, max, null);
+    }
+
+    private void kickGate(final boolean stopWhenIdle, final boolean reloadOnSuccess, final int max,
+                          final TaskControl parent) {
+        if (parent != null && parent.isCancelled()) return;
         if (gating) {
             log("AI 闸门已经在跑了，等它出结果…");
             return;
         }
+        final TaskControl control = parent != null ? parent : registerTask(new TaskControl());
+        final boolean owned = parent == null;
         gating = true;
         new Thread(() -> {
             try {
+                if (control.isCancelled()) return;
                 List<ConfigBuilder.Node> nodes = ConfigBuilder.loadNodes(this);
                 if (nodes.isEmpty()) {
                     log("没有节点可验证");
                     return;
                 }
-                // 只验本机实测能连上的；还没测过就按原顺序
                 List<ConfigBuilder.Node> cand = NodePool.aliveFresh(this, nodes);
                 if (cand.isEmpty()) cand = NodePool.sortedForDisplay(this, nodes);
                 final int total = Math.min(cand.size(), max);
@@ -555,13 +657,13 @@ public class ProxyVpnService extends VpnService {
                 final AtomicInteger ok = new AtomicInteger();
                 ExecutorService pool = Executors.newFixedThreadPool(4);
                 for (int i = 0; i < total; i++) {
+                    if (control.isCancelled()) break;
                     final ConfigBuilder.Node n = cand.get(i);
                     pool.submit(() -> {
-                        boolean pass = probeAiGate(n);
-                        try {
-                            ConfigBuilder.saveGate(this, n.key, pass);
-                        } catch (Throwable ignored) {
-                        }
+                        if (control.isCancelled()) return;
+                        boolean pass = probeAiGate(n, control);
+                        if (control.isCancelled()) return;
+                        try { ConfigBuilder.saveGate(this, n.key, pass); } catch (Throwable ignored) {}
                         int d = done.incrementAndGet();
                         if (pass) ok.incrementAndGet();
                         Listener l = listener;
@@ -574,42 +676,41 @@ public class ProxyVpnService extends VpnService {
                         }
                     });
                 }
-                pool.shutdown();
-                pool.awaitTermination(15, java.util.concurrent.TimeUnit.MINUTES);
+                boolean terminated = TaskControl.shutdownAndAwait(control, 15 * 60_000, pool);
+                if (!terminated || control.isCancelled()) return;
                 if (ok.get() > 0 && state == STATE_RUNNING && !configHasCg
                         && "auto".equals(currentSelection)) {
                     if (reloadOnSuccess) {
-                        lastReloadAt = 0; // 这次重建是用户收益最大的一次，不受最小间隔限制
+                        lastReloadAt = 0;
                         requestReload("AI 出口已验证");
                     } else {
                         log("点「断开」再「启动」或等后台维护，AI 合格出口就会生效");
                     }
                 }
             } catch (Throwable e) {
-                log("AI 闸门失败：" + e.getMessage());
+                if (!control.isCancelled()) log("AI 闸门失败：" + e.getMessage());
             } finally {
                 gating = false;
-                if (stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
+                if (owned) unregisterTask(control);
+                if (!control.isCancelled() && stopWhenIdle && state != STATE_RUNNING) stopIdleMeasure();
             }
         }, "ai-gate").start();
     }
 
-    /** 两个探针都返回 >0 才算过（libv2ray 只把 200/204 认作成功）。 */
-    private static boolean probeAiGate(ConfigBuilder.Node n) {
+    /** 两个探针都返回 >0 才算过；取消发生在两次探针之间时立即失败。 */
+    private static boolean probeAiGate(ConfigBuilder.Node n, Cancellation cancellation) {
+        if (cancellation.isCancelled()) return false;
         String cfg;
-        try {
-            cfg = ConfigBuilder.measureConfig(n);
-        } catch (Throwable t) {
-            return false;
-        }
+        try { cfg = ConfigBuilder.measureConfig(n); } catch (Throwable t) { return false; }
         for (String url : ConfigBuilder.AI_PROBES) {
+            if (cancellation.isCancelled()) return false;
             try {
                 if (Libv2ray.measureOutboundDelay(cfg, url) <= 0) return false;
             } catch (Throwable t) {
                 return false;
             }
         }
-        return true;
+        return !cancellation.isCancelled();
     }
 
     private void stopIdleMeasure() {
@@ -627,12 +728,32 @@ public class ProxyVpnService extends VpnService {
             while (trafficPolling) {
                 String raw = null;
                 CoreController c = controller;
+                boolean running = false;
                 try {
-                    if (c != null) raw = c.queryAllOutboundTrafficStats();
+                    if (c != null) {
+                        raw = c.queryAllOutboundTrafficStats();
+                        running = c.getIsRunning();
+                    }
                 } catch (Throwable ignored) {}
                 long now = System.currentTimeMillis();
                 double dt = Math.max(0.5, (now - prevT) / 1000.0);
                 prevT = now;
+                if (c != null && !running) {
+                    if (coreRecovery.onPoll(false, now)) {
+                        log("内核已退出，自动恢复（最多 3 次）…");
+                        requestReload("内核退出", true);
+                    }
+                } else if (running) {
+                    coreRecovery.onPoll(true, now);
+                }
+                String networkChange = networkDebouncer.due(now);
+                if (networkChange != null && state == STATE_RUNNING) {
+                    if (NetworkDebouncer.LOST.equals(networkChange)) {
+                        log("底层网络已断开，等待网络恢复后重建…");
+                    } else {
+                        requestReload("底层网络变化", true);
+                    }
+                }
 
                 long up = 0, down = 0, activeMax = 0;
                 String active = "";
@@ -689,29 +810,42 @@ public class ProxyVpnService extends VpnService {
 
     // ------------------------------------------------------------ 启停
 
-    private void stopVpn() {
-        stopMaintenance();
-        teardownCore(true);
-        setState(STATE_IDLE, "未连接");
-        log("已断开");
+    private void stopVpn(int session) {
+        synchronized (coreLock) {
+            if (session != lifecycle.currentId()) return;
+            stopMaintenance();
+            cancelAllTasks();
+            teardownCore(true);
+            unregisterUnderlyingNetwork();
+            networkDebouncer.clear();
+            underlyingNetwork = null;
+            fingerprintedNetwork = null;
+            networkFingerprint = null;
+            underlyingDown = false;
+            coreRecovery.onPoll(true, System.currentTimeMillis());
+            setState(STATE_IDLE, "未连接");
+            log("已断开");
+        }
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 
     /** 停内核/关 TUN/停统计；notifyState=false 用于切换节点时避免闪“未连接”。 */
     private void teardownCore(boolean notifyState) {
-        stopTrafficPoll();
-        try {
-            if (controller != null) {
-                controller.stopLoop();
-                controller = null;
+        synchronized (coreLock) {
+            stopTrafficPoll();
+            try {
+                if (controller != null) {
+                    controller.stopLoop();
+                    controller = null;
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "stopLoop", e);
             }
-        } catch (Throwable e) {
-            Log.w(TAG, "stopLoop", e);
-        }
-        closeTun();
-        if (notifyState) {
-            runningNode = "";
+            closeTun();
+            unregisterUnderlyingNetwork();
+            networkDebouncer.clear();
+            if (notifyState) runningNode = "";
         }
     }
 
@@ -741,7 +875,10 @@ public class ProxyVpnService extends VpnService {
         });
     }
 
-    private void failStop() {
+    private void failStop(LifecycleState.Session session) {
+        if (!lifecycle.isCurrent(session)) return;
+        lifecycle.stop();
+        cancelAllTasks();
         stopMaintenance();
         teardownCore(true);
         setState(STATE_IDLE, "启动失败");
@@ -806,16 +943,16 @@ public class ProxyVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
+        lifecycle.stop();
+        cancelAllTasks();
         stopMaintenance();
-        unregisterUnderlyingNetwork();
-        stopTrafficPoll();
-        worker.submit(() -> {
-            try { if (controller != null) controller.stopLoop(); } catch (Throwable ignored) {}
-            closeTun();
+        synchronized (coreLock) {
+            teardownCore(true);
             state = STATE_IDLE;
             runningNode = "";
-        });
-        worker.shutdown();
+        }
+        stopper.shutdownNow();
+        worker.shutdownNow();
         super.onDestroy();
     }
 
@@ -835,9 +972,14 @@ public class ProxyVpnService extends VpnService {
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                     .build();
             netCallback = new ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(Network network) { applyUnderlying(network); }
+                @Override public void onAvailable(Network network) {
+                    applyUnderlying(network, null);
+                }
                 @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
-                    applyUnderlying(network);
+                    applyUnderlying(network, caps);
+                }
+                @Override public void onLost(Network network) {
+                    underlyingLost(network);
                 }
             };
             cm.registerNetworkCallback(request, netCallback);
@@ -847,11 +989,38 @@ public class ProxyVpnService extends VpnService {
         }
     }
 
-    private void applyUnderlying(Network network) {
-        if (network == null) return;
-        try {
-            setUnderlyingNetworks(new Network[]{network});
-        } catch (Throwable ignored) {}
+    private void applyUnderlying(Network network, NetworkCapabilities caps) {
+        if (network == null || state != STATE_RUNNING) return;
+        StringBuilder fingerprint = new StringBuilder(network.toString());
+        if (caps != null) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) fingerprint.append(":wifi");
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) fingerprint.append(":cell");
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) fingerprint.append(":eth");
+        }
+        String next = fingerprint.toString();
+        long now = System.currentTimeMillis();
+        boolean sameNetwork = fingerprintedNetwork != null && fingerprintedNetwork.equals(network);
+        if (fingerprintedNetwork == null && !underlyingDown) {
+            networkDebouncer.applied(next, now);
+        } else if (underlyingDown || !sameNetwork) {
+            networkDebouncer.onChange(next, now);
+        }
+        // Capability callbacks enrich the fingerprint of the same Network; they
+        // must not turn null-caps onAvailable into a fake network transition.
+        networkFingerprint = next;
+        fingerprintedNetwork = network;
+        underlyingDown = false;
+        underlyingNetwork = network;
+        try { setUnderlyingNetworks(new Network[]{network}); } catch (Throwable ignored) {}
+    }
+
+    private void underlyingLost(Network network) {
+        if (network == null || !network.equals(underlyingNetwork)) return;
+        underlyingNetwork = null;
+        fingerprintedNetwork = null;
+        underlyingDown = true;
+        networkDebouncer.onChange(null, System.currentTimeMillis());
+        try { setUnderlyingNetworks(new Network[0]); } catch (Throwable ignored) {}
     }
 
     private void unregisterUnderlyingNetwork() {
@@ -866,7 +1035,9 @@ public class ProxyVpnService extends VpnService {
     @Override
     public void onRevoke() {
         log("VPN 授权被系统收回，正在清理内核与网卡");
-        // onRevoke 不保证在主线程；拆除工作统一丢给 worker，避免与启动流程并发。
-        worker.submit(this::stopVpn);
+        int session = lifecycle.stop();
+        cancelAllTasks();
+        stopMaintenance();
+        stopper.submit(() -> stopVpn(session));
     }
 }

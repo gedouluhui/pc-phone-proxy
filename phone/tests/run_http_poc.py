@@ -11,7 +11,8 @@ from pathlib import Path
 PHONE = Path(__file__).resolve().parents[1]
 ROOT = PHONE.parent
 SOURCE_DIR = PHONE / "src" / "com" / "luhui" / "phoneproxy"
-SOURCES = [SOURCE_DIR / "SubscriptionGuard.java", SOURCE_DIR / "ValidatedHttp.java"]
+SOURCES = [SOURCE_DIR / "Cancellation.java", SOURCE_DIR / "SubscriptionGuard.java",
+           SOURCE_DIR / "ValidatedHttp.java"]
 POC = PHONE / "tests" / "ValidatedHttpPoc.java"
 OUT = PHONE / "verification" / "http-poc.json"
 

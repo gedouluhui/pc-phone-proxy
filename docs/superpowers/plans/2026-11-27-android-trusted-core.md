@@ -26,7 +26,10 @@
 - Task 2 is implemented: `sources.json` is versioned and signed as exact bytes with RSA/SHA-256; the APK embeds the public key, manifest, and raw signature. Remote mirrors are accepted only after signature/schema validation and a strictly newer version; failures fall back to the signed APK asset and then the compiled snapshot.
 - Repository verification passes 9 Python signature/embedding tests (including 4 tool-free verifier controls) and 9 JVM tamper/replay/schema tests. A real debug APK was built and its embedded manifest/signature bytes were extracted and re-verified successfully.
 - Task 3 is implemented at the code/compile level: `SecureEnvelope` provides versioned AES-256-GCM encryption with random IV and key-bound AAD; `SecureStore` wraps Android Keystore, migrates legacy plaintext only after durable encrypted persistence, and never writes new plaintext. Seven JVM envelope controls pass; all 13 Android sources compile against API 35 and the fixed AAR.
-- Tasks 4–5 remain in progress. Real Android Keystore generation/migration, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
+- Task 4 is implemented at the code/compile level: a shared cancellation token invalidates stale sessions; STOP uses an independent executor and cannot queue behind startup; NodeTester suppresses results/callbacks after cancellation and only clears its busy state after real executor termination; network changes are debounced; core death has three bounded exponential-backoff recoveries; the UI provides always-on/block-without-VPN guidance.
+- Twenty JVM lifecycle controls pass, including cooperative and interrupt-ignoring workers, same-network loss/return, stale sessions, generation-guarded reload, and recovery bounds. All 18 Android sources compile against API 35 and the fixed AAR.
+- The first independent read-only review found four concurrency/cleanup defects; all four were corrected and re-tested. A focused second review could not run because the reviewer environment returned `get_model_policy timeout`, so no second independent sign-off is claimed.
+- Task 5 remains in progress. Real Android Keystore generation/migration, VPN lifecycle, network switching, DNS/IPv6/WebRTC leaks, and battery behaviour are not yet device-verified.
 
 ## Tasks
 
