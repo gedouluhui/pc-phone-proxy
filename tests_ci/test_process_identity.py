@@ -1,7 +1,9 @@
 """Process termination must require a stable, rechecked identity."""
+import contextlib
 import copy
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -120,6 +122,44 @@ class ProcessIdentityTests(unittest.TestCase):
              mock.patch.object(stop_proxy.subprocess, "run") as run:
             self.assertFalse(stop_proxy.kill_tree(123))
             run.assert_not_called()
+
+    def test_stop_proxy_process_scan_excludes_current_and_parent(self):
+        import stop_proxy
+        rows = [
+            {"ProcessId": os.getpid(), "Name": "python.exe", "CommandLine": "_proxy\\tun_mode.py"},
+            {"ProcessId": os.getppid(), "Name": "python.exe", "CommandLine": "_proxy\\tun_mode.py"},
+            {"ProcessId": 999, "Name": "python.exe", "CommandLine": "_proxy\\watchdog.py"},
+            {"ProcessId": 1000, "Name": "powershell.exe", "CommandLine": "_proxy\\tun_mode.py"},
+        ]
+        result = subprocess.CompletedProcess([], 0, stdout=json.dumps(rows).encode("utf-8"), stderr=b"")
+        with mock.patch.object(stop_proxy.subprocess, "run", return_value=result):
+            found = stop_proxy.our_processes()
+        self.assertEqual([pid for pid, _, _ in found], [999])
+
+    def test_stop_proxy_can_skip_foreign_tun_during_split_cleanup(self):
+        import stop_proxy
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(stop_proxy, "TUN_ACTIVE",
+                                                  os.path.join(directory, "missing")))
+            stop_tun = stack.enter_context(mock.patch.object(stop_proxy, "stop_tun"))
+            stack.enter_context(mock.patch.object(stop_proxy, "kill_foreign_copies", return_value=[]))
+            stack.enter_context(mock.patch.object(stop_proxy, "stop_watchdog", return_value=False))
+            stack.enter_context(mock.patch.object(stop_proxy.pacroute, "clear_pac"))
+            stack.enter_context(mock.patch.object(stop_proxy.P, "stop_gateway"))
+            stack.enter_context(mock.patch.object(stop_proxy, "kill_our_stack", return_value=[]))
+            stack.enter_context(mock.patch.object(stop_proxy, "stop_pinned", return_value=[]))
+            stack.enter_context(mock.patch.object(stop_proxy, "free_ports", return_value=[]))
+            stack.enter_context(mock.patch.object(stop_proxy.sysstate, "restore_all"))
+            stack.enter_context(mock.patch.object(stop_proxy, "drop_stale_ours", return_value=[]))
+            stack.enter_context(mock.patch.object(stop_proxy, "curl_direct", return_value="200"))
+            stack.enter_context(mock.patch.object(stop_proxy.P, "listen_ok", return_value=False))
+            stack.enter_context(mock.patch.object(stop_proxy, "our_processes", return_value=[
+                (61108, "sing-box.exe", "sing-box run -c old\\singbox_tun.json")]))
+            stack.enter_context(mock.patch.object(stop_proxy.sysstate, "current", return_value={
+                "pac": "", "proxy_enable": 0, "proxy_server": "", "env": {}}))
+            rc = stop_proxy.main(skip_tun=True)
+        self.assertEqual(rc, 0)
+        stop_tun.assert_not_called()
 
     def test_tun_stop_stack_ignores_unrecorded_process(self):
         import tun_mode

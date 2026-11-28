@@ -96,6 +96,10 @@ def our_processes(include_copies=True):
             # command line; only our real stack (sing-box + python helpers) counts.
             if img != "sing-box.exe" and not img.startswith("python"):
                 continue
+            # A TUN transaction calls stop_proxy.main() from tun_mode.py. The
+            # active stopper and its waiting parent are not leftover services.
+            if pid in (os.getpid(), os.getppid()):
+                continue
             out.append((pid, img, r.get("CommandLine") or ""))
         return out
     except Exception:
@@ -344,7 +348,7 @@ def curl_direct(url, timeout=10):
         return "000"
 
 
-def main():
+def main(skip_tun=False):
     log("=" * 68)
     log("  便携代理 · 一键关闭（恢复直连）")
     log("=" * 68)
@@ -362,8 +366,11 @@ def main():
         log("[!] 清理了其他副本的进程: " + ", ".join(map(str, copies))
             + "（多半是旧备份目录被启动过）")
 
-    tun = stop_tun()
-    tun_ok = tun in ("已停止", "未启用")
+    if skip_tun:
+        tun = "已跳过（外部 TUN 使用独立控制端口）"
+    else:
+        tun = stop_tun()
+    tun_ok = tun in ("已停止", "未启用") or skip_tun
     log("[0/4] 全局 TUN 模式: " + tun)
 
     wd = stop_watchdog()
@@ -407,8 +414,10 @@ def main():
     else:
         log("[OK] 所有代理端口已关闭: " + " ".join(str(p) for p in all_ports))
 
-    procs_left = [(pid, img) for pid, img, _ in our_processes()
-                  if img == "sing-box.exe" or img.startswith("python")]
+    procs_left = [(pid, img) for pid, img, cmd in our_processes()
+                  if (img == "sing-box.exe" or img.startswith("python"))
+                  and not (skip_tun and img == "sing-box.exe"
+                           and "singbox_tun" in (cmd or "").lower())]
     if procs_left:
         log("[!!] 仍有本目录进程: " + ", ".join("%d(%s)" % x for x in procs_left))
     else:
