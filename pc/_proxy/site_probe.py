@@ -12,6 +12,7 @@ import io, json, os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+import app_paths as A
 CURL = "curl"
 
 PROXIES = [
@@ -111,7 +112,7 @@ def main():
             mk = ",".join(r.get("markers") or [])
             print(f"  {s:18s} {str(code):4s} {r.get('secs','?'):>6}s {str(r.get('size','?')):>9s}  {mk}  {r.get('err','') or ''}".rstrip(), flush=True)
 
-    out = os.path.join(HERE, "site_probe.json")
+    out = A.data("site_probe.json")
     with io.open(out, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=1)
     print("\nJSON ->", out)

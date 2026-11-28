@@ -1,4 +1,12 @@
-# 电脑端：Windows 自动选线代理
+# 电脑端
+
+## 安装版与便携版
+
+- 便携版保持免安装，状态默认写在 `_proxy` 内，**不会注册提权计划任务**。
+- 安装版把 broker、sing-box、wintun 和 Python 放在 `Program Files\PhoneProxy`，可变状态放在 `%LOCALAPPDATA%\PhoneProxy\data`；broker 每次启动 TUN 前核验安装清单哈希、ACL 和数据目录。
+- 托盘提供连接、断开、TUN/分流切换、体检和更新入口；更新只暂存已验签且 SHA-256 匹配的安装包，不覆盖当前安装。
+- 安装脚本是 `installer/PhoneProxy.iss`；正式发布前需由发布流水线准备 `runtime/python` 与 `runtime/tray.exe`，并用 Inno Setup 实际编译验证。
+：Windows 自动选线代理
 
 一套运行在 Windows 10/11 x64 上的本地代理栈：
 

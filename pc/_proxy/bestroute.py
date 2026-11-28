@@ -20,6 +20,7 @@ import socket
 import subprocess
 import time
 
+import app_paths as A
 import config_transaction
 import control_secret
 import diagnostics as D
@@ -29,17 +30,17 @@ import pacroute
 import proxyctl as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEEP = os.path.join(HERE, "node_deep.json")
-PINNED = os.path.join(HERE, "pinned.json")
-PIN_PIDS = os.path.join(HERE, "pinned_pids.json")
-CFG = os.path.join(HERE, "singbox_pinned.json")
+DEEP = A.data("node_deep.json")
+PINNED = A.data("pinned.json")
+PIN_PIDS = A.data("pinned_pids.json")
+CFG = A.data("singbox_pinned.json")
 GENERAL_HTTP, GENERAL_SOCKS = 2101, 2100
 FAST_HTTP, FAST_SOCKS = 2103, 2102
 CLI_MIXED = 2090
 # 必须 HTTPS：route 里 {"port": 80, "outbound": "direct"} 会把 http 探测强制直连，
 # urltest 等于在测本地网络，于是所有节点都被判"通"，选出来的可能是完全不能用的节点。
 HEALTH_URL = "https://www.gstatic.com/generate_204"
-HEALTH = os.path.join(HERE, "pinned_health.json")
+HEALTH = A.data("pinned_health.json")
 GEOIP_SRS = os.path.join(HERE, "rulesets", "geoip-cn.srs")
 
 _health_bad = None
@@ -180,7 +181,7 @@ def pinned_fallback_rows():
     return out
 
 
-HIST = os.path.join(HERE, "node_good_history.json")
+HIST = A.data("node_good_history.json")
 HIST_TTL = 24 * 3600
 HIST_CAP = 40
 
@@ -360,8 +361,8 @@ def start(path):
     if rc != 0:
         log("config check failed: " + output[-400:])
         return None
-    os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
-    logp = os.path.join(HERE, "logs", "singbox_pinned.log")
+    os.makedirs(A.data("logs"), exist_ok=True)
+    logp = A.data("logs", "singbox_pinned.log")
     with open(logp, "ab") as logf:
         process = subprocess.Popen([P.SING_EXE, "run", "-c", path], stdout=logf,
                                    stderr=subprocess.STDOUT, creationflags=0x08000000)

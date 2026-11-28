@@ -126,7 +126,8 @@ def render(act=None, history=None, browser=None):
     fake_os = types.SimpleNamespace(path=types.SimpleNamespace(isfile=files.isfile, join=os.path.join))
     module = functions("proxyctl", ["render_report"], json=json, io=types.SimpleNamespace(open=files.open),
                        open=files.open, os=fake_os, HERE=ROOT, ACTIVE=ACTIVE, TRIALS=TRIALS, REPORT=REPORT,
-                       current_proxy=lambda: {}, D=diagnostics_module(), escape=html.escape)
+                       current_proxy=lambda: {}, D=diagnostics_module(), escape=html.escape,
+                       A=types.SimpleNamespace(data=lambda *parts: os.path.join(ROOT, *parts)))
     before = copy.deepcopy(values)
     assert module.render_report() == REPORT
     assert values == before

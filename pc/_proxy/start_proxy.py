@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.request
 
+import app_paths as A
 import control_api
 import process_identity as I
 
@@ -37,11 +38,11 @@ STEAM = 2096          # 美国出口：Steam 商店/社区（外区商店）
 GAI = 2098            # Google AI 专用出口（需过 Google 地区闸门）
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-DEEP = os.path.join(HERE, "node_deep.json")
-PINNED = os.path.join(HERE, "pinned.json")
-WATCH_PID = os.path.join(HERE, "watchdog.pid")
-WATCH_STOP = os.path.join(HERE, "STOP_WATCHDOG")
-LOCK = os.path.join(HERE, "start.lock")
+DEEP = A.data("node_deep.json")
+PINNED = A.data("pinned.json")
+WATCH_PID = A.data("watchdog.pid")
+WATCH_STOP = A.data("STOP_WATCHDOG")
+LOCK = A.data("start.lock")
 
 def log(*a):
     print(*a, flush=True)
@@ -91,11 +92,11 @@ def hk_ours():
     if not up(HK):
         return False
     try:
-        with io.open(os.path.join(HERE, "one_%d.pid" % HK), encoding="utf-8") as stream:
+        with io.open(A.data("one_%d.pid" % HK), encoding="utf-8") as stream:
             pid = int(stream.read().strip())
     except (OSError, ValueError):
         return False
-    return I.matches(I.load_record(os.path.join(HERE, "one_%d.identity.json" % HK)) or {})
+    return I.matches(I.load_record(A.data("one_%d.identity.json" % HK)) or {})
 
 
 def ensure_hk():
@@ -133,15 +134,15 @@ def _steam_ok(port=STEAM, timeout=15):
 
 
 def _kill_one(port=STEAM):
-    path = os.path.join(HERE, "one_%d.pid" % int(port))
-    identity_path = os.path.join(HERE, "one_%d.identity.json" % int(port))
+    path = A.data("one_%d.pid" % int(port))
+    identity_path = A.data("one_%d.identity.json" % int(port))
     try:
         with io.open(path, encoding="utf-8") as stream:
             pid = int(stream.read().strip())
     except (OSError, ValueError):
         return
     killed = I.terminate_if_owned(pid, record_path=identity_path,
-                                  expected_config=os.path.join(HERE, "singbox_one.json"))
+                                  expected_config=A.data("singbox_one.json"))
     if killed or I.inspect(pid) is None:
         for item in (path, identity_path):
             try:
@@ -243,12 +244,12 @@ def _start_gai(uris):
     cfg = _write_gai_config(uris)
     if not cfg:
         return False
-    path = os.path.join(HERE, "singbox_gai.json")
+    path = A.data("singbox_gai.json")
     with io.open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
     if not P.wait_port_free([GAI + 1, GAI], timeout=6.0, expect_cmd="singbox_gai.json"):
         return False
-    logp = os.path.join(HERE, "logs", "singbox_gai.log")
+    logp = A.data("logs", "singbox_gai.log")
     with io.open(logp, "ab") as lf:
         proc = subprocess.Popen([P.SING_EXE, "run", "-c", path], cwd=HERE,
                                 stdout=lf, stderr=subprocess.STDOUT,
@@ -257,8 +258,8 @@ def _start_gai(uris):
         if proc.poll() is not None:
             return False
         if up(GAI) and up(GAI + 1):
-            I.record(proc.pid, path, os.path.join(HERE, "one_%d.identity.json" % GAI))
-            with io.open(os.path.join(HERE, "one_%d.pid" % GAI), "w") as f:
+            I.record(proc.pid, path, A.data("one_%d.identity.json" % GAI))
+            with io.open(A.data("one_%d.pid" % GAI), "w") as f:
                 f.write(str(proc.pid))
             return True
         time.sleep(0.5)
@@ -268,7 +269,7 @@ def _start_gai(uris):
 def _google_bad():
     """Servers Google itself refused (notebooklm -> location=unsupported)."""
     try:
-        with io.open(os.path.join(HERE, "google_bad.json"), encoding="utf-8") as f:
+        with io.open(A.data("google_bad.json"), encoding="utf-8") as f:
             return {str(x).lower() for x in (json.load(f) or [])}
     except Exception:
         return set()
@@ -279,7 +280,7 @@ def _remember_google_bad(server):
     if server and server.lower() not in bad:
         bad.add(server.lower())
         try:
-            with io.open(os.path.join(HERE, "google_bad.json"), "w",
+            with io.open(A.data("google_bad.json"), "w",
                          encoding="utf-8", newline="\n") as f:
                 json.dump(sorted(bad), f, ensure_ascii=False, indent=1)
         except OSError:
@@ -304,7 +305,7 @@ def ensure_gai():
     import nodes as N
     uris = []
     try:
-        with io.open(os.path.join(HERE, "pinned.json"), encoding="utf-8") as f:
+        with io.open(A.data("pinned.json"), encoding="utf-8") as f:
             p = json.load(f)
         for u in (p.get("members") or {}):
             ob, _ = N.parse_uri(u)
@@ -424,7 +425,7 @@ def ensure_watchdog():
         pass
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     exe = pyw if os.path.isfile(pyw) else sys.executable
-    logp = os.path.join(HERE, "logs", "watchdog.out")
+    logp = A.data("logs", "watchdog.out")
     os.makedirs(os.path.dirname(logp), exist_ok=True)
     with open(logp, "ab") as logf:
         p = subprocess.Popen([exe, os.path.join(HERE, "watchdog.py")], cwd=HERE,
@@ -509,7 +510,7 @@ def fallback():
                 pass
             return 1
         log("[OK] 已用通用选路启用，命令行指向 127.0.0.1:%d" % port)
-        log("     报告: " + os.path.join(HERE, "report.html"))
+        log("     报告: " + A.data("report.html"))
         return 0
     log("[失败] 没有任何可用出口。确认本机联网后重试；日志在 _proxy\\logs\\")
     return rc
@@ -663,7 +664,7 @@ def main():
         # never re-installs the PAC.  Written only after the exits and the
         # system proxy are actually in place.
         try:
-            with io.open(os.path.join(HERE, "ENABLED"), "w",
+            with io.open(A.data("ENABLED"), "w",
                          encoding="utf-8", newline="\n") as f:
                 f.write("1")
         except OSError as e:

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 
+import app_paths as A
 import config_transaction
 import control_api
 import process_identity as I
@@ -32,8 +33,8 @@ sys.path.insert(0, HERE)
 import tun_mode  # noqa: E402
 import proxyctl as P  # noqa: E402
 
-SUP_PID = os.path.join(HERE, "tun_supervisor.pid")
-LOG = os.path.join(HERE, "logs", "tun_supervisor.log")
+SUP_PID = A.data("tun_supervisor.pid")
+LOG = A.data("logs", "tun_supervisor.log")
 
 
 def log(msg):
@@ -62,7 +63,7 @@ def alive(pid):
         return False
 
 
-DETOUR = os.path.join(HERE, "dns_detour.txt")
+DETOUR = A.data("dns_detour.txt")
 
 
 def dns_ok():
@@ -124,17 +125,17 @@ def rotate_dns_detour():
 API = "http://127.0.0.1:%d" % tun_mode.CLASH_PORT
 DNS_PROBE = "https://1.1.1.1/cdn-cgi/trace"
 GOOGLE_PROBE = "https://gemini.google.com/robots.txt"
-REBUILD_REQ = os.path.join(HERE, "REBUILD_REQUEST")
-RESCAN_REQ = os.path.join(HERE, "RESCAN_REQUEST")
-SELFTEST_REQ = os.path.join(HERE, "SELFTEST_REQUEST")
+REBUILD_REQ = A.data("REBUILD_REQUEST")
+RESCAN_REQ = A.data("RESCAN_REQUEST")
+SELFTEST_REQ = A.data("SELFTEST_REQUEST")
 BYPASS_EVERY = 6 * 3600       # 「测速进程能否绕开 TUN」自检结论的有效期
 # 国内对照地址：直连必须能连上，证明临时 sing-box 本身是好的（否则「被墙地址连不上」没有意义）
 BYPASS_CONTROL = [("110.242.68.66", 443), ("223.5.5.5", 443), ("120.232.145.144", 443)]
 # 2026-11-23：闸门判据还没和浏览器实测对上之前，不因闸门结果主动重建隧道（每次重建断流数秒）；
 # 闸门结论照样写 google_gate.json，下一次正常重建时用来筛 grp-google 成员。
 GATE_REBUILD = False
-RESCAN_LOCK = os.path.join(HERE, "rescan.lock")
-HEALTH = os.path.join(HERE, "logs", "pool_health.json")
+RESCAN_LOCK = A.data("rescan.lock")
+HEALTH = A.data("logs", "pool_health.json")
 HEALTH_EVERY = 15 * 60        # 每 15 分钟量一次「能上 Google 的出口还剩几个」
 RESCAN_GAP = 3 * 3600         # 两次自动重扫至少间隔 3 小时
 RESCAN_STALE = 24 * 3600      # 节点池超过 24 小时没刷新就重扫
@@ -220,7 +221,7 @@ def running_has_direct_rule():
 
 def start_rescan(reason):
     py = sys.executable
-    logf = io.open(os.path.join(HERE, "logs", "rescan_auto.log"), "ab")
+    logf = io.open(A.data("logs", "rescan_auto.log"), "ab")
     try:
         env = dict(os.environ, RESCAN_REBUILD="1", PYTHONIOENCODING="utf-8")
         p = subprocess.Popen([py, os.path.join(HERE, "rescan.py")], cwd=HERE, env=env,
@@ -257,8 +258,8 @@ def gate_needs_rebuild(member_keys, verdicts):
     return bool(ok_all) and (len(bad) > 0 and set(ok_members) != set(member_keys))
 
 
-PINNED_CFG = os.path.join(HERE, "singbox_pinned.json")
-PINNED_GOOD = os.path.join(HERE, "singbox_pinned.good.json")
+PINNED_CFG = A.data("singbox_pinned.json")
+PINNED_GOOD = A.data("singbox_pinned.good.json")
 SWITCH_MIN_LIVE = 2   # 新节点池实测至少这么多出口能连上（ok/bad 都算连上）才允许切换
 
 
@@ -447,7 +448,7 @@ def maintain(now=None):
             save_good_pinned()
     google_live = h.get("google_live")
     try:
-        deep_mtime = os.path.getmtime(os.path.join(HERE, "node_deep.json"))
+        deep_mtime = os.path.getmtime(A.data("node_deep.json"))
     except OSError:
         deep_mtime = 0
     reason = decide_rescan(now, deep_mtime, google_live, h.get("last_rescan"),

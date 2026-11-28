@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+import app_paths as A
 
 
 def up(port):
@@ -78,7 +79,7 @@ def direct_path_contaminated():
 
 
 def main():
-    if os.path.isfile(os.path.join(HERE, "TUN_ACTIVE")):
+    if os.path.isfile(A.data("TUN_ACTIVE")):
         bad, why = direct_path_contaminated()
         print("TUN 开着，检查测速路径是否直连：%s" % why, flush=True)
         if bad is not False:
@@ -111,9 +112,9 @@ def main():
         return 1
     # TUN 开着且是自愈任务发起的重扫：请它用新节点池重建隧道（先校验再切换）。
     # 手动双击「重新扫描节点」时也一样，省得用户再点一次启动。
-    if os.path.isfile(os.path.join(HERE, "TUN_ACTIVE")):
+    if os.path.isfile(A.data("TUN_ACTIVE")):
         try:
-            with open(os.path.join(HERE, "REBUILD_REQUEST"), "w", encoding="utf-8") as f:
+            with open(A.data("REBUILD_REQUEST"), "w", encoding="utf-8") as f:
                 f.write("rescan")
             print("\n[OK] 节点已重扫，TUN 会在 1 分钟内自动换用新节点（先校验，坏配置不会生效）。", flush=True)
         except OSError:

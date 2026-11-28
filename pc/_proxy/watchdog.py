@@ -31,14 +31,15 @@ import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import app_paths as A  # noqa: E402
 
 # pythonw 没有控制台：解释器级硬崩溃（访问违例、栈溢出、COM/WMI 抛 SEH）
 # 不会进 logs/watchdog.log，进程就这么无声消失，而「看门狗死了」比「出口挂了」
 # 更难发现——没人守着守夜人。faulthandler 把这类栈写进单独的文件。
 try:
     import faulthandler
-    os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
-    _CRASH = open(os.path.join(HERE, "logs", "watchdog_crash.log"), "a")
+    os.makedirs(A.data("logs"), exist_ok=True)
+    _CRASH = open(A.data("logs", "watchdog_crash.log"), "a")
     faulthandler.enable(file=_CRASH)
     atexit.register(_CRASH.close)
 except Exception:
@@ -50,19 +51,19 @@ import proxyctl as P      # noqa: E402
 import sysstate           # noqa: E402
 
 GEN, FAST, CLI, HK, STEAM = 2101, 2103, 2090, 2086, 2096
-DEEP = os.path.join(HERE, "node_deep.json")
-PINNED_CFG = os.path.join(HERE, "singbox_pinned.json")
+DEEP = A.data("node_deep.json")
+PINNED_CFG = A.data("singbox_pinned.json")
 # 2026-11-12: 定期重扫——每 N 小时重新抓源+深测+重建出口；0=关闭。
 # 全量重扫会跑 re-harvest + deep test + rebuild（10~40 分钟，CPU 能吃满一个核），
 # 默认改成 12 小时；需要临时调整设环境变量 PROXY_REFRESH_HOURS。
 REFRESH_HOURS = float(os.environ.get("PROXY_REFRESH_HOURS") or 12)
-STOP = os.path.join(HERE, "STOP_WATCHDOG")
+STOP = A.data("STOP_WATCHDOG")
 # 用户点了「关闭代理」= 这个文件被删。看门狗一旦看不到它就必须立刻收手，
 # 绝不能再把 PAC / 环境变量写回去（旧版关闭后 2 分钟内被写回就是这个原因）。
-ENABLED = os.path.join(HERE, "ENABLED")
-PID = os.path.join(HERE, "watchdog.pid")
-STATUS = os.path.join(HERE, "watchdog_status.json")
-LOG = os.path.join(HERE, "logs", "watchdog.log")
+ENABLED = A.data("ENABLED")
+PID = A.data("watchdog.pid")
+STATUS = A.data("watchdog_status.json")
+LOG = A.data("logs", "watchdog.log")
 PIDS = ("sing-box.exe",)
 # This process runs without a console.  Any console child (curl/tasklist/
 # netstat/python) would otherwise open a fresh Windows Terminal window on
@@ -211,7 +212,7 @@ def curl_probe_body(url, port, timeout=18, keep=262144):
 def run_script(script, *args, **kw):
     timeout = kw.pop("timeout", 420)
     logfile = kw.pop("logfile", "watchdog_jobs.log")
-    path = os.path.join(HERE, "logs", logfile)
+    path = A.data("logs", logfile)
     try:
         with open(path, "ab") as lf:
             p = subprocess.run([PY, os.path.join(HERE, script)] + list(args),
@@ -225,7 +226,7 @@ def run_script(script, *args, **kw):
 
 
 def spawn_script(script, logfile):
-    path = os.path.join(HERE, "logs", logfile)
+    path = A.data("logs", logfile)
     try:
         with open(path, "ab") as lf:
             subprocess.Popen([PY, os.path.join(HERE, script)], cwd=HERE,
@@ -582,7 +583,7 @@ def main():
     # 期间第一次心跳和 PAC 自愈都还没跑，面板上看起来像「看门狗挂了」。
     # route_map 新鲜就按正常间隔走；缺失或过旧才在 120s 后补一次。
     try:
-        age = time.time() - os.path.getmtime(os.path.join(HERE, "route_map.json"))
+        age = time.time() - os.path.getmtime(A.data("route_map.json"))
     except OSError:
         age = 1e9
     last["autoroute"] = start = time.time()

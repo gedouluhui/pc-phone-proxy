@@ -22,7 +22,8 @@ import deep_test as D
 import nodes as N
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "pinned_health.json")
+import app_paths as A
+OUT = A.data("pinned_health.json")
 SOCKS, HTTP, API = 2168, 2169, 9098
 
 
@@ -35,7 +36,7 @@ def load_uris(path=None):
                 if line and "://" in line and not line.startswith("#"):
                     uris.append(line)
     else:
-        p = json.load(io.open(os.path.join(HERE, "pinned.json"), encoding="utf-8"))
+        p = json.load(io.open(A.data("pinned.json"), encoding="utf-8"))
         for uri, tag in (p.get("members") or {}).items():
             uris.append(uri)
     return uris

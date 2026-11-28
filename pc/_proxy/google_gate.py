@@ -31,10 +31,12 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import app_paths as A
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "bin", "sing-box.exe")
-STORE = os.path.join(HERE, "google_gate.json")
-TUN_CFG = os.path.join(HERE, "singbox_tun.json")
+STORE = A.data("google_gate.json")
+TUN_CFG = A.data("singbox_tun.json")
 FRESH = 6 * 3600          # 结论 6 小时内有效（Google 的地理库变化慢，但节点会换 IP）
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
@@ -140,7 +142,7 @@ def check_outbound(ob, timeout=12.0):
     ob = dict(ob)
     ob["tag"] = "node"
     port = _free_port()
-    path = os.path.join(HERE, "logs", "gate_%d.json" % port)
+    path = A.data("logs", "gate_%d.json" % port)
     cfg = {"log": {"level": "error"},
            "inbounds": [{"type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": port}],
            "outbounds": [ob, {"type": "direct", "tag": "direct"}],
@@ -235,7 +237,7 @@ def tun_outbounds(path=TUN_CFG):
             if (o.get("tag") or "").startswith("g") and o.get("server")]
 
 
-def pinned_outbounds(path=os.path.join(HERE, "singbox_pinned.json")):
+def pinned_outbounds(path=A.data("singbox_pinned.json")):
     return tun_outbounds(path)
 
 

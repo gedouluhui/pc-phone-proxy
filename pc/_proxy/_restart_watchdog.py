@@ -7,12 +7,13 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import app_paths as A  # noqa: E402
 import process_identity as I  # noqa: E402
 import proxyctl as P  # noqa: E402
 
-STOP = os.path.join(HERE, "STOP_WATCHDOG")
-PIDF = os.path.join(HERE, "watchdog.pid")
-LOG = os.path.join(HERE, "logs", "watchdog.out")
+STOP = A.data("STOP_WATCHDOG")
+PIDF = A.data("watchdog.pid")
+LOG = A.data("logs", "watchdog.out")
 
 pid = None
 try:

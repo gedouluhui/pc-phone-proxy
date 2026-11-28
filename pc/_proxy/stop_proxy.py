@@ -20,6 +20,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import app_paths as A  # noqa: E402
 import process_identity as I  # noqa: E402
 import pacroute            # noqa: E402
 import proxyctl as P       # noqa: E402
@@ -29,11 +30,11 @@ PORTS_SING = (2100, 2101, 2102, 2103, 2090, 2085, 2086, 2087,
               2096, 2097, 2160, 2161, 9089, 9092, 9093, 9094)
 PORTS_PAC = tuple(range(8891, 8901))
 PORTS_OTHER = ((8891, ("python.exe", "pythonw.exe")),)
-WATCH_PID = os.path.join(HERE, "watchdog.pid")
-WATCH_STOP = os.path.join(HERE, "STOP_WATCHDOG")
-START_LOCK = os.path.join(HERE, "start.lock")
-ENABLED = os.path.join(HERE, "ENABLED")
-TUN_ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
+WATCH_PID = A.data("watchdog.pid")
+WATCH_STOP = A.data("STOP_WATCHDOG")
+START_LOCK = A.data("start.lock")
+ENABLED = A.data("ENABLED")
+TUN_ACTIVE = A.data("TUN_ACTIVE")
 
 
 def log(*a):
@@ -133,7 +134,7 @@ def kill_our_stack(procs=None):
     """Terminate only processes with complete identity records in this install."""
     killed = []
     records = []
-    for path in glob.glob(os.path.join(HERE, "*.identity.json")):
+    for path in glob.glob(A.data("*.identity.json")):
         record = I.load_record(path)
         if record:
             records.append(record)
@@ -203,7 +204,7 @@ def stop_tun():
         # 唤醒成"TUN 已停止"，真正的建隧道过程反而没人等。给它一个独立的
         # 结果文件，两边互不覆盖。
         r = subprocess.run([sys.executable, tun_py, "stop", "--admin",
-                            "--result", os.path.join(HERE, "logs", "tun_stop_result.json")],
+                            "--result", A.data("logs", "tun_stop_result.json")],
                            cwd=HERE, timeout=180)
         return ("已停止" if r.returncode == 0 else "停止失败 rc=%d" % r.returncode)
     except Exception as e:
@@ -213,7 +214,7 @@ def stop_tun():
 def stop_pinned():
     killed = []
     try:
-        with io.open(os.path.join(HERE, "pinned_pids.json"), encoding="utf-8") as stream:
+        with io.open(A.data("pinned_pids.json"), encoding="utf-8") as stream:
             records = json.load(stream)
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         records = []
@@ -225,10 +226,10 @@ def stop_pinned():
         if not isinstance(record, dict) or not record.get("pid"):
             continue
         if I.terminate_record(record,
-                              expected_config=os.path.join(HERE, "singbox_pinned.json"),
+                              expected_config=A.data("singbox_pinned.json"),
                               log=log):
             killed.append(int(record["pid"]))
-    for path in glob.glob(os.path.join(HERE, "one_*.identity.json")):
+    for path in glob.glob(A.data("one_*.identity.json")):
         record = I.load_record(path)
         if record and I.terminate_record(record, log=log):
             killed.append(int(record["pid"]))
@@ -236,13 +237,13 @@ def stop_pinned():
             os.remove(path)
         except OSError:
             pass
-    for path in glob.glob(os.path.join(HERE, "one_*.pid")):
+    for path in glob.glob(A.data("one_*.pid")):
         try:
             os.remove(path)
         except OSError:
             pass
     try:
-        os.remove(os.path.join(HERE, "pinned_pids.json"))
+        os.remove(A.data("pinned_pids.json"))
     except OSError:
         pass
     return killed
@@ -384,9 +385,9 @@ def main():
     log("[4/4] 系统代理与命令行变量已还原"
         + (("；顺手清掉指向死端口的旧值: " + ", ".join(touched)) if touched else ""))
 
-    for path in (START_LOCK, os.path.join(HERE, "pac_server.pid"),
-                 os.path.join(HERE, "pac_server.pid.identity.json"),
-                 os.path.join(HERE, "watchdog_guard.json")):
+    for path in (START_LOCK, A.data("pac_server.pid"),
+                 A.data("pac_server.pid.identity.json"),
+                 A.data("watchdog_guard.json")):
         try:
             os.remove(path)
         except OSError:

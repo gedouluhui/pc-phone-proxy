@@ -20,6 +20,7 @@ import ssl
 import subprocess
 import time
 
+import app_paths as A
 import control_api
 import control_secret
 import process_identity as I
@@ -28,10 +29,10 @@ import nodes as N
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "bin", "sing-box.exe")
-CFG = os.path.join(HERE, "singbox_deep.json")
-ALIVE = os.path.join(HERE, "nodes_alive2.json")
-OUT = os.path.join(HERE, "node_deep.json")
-PIDS = os.path.join(HERE, "deep_pids.json")
+CFG = A.data("singbox_deep.json")
+ALIVE = A.data("nodes_alive2.json")
+OUT = A.data("node_deep.json")
+PIDS = A.data("deep_pids.json")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
@@ -42,7 +43,7 @@ def log(*a):
 
 def kill_stale():
     import glob
-    for path in glob.glob(os.path.join(HERE, "deep_*.identity.json")):
+    for path in glob.glob(A.data("deep_*.identity.json")):
         record = I.load_record(path)
         if record:
             I.terminate_record(record)
@@ -119,11 +120,11 @@ def prepare(subset, socks, http, api):
 
 
 def start_singbox(path, extra=0):
-    logp = os.path.join(HERE, "logs", f"singbox_deep{extra}.log")
+    logp = A.data("logs", f"singbox_deep{extra}.log")
     with open(logp, "ab") as logf:
         p = subprocess.Popen([BIN, "run", "-c", path], stdout=logf, stderr=subprocess.STDOUT,
                              creationflags=0x08000000)
-    I.record(p.pid, path, os.path.join(HERE, "deep_%d.identity.json" % extra))
+    I.record(p.pid, path, A.data("deep_%d.identity.json" % extra))
     return p
 
 

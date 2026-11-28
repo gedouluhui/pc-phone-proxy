@@ -24,14 +24,15 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+import app_paths as A
 sys.path.insert(0, HERE)
 
 import pacroute            # noqa: E402
 import sysstate            # noqa: E402
 
 GEN, FAST, CLI = 2101, 2103, 2090
-OUT = os.path.join(HERE, "logs", "doctor.json")
-STATUS = os.path.join(HERE, "watchdog_status.json")
+OUT = A.data("logs", "doctor.json")
+STATUS = A.data("watchdog_status.json")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -89,8 +90,8 @@ def port_open(port):
         s.close()
 
 
-TUN_ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
-TUN_PID = os.path.join(HERE, "tun.pid")
+TUN_ACTIVE = A.data("TUN_ACTIVE")
+TUN_PID = A.data("tun.pid")
 
 
 def tun_on():
@@ -278,7 +279,7 @@ def check_watchdog():
     except Exception:
         return "WARN", "读不到 watchdog_status.json（看门狗没跑过？）"
     try:
-        pid = int(io.open(os.path.join(HERE, "watchdog.pid")).read().strip())
+        pid = int(io.open(A.data("watchdog.pid")).read().strip())
         import proxyctl as P
         # PID 会被复用：必须确认这个 pid 现在真的是 python，否则「存活」是假象
         live = P.pid_image(pid).lower().startswith("python")

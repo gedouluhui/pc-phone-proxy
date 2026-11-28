@@ -11,7 +11,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "site_matrix.json")
+import app_paths as A
+OUT = A.data("site_matrix.json")
 
 EXITS = [("fast", "127.0.0.1:2103"), ("general", "127.0.0.1:2101"),
          ("hk", "127.0.0.1:2086"), ("geph", "127.0.0.1:9910")]

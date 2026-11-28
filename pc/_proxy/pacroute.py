@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 
+import app_paths as A
 import process_identity as I
 
 try:                                  # Windows-only; tests import this module elsewhere
@@ -39,10 +40,10 @@ except ImportError:                   # pragma: no cover - non-Windows import pa
     winreg = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAC_PATH = os.path.join(HERE, "proxy.pac")
-PAC_URL_PATH = os.path.join(HERE, "pac_url.txt")
-PID_PATH = os.path.join(HERE, "pac_server.pid")
-LOG_DIR = os.path.join(HERE, "logs")
+PAC_PATH = A.data("proxy.pac")
+PAC_URL_PATH = A.data("pac_url.txt")
+PID_PATH = A.data("pac_server.pid")
+LOG_DIR = A.data("logs")
 PORT = 8891
 K = winreg.HKEY_CURRENT_USER if winreg else 0
 IS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
@@ -453,9 +454,9 @@ def _serve_forever(port=None):
 
 
 # ------------------------------------------------------- 看门狗保活（守夜人的守夜人）
-WD_PID = os.path.join(HERE, "watchdog.pid")
-WD_STOP = os.path.join(HERE, "STOP_WATCHDOG")
-WD_GUARD = os.path.join(HERE, "watchdog_guard.json")
+WD_PID = A.data("watchdog.pid")
+WD_STOP = A.data("STOP_WATCHDOG")
+WD_GUARD = A.data("watchdog_guard.json")
 
 
 def _wd_alive():
@@ -478,7 +479,7 @@ def _spawn_watchdog():
     exe = pyw if os.path.isfile(pyw) else sys.executable
     os.makedirs(LOG_DIR, exist_ok=True)
     with io.open(os.path.join(LOG_DIR, "watchdog.out"), "ab") as logf:
-        p = subprocess.Popen([exe, os.path.join(HERE, "watchdog.py")], cwd=HERE,
+        p = subprocess.Popen([exe, A.data("watchdog.py")], cwd=HERE,
                              stdout=logf, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL,
                              creationflags=0x00000008 | 0x00000200)
@@ -516,7 +517,7 @@ def _guard_loop():
         time.sleep(60)
         try:
             # ENABLED 不在 = 用户已关闭代理：守夜人也不许再拉起看门狗。
-            if not os.path.isfile(os.path.join(HERE, "ENABLED")):
+            if not os.path.isfile(A.data("ENABLED")):
                 continue
             # STOP_WATCHDOG 存在 = 用户正在关代理，别跟他抢
             if os.path.isfile(WD_STOP) or _wd_alive():
@@ -702,7 +703,7 @@ def _wget(name):
 def load_dyn():
     """读 autoroute.py 产出的动态路由映射（没有就返回空，PAC 退回静态规则）。"""
     try:
-        with io.open(os.path.join(HERE, "route_map.json"), encoding="utf-8") as f:
+        with io.open(A.data("route_map.json"), encoding="utf-8") as f:
             return (json.load(f) or {}).get("groups") or {}
     except Exception:
         return {}

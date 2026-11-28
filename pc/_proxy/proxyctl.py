@@ -26,6 +26,7 @@ import time
 import winreg
 from html import escape
 
+import app_paths as A
 import diagnostics as D
 import process_identity as I
 
@@ -33,11 +34,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KAGGLE = os.path.dirname(HERE)
 K = winreg.HKEY_CURRENT_USER
 IS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-ACTIVE = os.path.join(HERE, "ACTIVE.json")
-PINNED = os.path.join(HERE, "pinned.json")
-PIN_PIDS = os.path.join(HERE, "pinned_pids.json")
-TRIALS = os.path.join(HERE, "trials.json")
-REPORT = os.path.join(HERE, "report.html")
+ACTIVE = A.data("ACTIVE.json")
+PINNED = A.data("pinned.json")
+PIN_PIDS = A.data("pinned_pids.json")
+TRIALS = A.data("trials.json")
+REPORT = A.data("report.html")
 GEPH_EXE = os.path.join(KAGGLE, "_ref_out", "geph5-client.exe")
 GEPH_CFG = os.path.join(KAGGLE, "_ref_out", "geph_standalone.yaml")
 WARP_EXE = os.path.join(HERE, "bin", "warp-plus.exe")   # 已删除（本机不可用），保留常量仅为兼容
@@ -238,7 +239,7 @@ def stop_pinned():
     for record in raw:
         if not isinstance(record, dict) or not record.get("pid"):
             continue  # Legacy PID-only records are not ownership proof.
-        if I.terminate_record(record, expected_config=os.path.join(HERE, "singbox_pinned.json")):
+        if I.terminate_record(record, expected_config=A.data("singbox_pinned.json")):
             continue
     try:
         os.remove(PIN_PIDS)
@@ -252,7 +253,7 @@ def start_geph():
         return True
     if not (os.path.isfile(GEPH_EXE) and os.path.isfile(GEPH_CFG)):
         return False
-    logp = os.path.join(HERE, "logs", "geph_client.log")
+    logp = A.data("logs", "geph_client.log")
     with open(logp, "ab") as log:
         subprocess.Popen([GEPH_EXE, "--config", GEPH_CFG], stdout=log, stderr=subprocess.STDOUT,
                          creationflags=0x00000008 | 0x08000000)   # DETACHED | NO_WINDOW
@@ -268,7 +269,7 @@ def start_warp(port=8086):
         return True
     if not os.path.isfile(WARP_EXE):
         return False
-    logp = os.path.join(HERE, "logs", "warp.log")
+    logp = A.data("logs", "warp.log")
     with open(logp, "ab") as log:
         subprocess.Popen([WARP_EXE, "-b", f"127.0.0.1:{port}"], stdout=log, stderr=subprocess.STDOUT,
                          creationflags=0x00000008 | 0x08000000)
@@ -291,7 +292,7 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
            "inbounds": [{"type": "socks", "tag": "in-s", "listen": "127.0.0.1", "listen_port": socks_port},
                         {"type": "http", "tag": "in-h", "listen": "127.0.0.1", "listen_port": http_port}],
            "outbounds": [ob]}
-    path = os.path.join(HERE, "singbox_one.json")
+    path = A.data("singbox_one.json")
     # 先按 PID（校验映像名 + 命令行指向 singbox_one.json）释放端口，再起新进程。
     # 旧版直接 Popen：新进程 bind 失败 FATAL 退出，而 listen_ok() 看到旧实例
     # 仍在监听就返回 True，于是 ensure_steam() 连试 5 个节点「都启动成功」，
@@ -304,7 +305,7 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
         return False
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
-    logp = os.path.join(HERE, "logs", "singbox_one.log")
+    logp = A.data("logs", "singbox_one.log")
     with open(logp, "ab") as log:
         proc = subprocess.Popen([SING_EXE, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=0x00000008 | 0x08000000)
@@ -320,8 +321,8 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
                 time.sleep(0.5)
                 continue
             try:
-                I.record(proc.pid, path, os.path.join(HERE, "one_%d.identity.json" % int(http_port)))
-                with open(os.path.join(HERE, "one_%d.pid" % int(http_port)), "w") as f:
+                I.record(proc.pid, path, A.data("one_%d.identity.json" % int(http_port)))
+                with open(A.data("one_%d.pid" % int(http_port)), "w") as f:
                     f.write(str(proc.pid))
             except OSError:
                 pass
@@ -330,7 +331,7 @@ def start_singbox_node(uri, socks_port=2080, http_port=2086):
     return False
 
 
-GATEWAY_PID = os.path.join(HERE, "gateway.pid")
+GATEWAY_PID = A.data("gateway.pid")
 GATEWAY_PORT = 2087
 
 
@@ -343,7 +344,7 @@ def stop_gateway():
         return
     identity_path = GATEWAY_PID + ".identity.json"
     killed = I.terminate_if_owned(pid, record_path=identity_path,
-                                  expected_config=os.path.join(HERE, "singbox_gateway.json"))
+                                  expected_config=A.data("singbox_gateway.json"))
     if killed or I.inspect(pid) is None:
         for path in (GATEWAY_PID, identity_path):
             try:
@@ -367,10 +368,10 @@ def start_gateway(rec, port=GATEWAY_PORT):
     cfg = {"log": {"level": "error"},
            "inbounds": [{"type": "http", "tag": "in-h", "listen": "127.0.0.1", "listen_port": port}],
            "outbounds": [ob]}
-    path = os.path.join(HERE, "singbox_gateway.json")
+    path = A.data("singbox_gateway.json")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f)
-    logp = os.path.join(HERE, "logs", "gateway.log")
+    logp = A.data("logs", "gateway.log")
     with open(logp, "ab") as log:
         p = subprocess.Popen([SING_EXE, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT,
                              creationflags=0x00000008 | 0x08000000)
@@ -408,7 +409,7 @@ def local_endpoint(rec):
 
 
 def best_node():
-    p = os.path.join(HERE, "node_speed.json")
+    p = A.data("node_speed.json")
     if not os.path.isfile(p):
         return None
     try:
@@ -441,7 +442,7 @@ def candidates(include_local=True):
                         "proto": "http", "host": "127.0.0.1", "port": 2086, "weight": 1.0})
     pool = []
     try:
-        pool = json.load(open(os.path.join(HERE, "pool.json"), encoding="utf-8")).get("kept", [])
+        pool = json.load(open(A.data("pool.json"), encoding="utf-8")).get("kept", [])
     except Exception:
         pass
     for p in pool[:30]:
@@ -509,7 +510,7 @@ def log_trial(kind, rows, secs):
 def prune(rows):
     """Delete dead entries (they are of no further use) and shrink the public pool
     to what still passes.  Returns a failure-class summary for the report."""
-    dead_path = os.path.join(HERE, "dead.jsonl")
+    dead_path = A.data("dead.jsonl")
     dead_summary = {}
     if os.path.isfile(dead_path):
         cnt = {}
@@ -522,7 +523,7 @@ def prune(rows):
             cnt[e] = cnt.get(e, 0) + 1
         dead_summary = dict(sorted(cnt.items(), key=lambda kv: -kv[1])[:12])
         os.remove(dead_path)
-    pool_path = os.path.join(HERE, "pool.json")
+    pool_path = A.data("pool.json")
     if not os.path.isfile(pool_path):
         return dead_summary
     try:
@@ -793,7 +794,7 @@ def render_report():
                       f"<td>{e(h.get('secs', 0))}s</td></tr>")
     pool_n = 0
     try:
-        pool_n = len(json.load(open(os.path.join(HERE, "pool.json"), encoding="utf-8")).get("kept", []))
+        pool_n = len(json.load(open(A.data("pool.json"), encoding="utf-8")).get("kept", []))
     except Exception:
         pass
     winner = act.get("chosen") if act else None
@@ -837,7 +838,7 @@ def render_report():
         gate_tbl = "<tr><td colspan='9' class='note'>本次未跑站点闸门</td></tr>"
 
     bc = {}
-    bpath = os.path.join(HERE, "edge_check.json")
+    bpath = A.data("edge_check.json")
     if os.path.isfile(bpath):
         try:
             bc = json.load(open(bpath, encoding="utf-8"))

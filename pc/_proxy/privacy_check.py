@@ -23,7 +23,8 @@ import urllib.request
 sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAC = os.path.join(HERE, "proxy.pac")
+import app_paths as A
+PAC = A.data("proxy.pac")
 GATES = {"general": 2101, "fast": 2103, "cli": 2090}
 TIMEOUT = 15
 

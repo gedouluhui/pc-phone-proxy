@@ -12,6 +12,7 @@ Two layers
 state_backup.json.  `restore_all()` puts them back and removes the file, so the
 "关闭代理" button returns the machine to exactly the state it had before.
 """
+import app_paths as A
 import ctypes
 import io
 import json
@@ -20,14 +21,14 @@ import time
 import winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BACKUP = os.path.join(HERE, "state_backup.json")
-LOGDIR = os.path.join(HERE, "logs")
+BACKUP = A.data("state_backup.json")
+LOGDIR = A.data("logs")
 K = winreg.HKEY_CURRENT_USER
 IS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 ENVROOT = "Environment"
 ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 PAC_URL = "http://127.0.0.1:8891/proxy.pac"
-PAC_URL_FILE = os.path.join(HERE, "pac_url.txt")
+PAC_URL_FILE = A.data("pac_url.txt")
 
 
 def pac_url():

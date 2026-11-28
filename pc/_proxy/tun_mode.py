@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 
+import app_paths as A
 import config_transaction
 import control_secret
 import process_identity as I
@@ -32,8 +33,8 @@ sys.path.insert(0, HERE)
 import pacroute            # noqa: E402
 import proxyctl as P       # noqa: E402
 
-PINNED = os.path.join(HERE, "singbox_pinned.json")
-CFG = os.path.join(HERE, "singbox_tun.json")
+PINNED = A.data("singbox_pinned.json")
+CFG = A.data("singbox_tun.json")
 
 # 需要用 DoH 解析的域名：Google 全线（污染最严重）+ AI 站。
 # 实测吞吐从高到低（2026-11-21 12:05，2MB 上行：547 / 435 / 397 / 322 / 128 KB/s，
@@ -57,13 +58,13 @@ GOOGLE_DNS = ["google.com", "googleapis.com", "gstatic.com", "googleusercontent.
               "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com",
               "anthropic.com", "claude.ai", "huggingface.co", "hf.co",
               "x.ai", "perplexity.ai", "antigravity.google"]
-PID = os.path.join(HERE, "tun.pid")
-IDENTITY = os.path.join(HERE, "tun.identity.json")
-ACTIVE = os.path.join(HERE, "TUN_ACTIVE")
-RESULT = os.path.join(HERE, "tun_result.json")
-STARTED = os.path.join(HERE, "tun_started.txt")
-LOG = os.path.join(HERE, "logs", "tun.log")
-SB_LOG = os.path.join(HERE, "logs", "tun_singbox.log")
+PID = A.data("tun.pid")
+IDENTITY = A.data("tun.identity.json")
+ACTIVE = A.data("TUN_ACTIVE")
+RESULT = A.data("tun_result.json")
+STARTED = A.data("tun_started.txt")
+LOG = A.data("logs", "tun.log")
+SB_LOG = A.data("logs", "tun_singbox.log")
 IFACE = "pcproxy"
 TUN_ADDR = "172.19.0.1/30"
 # Project-owned controller port.  9090 is the Clash default and is routinely
@@ -220,7 +221,7 @@ def build_config():
     # skips the ones that stop answering.
     google_bad = set()
     try:
-        with io.open(os.path.join(HERE, "google_bad.json"), encoding="utf-8") as f:
+        with io.open(A.data("google_bad.json"), encoding="utf-8") as f:
             google_bad = {str(x).lower() for x in (json.load(f) or [])}
     except Exception:
         pass
@@ -230,7 +231,7 @@ def build_config():
     # 写死 IP：用户每跑一次「重新扫描节点」，这里就自动跟着换，不会失配。
     deep = {}
     try:
-        with io.open(os.path.join(HERE, "node_deep.json"), encoding="utf-8") as f:
+        with io.open(A.data("node_deep.json"), encoding="utf-8") as f:
             for row in (json.load(f) or {}).get("rows") or []:
                 if row.get("dl_status") == 200 and (row.get("dl_kbps") or 0) > 0:
                     deep[str(row.get("server") or "").lower()] = float(row["dl_kbps"])
@@ -364,7 +365,7 @@ def build_config():
     # tun_supervisor 探活失败时会写 dns_detour.txt 指定一颗实测可用的节点。
     _pinned = ""
     try:
-        with io.open(os.path.join(HERE, "dns_detour.txt"), encoding="utf-8") as f:
+        with io.open(A.data("dns_detour.txt"), encoding="utf-8") as f:
             _pinned = f.read().strip()
     except Exception:
         _pinned = ""
@@ -596,13 +597,13 @@ def stop_stack():
         else:
             log("TUN 进程身份无法确认，拒绝终止 pid=%d" % pid)
     # Stop the split-mode Google-AI exit only through its identity record.
-    gai_pid_path = os.path.join(HERE, "one_2098.pid")
+    gai_pid_path = A.data("one_2098.pid")
     try:
         with io.open(gai_pid_path, encoding="utf-8") as stream:
             gai_pid = int(stream.read().strip())
         if I.terminate_if_owned(gai_pid,
-                                record_path=os.path.join(HERE, "one_2098.identity.json"),
-                                expected_config=os.path.join(HERE, "singbox_gai.json")):
+                                record_path=A.data("one_2098.identity.json"),
+                                expected_config=A.data("singbox_gai.json")):
             killed.append(gai_pid)
     except (OSError, ValueError):
         pass
@@ -785,8 +786,8 @@ def start_admin():
     return 1, "候选 TUN 启动或验收失败，未提交新配置"
 
 
-SUP_PID = os.path.join(HERE, "tun_supervisor.pid")
-SUP_LOG = os.path.join(HERE, "logs", "tun_supervisor.log")
+SUP_PID = A.data("tun_supervisor.pid")
+SUP_LOG = A.data("logs", "tun_supervisor.log")
 
 
 def start_supervisor():
@@ -823,36 +824,37 @@ GUARD_TASK = "PhoneProxyTunGuard"
 
 
 def register_guard_task():
-    """注册一个每分钟跑一次的提权计划任务（比长驻进程更抗清理）。"""
-    try:
-        # 必须用 pythonw：计划任务每分钟跑一次，python.exe 是控制台程序，
-        # 每次执行都会闪一个黑框。
-        py = sys.executable
-        cand = os.path.join(os.path.dirname(py), "pythonw.exe")
-        if os.path.isfile(cand):
-            py = cand
-        elif not py.lower().endswith("pythonw.exe"):
-            guess = os.path.join(HERE, "..", "runtime", "python", "pythonw.exe")
-            if os.path.isfile(guess):
-                py = guess
-        py = os.path.abspath(py)
-        script = os.path.join(HERE, "tun_supervisor.py")
-        cmd = '"%s" "%s" --once' % (py, script)
-        r = subprocess.run(["schtasks", "/Create", "/TN", GUARD_TASK, "/TR", cmd,
-                            "/SC", "MINUTE", "/MO", "1", "/RL", "HIGHEST", "/F"],
-                           capture_output=True, text=True, errors="replace",
-                           creationflags=0x08000000)
-        # 失败不影响本次隧道（还有常驻 supervisor），但要留痕，别假装成功。
-        if r.returncode != 0:
-            log("注册自愈计划任务失败（rc=%s）：%s" % (r.returncode, (r.stderr or r.stdout).strip()[:160]))
-    except Exception as exc:
-        log("注册自愈计划任务失败: %s" % exc)
+    """Never execute user-writable code from an elevated scheduled task.
+
+    Both portable and installed modes use the identity-checked resident
+    supervisor. Installed elevation is limited to the verified broker.
+    """
+    log("安全策略：不注册提权计划任务；由本安装的常驻 supervisor 自愈")
+    return True
 
 
 def unregister_guard_task():
+    """Delete only a task whose action is exactly this installation's broker."""
     try:
-        subprocess.run(["schtasks", "/Delete", "/TN", GUARD_TASK, "/F"],
-                       capture_output=True, creationflags=0x08000000)
+        result = subprocess.run(["schtasks", "/Query", "/TN", GUARD_TASK, "/XML"],
+                                capture_output=True, creationflags=0x08000000, timeout=15)
+        if result.returncode != 0:
+            return
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(result.stdout)
+        values = {}
+        for node in root.iter():
+            key = node.tag.rsplit("}", 1)[-1]
+            if key in ("Command", "Arguments") and node.text:
+                values[key] = node.text.strip()
+        broker_path = os.path.realpath(os.path.join(HERE, "..", "app", "broker.py"))
+        command_ok = os.path.realpath(values.get("Command", "")) == broker_path
+        arguments = values.get("Arguments", "")
+        args_ok = "tun-guard" in arguments and "--data-dir" in arguments \
+            and A.DATA_DIR.lower() in arguments.lower()
+        if command_ok and args_ok:
+            subprocess.run(["schtasks", "/Delete", "/TN", GUARD_TASK, "/F"],
+                           capture_output=True, creationflags=0x08000000, timeout=15)
     except Exception:
         pass
 

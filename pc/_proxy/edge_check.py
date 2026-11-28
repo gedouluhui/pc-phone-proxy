@@ -18,10 +18,11 @@ import urllib.request
 import websocket  # websocket-client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+import app_paths as A
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-PROFILE = os.path.join(HERE, "edge_profile")
+PROFILE = A.data("edge_profile")
 PORT = 9333
-OUT = os.path.join(HERE, "edge_check.json")
+OUT = A.data("edge_check.json")
 
 URLS = [
     ("cloudflare_trace", "https://www.cloudflare.com/cdn-cgi/trace", 20),

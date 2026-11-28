@@ -21,6 +21,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+import app_paths as A
 CHECK_HOST = "www.gstatic.com"
 SPEED_HOST = "speed.cloudflare.com"
 SPEED_PATH = "/__down?bytes=1000000"
@@ -29,7 +30,7 @@ CTX = ssl.create_default_context()
 
 def load():
     out = []
-    with open(os.path.join(HERE, "candidates.jsonl"), encoding="utf-8") as f:
+    with open(A.data("candidates.jsonl"), encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -207,11 +208,11 @@ def main():
     alive = [r for r in r3 if r["ok"]]
     alive.sort(key=lambda r: (-(r.get("speed_kbps") or 0), r.get("best_ms", 9e9)))
 
-    with open(os.path.join(HERE, "pool.json"), "w", encoding="utf-8", newline="\n") as f:
+    with open(A.data("pool.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump({"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    "screened": len(r1), "alive_r1": len(ok1), "stable": len(confirmed),
                    "kept": alive}, f, indent=1)
-    with open(os.path.join(HERE, "dead.jsonl"), "w", encoding="utf-8", newline="\n") as f:
+    with open(A.data("dead.jsonl"), "w", encoding="utf-8", newline="\n") as f:
         for r in r1:
             if not r["ok"]:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")

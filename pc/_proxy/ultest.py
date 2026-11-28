@@ -12,17 +12,18 @@ import socket
 import subprocess
 import time
 
+import app_paths as A
 import process_identity as I
 import nodes as N
 import proxyctl as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEEP = os.path.join(HERE, "node_deep.json")
-OUT = os.path.join(HERE, "node_ul.json")
+DEEP = A.data("node_deep.json")
+OUT = A.data("node_ul.json")
 PORT = 2199
 BIN = P.SING_EXE
-UP = os.path.join(HERE, "_up1.bin")
-CFG = os.path.join(HERE, "_ultest_cfg.json")
+UP = A.data("_up1.bin")
+CFG = A.data("_ultest_cfg.json")
 
 
 def log(*a):

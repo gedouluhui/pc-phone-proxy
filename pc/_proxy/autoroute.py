@@ -22,7 +22,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "route_map.json")
+import app_paths as A
+OUT = A.data("route_map.json")
 NOWIN = 0x08000000
 
 EXITS = {
@@ -196,7 +197,7 @@ def show():
     return 0
 
 
-LOCK = os.path.join(HERE, "autoroute.lock")
+LOCK = A.data("autoroute.lock")
 
 
 def _acquire():

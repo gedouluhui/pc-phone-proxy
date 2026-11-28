@@ -18,12 +18,13 @@ import sys
 import time
 import urllib.parse as up
 
+import app_paths as A
 import control_api
 import control_secret
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "bin", "sing-box.exe")
-CFG = os.path.join(HERE, "singbox.json")
+CFG = A.data("singbox.json")
 API = "http://127.0.0.1:19090"
 
 SS_CIPHERS = {
@@ -319,7 +320,7 @@ def build_inbounds():
 
 def load_nodes():
     out, seen = [], set()
-    with open(os.path.join(HERE, "candidates.jsonl"), encoding="utf-8") as f:
+    with open(A.data("candidates.jsonl"), encoding="utf-8") as f:
         for line in f:
             x = json.loads(line)
             if x.get("kind") != "node":
@@ -363,11 +364,11 @@ def write_config(nodes):
     return cfg
 
 
-TUN_ACTIVE_FILE = os.path.join(HERE, "TUN_ACTIVE")
+TUN_ACTIVE_FILE = A.data("TUN_ACTIVE")
 PREFILTER_SOCKS = 29099
 
 
-BYPASS_FILE = os.path.join(HERE, "logs", "bypass_mode.json")
+BYPASS_FILE = A.data("logs", "bypass_mode.json")
 
 
 def physical_iface_names():
@@ -455,7 +456,7 @@ def _start_direct_socks(port=PREFILTER_SOCKS, route=None):
     预筛形同虚设（2026-11-23 手机端整池不可用的根因之一）。sing-box.exe 在 TUN 规则里
     直连，它的 SOCKS 握手结果就是真实的大陆直连结果（失败时回 SOCKS 错误码）。
     """
-    path = os.path.join(HERE, "singbox_prefilter.json")
+    path = A.data("singbox_prefilter.json")
     cfg = {"log": {"level": "error"},
            "inbounds": [{"type": "socks", "tag": "in", "listen": "127.0.0.1",
                          "listen_port": port}],
@@ -658,7 +659,7 @@ def main():
     write_config(nodes)
     print(f"config written ({len(nodes)} outbounds)", flush=True)
 
-    log = open(os.path.join(HERE, "logs", "singbox.log"), "wb")
+    log = open(A.data("logs", "singbox.log"), "wb")
     proc = subprocess.Popen([BIN, "run", "-c", CFG], stdout=log, stderr=subprocess.STDOUT,
                             creationflags=0x08000000)
     try:
@@ -697,7 +698,7 @@ def main():
                          "net": n["meta"]["net"], "tls": n["meta"]["tls"],
                          # 落盘一律打码；运行用的原文只在内存与 singbox json 里
                          "uri": redact_uri(n["uri"])})
-        with open(os.path.join(HERE, "nodes_alive.json"), "w", encoding="utf-8", newline="\n") as f:
+        with open(A.data("nodes_alive.json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump({"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "total": len(nodes), "alive": rows}, f, indent=1)
         print(f"saved nodes_alive.json ({len(rows)}) elapsed {time.time()-t0:.0f}s")
@@ -732,7 +733,7 @@ def main():
             print(f"  [{i}/{len(top)}] {r['proto']:7s} {r['server']}:{r['port']:<6d} "
                   f"delay={r['delay_ms']:>5d}ms speed={r2.get('speed_kbps',0):8.1f} kB/s "
                   f"{'OK' if r2['works'] else 'FAIL ' + r2.get('err','')[:40]}", flush=True)
-        with open(os.path.join(HERE, "node_speed.json"), "w", encoding="utf-8", newline="\n") as f:
+        with open(A.data("node_speed.json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump({"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "rows": res}, f, indent=1)
         print(f"elapsed {time.time()-t0:.0f}s")

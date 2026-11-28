@@ -15,10 +15,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import app_paths as A
 import source_fetch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RAW = os.path.join(HERE, "raw")
+RAW = A.data("raw")
 # Empty = direct.  Set BOOT_PROXY=http://127.0.0.1:PORT when GitHub raw needs
 # an existing loopback HTTP proxy.  The hardened fetcher pins the validated
 # target IP through CONNECT/absolute-form requests; no ambient proxy is used.
@@ -195,7 +196,7 @@ def main():
     # Cumulative pool: keep entries harvested by earlier runs that the current
     # sources no longer serve.  Dead ones get filtered by the TCP prefilter, and
     # this way a temporarily failing source cannot silently shrink the pool.
-    old_path = os.path.join(HERE, "candidates.jsonl")
+    old_path = A.data("candidates.jsonl")
     if not fresh and os.path.isfile(old_path):
         try:
             with io.open(old_path, encoding="utf-8") as f:
@@ -244,10 +245,10 @@ def main():
     items = list(seen.values())
     proxies = [x for x in items if x["kind"] == "proxy"]
     nodes = [x for x in items if x["kind"] == "node"]
-    with io.open(os.path.join(HERE, "candidates.jsonl"), "w", encoding="utf-8", newline="\n") as f:
+    with io.open(A.data("candidates.jsonl"), "w", encoding="utf-8", newline="\n") as f:
         for x in items:
             f.write(json.dumps(x, ensure_ascii=False) + "\n")
-    with io.open(os.path.join(HERE, "sources.json"), "w", encoding="utf-8", newline="\n") as f:
+    with io.open(A.data("sources.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(src_rows, f, indent=1)
     from collections import Counter
     print(f"\nunique candidates: {len(items)}  proxies={len(proxies)} {dict(Counter(p['proto'] for p in proxies))} nodes={len(nodes)}")
