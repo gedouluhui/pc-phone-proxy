@@ -45,18 +45,18 @@ jobs:
           "SINGBOX_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: PC 回归（PAC / SSRF / 发布闸门 / 脱敏）
-        shell: pwsh
-        run: |
-          python tools/run_ci_tests.py 2>&1 | Tee-Object -FilePath _ci_test_output.log
-          exit $LASTEXITCODE
+        run: python tools/run_ci_tests.py
 
       - name: 将 PC 回归失败日志转成注解
         if: failure()
         shell: pwsh
         run: |
           if (Test-Path _ci_test_output.log) {
-            Get-Content _ci_test_output.log -Tail 80 | ForEach-Object {
-              $safe = $_.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            $lines = Get-Content _ci_test_output.log
+            $hits = @($lines | Select-String -Pattern '^(FAIL|ERROR):|Traceback|AssertionError|ResourceWarning')
+            if ($hits.Count -eq 0) { $hits = @($lines | Select-Object -Last 20) }
+            $hits | Select-Object -First 50 | ForEach-Object {
+              $safe = $_.ToString().Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
               "::error::$safe"
             }
           }

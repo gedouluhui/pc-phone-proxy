@@ -4,10 +4,19 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / "_ci_test_output.log"
+
+# Windows runners may give Python a legacy console code page while the child is
+# explicitly UTF-8. Never let printing a Chinese test name abort the wrapper.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 def annotations(output):
@@ -48,4 +57,15 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        _exit = main()
+    except BaseException:
+        traceback.print_exc()
+        try:
+            with open(LOG, "a", encoding="utf-8", newline="\n") as stream:
+                traceback.print_exc(file=stream)
+        except OSError:
+            pass
+        print("::error::PC regression wrapper failed; see traceback above")
+        _exit = 1
+    raise SystemExit(_exit)
